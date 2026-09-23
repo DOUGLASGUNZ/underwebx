@@ -1,0 +1,306 @@
++            <Card v-show="activePanel === 'people'" class="uwx-card uwx-card-wide">
+                 <CardHeader>
+                     <div class="flex items-start justify-between gap-4">
+                         <div>
+@@ -508,7 +640,7 @@
+                 </CardContent>
+             </Card>
+ 
+-            <Card class="uwx-card uwx-card-wide">
++            <Card v-show="activePanel === 'people'" class="uwx-card uwx-card-wide">
+                 <CardHeader>
+                     <div class="flex items-start justify-between gap-4">
+                         <div>
+@@ -546,13 +678,14 @@
+ 
+     import { UWX_VERSION } from '../../shared/constants/uwx';
+     import { openExternalLink, parseLocation } from '../../shared/utils';
+-    import { useFriendStore, useLocationStore, useUnderWebNetworkStore, useUnderWebStore } from '../../stores';
++    import { useFriendStore, useLocationStore, useOscLabStore, useUnderWebNetworkStore, useUnderWebStore } from '../../stores';
+ 
+     const router = useRouter();
+     const underWebStore = useUnderWebStore();
+     const networkStore = useUnderWebNetworkStore();
+     const friendStore = useFriendStore();
+     const locationStore = useLocationStore();
++    const oscLabStore = useOscLabStore();
+ 
+     const {
+         autoInviteEnabled,
+@@ -594,6 +727,45 @@
+         partnerUserIds
+     } = storeToRefs(networkStore);
+ 
++    const {
++        enabled: oscEnabled,
++        customStatus: oscCustomStatus,
++        showWorld: oscShowWorld,
++        showEvent: oscShowEvent,
++        showHeartRate: oscShowHeartRate,
++        showNowPlaying: oscShowNowPlaying,
++        nowPlayingTitle: oscNowPlayingTitle,
++        nowPlayingArtist: oscNowPlayingArtist,
++        pulsoidToken: oscPulsoidToken,
++        heartRate: oscHeartRate,
++        heartRateState: oscHeartRateState,
++        pulseAvatarParameter: oscPulseAvatarParameter,
++        bpmAvatarParameter: oscBpmAvatarParameter,
++        preset: oscPreset,
++        chatboxPreview: oscChatboxPreview,
++        previewLength: oscPreviewLength
++    } = storeToRefs(oscLabStore);
++
++    const {
++        initOscLab,
++        setEnabled: setOscEnabled,
++        setCustomStatus: setOscCustomStatus,
++        setShowWorld: setOscShowWorld,
++        setShowEvent: setOscShowEvent,
++        setShowHeartRate: setOscShowHeartRate,
++        setShowNowPlaying: setOscShowNowPlaying,
++        setNowPlayingTitle: setOscNowPlayingTitle,
++        setNowPlayingArtist: setOscNowPlayingArtist,
++        setPulsoidToken: setOscPulsoidToken,
++        setPulseAvatarParameter: setOscPulseAvatarParameter,
++        setBpmAvatarParameter: setOscBpmAvatarParameter,
++        applyPreset: applyOscPreset,
++        sendChatbox: sendOscChatbox,
++        sendAvatarParameter: sendOscAvatarParameter
++    } = oscLabStore;
++
++    void initOscLab();
++
+     const {
+         setAutoInviteEnabled,
+         setGroupRecruitEnabled,
+@@ -610,10 +782,28 @@
+ 
+     const { rolesForUser, setNotificationRule, refreshNetwork } = networkStore;
+ 
++    const activePanel = ref('command');
++    const panelTabs = [
++        { id: 'command', label: 'Command', short: 'Live ops', icon: 'ri-dashboard-3-line' },
++        { id: 'osc', label: 'OSC Lab', short: 'Avatar + chatbox', icon: 'ri-pulse-line' },
++        { id: 'people', label: 'People', short: 'Roles + activity', icon: 'ri-team-line' },
++        { id: 'system', label: 'System', short: 'Safety + updates', icon: 'ri-settings-3-line' }
++    ];
++    const panelMeta = {
++        command: { eyebrow: 'LIVE OPERATIONS', title: 'Command Center', description: 'Lobby recruiting, instance invites, Radar, events, and connected identity.' },
++        osc: { eyebrow: 'REAL-TIME CONTROL', title: 'OSC Lab', description: 'Chatbox composition, heart rate, presets, and direct avatar parameter testing.' },
++        people: { eyebrow: 'NETWORK PEOPLE', title: 'People & Activity', description: 'Inspect roles, manage exclusions, and review what UWX did this session.' },
++        system: { eyebrow: 'LOCAL CONTROL', title: 'System & Safety', description: 'Notifications, releases, local data boundaries, and the global disarm control.' }
++    };
++    const activePanelMeta = computed(() => panelMeta[activePanel.value] || panelMeta.command);
++
+     const groupInput = ref('');
+     const friendSearch = ref('');
+     const radarFilter = ref('all');
+     const profileUserId = ref('');
++    const oscTestParameter = ref('');
++    const oscTestType = ref('bool');
++    const oscTestValue = ref('true');
+     const radarFilters = [
+         { id: 'all', label: 'All' },
+         { id: 'underweb', label: 'UnderWeb' },
+@@ -675,6 +865,8 @@
+         return latest !== UWX_VERSION;
+     });
+ 
++    const oscPreviewPercent = computed(() => Math.min(100, Math.round((oscPreviewLength.value / 144) * 100)));
++
+     function includeInRadar(friend) {
+         if (radarFilter.value === 'underweb') return networkStore.memberByVrchatId.has(friend.id);
+         if (radarFilter.value === 'staff') return staffUserIds.value.has(friend.id);
+@@ -763,6 +955,15 @@
+     }
+ 
+     function recruitNow() {
++        const count = eligibleLobbyRecruits.value.length;
++        if (!count) {
++            toast.info('No eligible lobby occupants to recruit right now.');
++            return;
++        }
++        const confirmed = window.confirm(
++            `Invite ${count} eligible lobby occupant${count === 1 ? '' : 's'} into the current VRChat group?\n\nExisting group members, exclusions, and unverified membership states will be skipped.`
++        );
++        if (!confirmed) return;
+         void scanAndRecruitGroup({ source: 'manual', force: true });
+     }
+ 
+@@ -805,6 +1006,24 @@
+         }
+     }
+ 
++    async function disarmUwx() {
++        await Promise.all([setAutoInviteEnabled(false), setGroupRecruitEnabled(false), setOscEnabled(false)]);
++        toast.success('UWX automation and OSC are disarmed.');
++    }
++
++    async function sendOscTestParameter() {
++        try {
++            let value = oscTestValue.value;
++            if (oscTestType.value === 'bool') value = ['true', '1', 'on', 'yes'].includes(String(value).toLowerCase());
++            if (oscTestType.value === 'int') value = Math.round(Number(value) || 0);
++            if (oscTestType.value === 'float') value = Number(value) || 0;
++            await sendOscAvatarParameter(oscTestParameter.value, oscTestType.value, value);
++            toast.success(`Sent ${oscTestParameter.value}.`);
++        } catch (error) {
++            toast.error(error?.message || 'OSC parameter send failed.');
++        }
++    }
++
+     function formatEventTime(event) {
+         if (!event?.startAt) return 'Schedule pending';
+         const start = new Date(event.startAt);
+@@ -917,7 +1136,12 @@
+     .uwx-event-live { color: #76ff00; font-size: 10px; font-weight: 900; letter-spacing: 0.16em; }
+ 
+     .uwx-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+-    .uwx-card { border-color: rgb(118 255 0 / 10%); background: color-mix(in oklab, var(--card) 95%, #76ff00 5%); }
++    .uwx-card {
++        border-color: rgb(255 255 255 / 7%);
++        background: color-mix(in oklab, var(--card) 98%, #76ff00 2%);
++        box-shadow: 0 18px 48px rgb(0 0 0 / 10%);
++    }
++    .uwx-command-card { border-color: rgb(118 255 0 / 17%); }
+     .uwx-card-wide { grid-column: 1 / -1; }
+ 
+     .uwx-stat-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+@@ -932,8 +1156,19 @@
+     }
+ 
+     .uwx-control-primary {
+-        border-color: rgb(118 255 0 / 34%);
+-        box-shadow: inset 0 0 28px rgb(118 255 0 / 3%);
++        position: relative;
++        overflow: hidden;
++        border-color: rgb(118 255 0 / 26%);
++        background: linear-gradient(110deg, rgb(118 255 0 / 5%), rgb(0 0 0 / 16%) 34%);
++        box-shadow: inset 0 0 28px rgb(118 255 0 / 2%);
++    }
++    .uwx-control-primary::before {
++        content: '';
++        position: absolute;
++        inset: 0 auto 0 0;
++        width: 3px;
++        background: #76ff00;
++        box-shadow: 0 0 18px rgb(118 255 0 / 45%);
+     }
+ 
+     .uwx-control-title {
+@@ -1097,4 +1332,115 @@
+         .uwx-event-banner { align-items: flex-start; flex-direction: column; }
+         .uwx-upcoming-list { grid-template-columns: 1fr; }
+     }
++
++    .uwx-osc-card { border-color: rgb(118 255 0 / 24%); }
++    .uwx-osc-preset-row { display: flex; flex-wrap: wrap; gap: 8px; }
++    .uwx-osc-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
++    .uwx-osc-toggle-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
++    .uwx-toggle-row.compact { padding: 9px 10px; border: 1px solid var(--border); border-radius: var(--radius); }
++    .uwx-chatbox-preview { min-height: 92px; padding: 12px; border: 1px solid rgb(118 255 0 / 22%); border-radius: var(--radius); background: rgb(0 0 0 / 18%); }
++    .uwx-chatbox-preview p { margin-top: 8px; color: var(--foreground); font-size: 13px; line-height: 1.55; }
++    .uwx-bpm-display { display: flex; align-items: baseline; gap: 8px; }
++    .uwx-bpm-display strong { font-size: 34px; line-height: 1; color: #76ff00; }
++    .uwx-bpm-display span { color: var(--muted-foreground); font-size: 11px; font-weight: 900; letter-spacing: .12em; }
++    .uwx-help { color: var(--muted-foreground); font-size: 11px; line-height: 1.45; }
++    .uwx-field-label { display: block; margin-bottom: 6px; color: var(--muted-foreground); font-size: 10px; font-weight: 800; letter-spacing: .08em; }
++    .uwx-select { min-height: 36px; padding: 0 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--background); color: var(--foreground); }
++
++
++    .uwx-panel-tabs {
++        display: grid;
++        grid-template-columns: repeat(4, minmax(0, 1fr));
++        gap: 8px;
++        margin: 0 0 10px;
++        padding: 6px;
++        border: 1px solid rgb(255 255 255 / 7%);
++        border-radius: 14px;
++        background: rgb(0 0 0 / 18%);
++        box-shadow: 0 12px 36px rgb(0 0 0 / 12%);
++    }
++
++    .uwx-panel-tabs button {
++        display: grid;
++        grid-template-columns: 28px 1fr;
++        grid-template-rows: auto auto;
++        align-items: center;
++        column-gap: 8px;
++        min-width: 0;
++        padding: 10px 12px;
++        border: 1px solid transparent;
++        border-radius: 10px;
++        background: transparent;
++        color: var(--muted-foreground);
++        text-align: left;
++        cursor: pointer;
++        transition: 140ms ease;
++    }
++    .uwx-panel-tabs button i { grid-row: 1 / span 2; font-size: 18px; }
++    .uwx-panel-tabs button span { color: var(--foreground); font-size: 12px; font-weight: 900; }
++    .uwx-panel-tabs button small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
++    .uwx-panel-tabs button:hover { background: rgb(255 255 255 / 3%); }
++    .uwx-panel-tabs button.active {
++        border-color: rgb(118 255 0 / 28%);
++        background: linear-gradient(180deg, rgb(118 255 0 / 9%), rgb(118 255 0 / 3%));
++        color: #76ff00;
++        box-shadow: inset 0 -2px 0 rgb(118 255 0 / 55%);
++    }
++
++    .uwx-panel-context {
++        display: flex;
++        align-items: center;
++        justify-content: space-between;
++        gap: 20px;
++        margin: 0 0 14px;
++        padding: 9px 4px 13px;
++        border-bottom: 1px solid rgb(255 255 255 / 6%);
++    }
++    .uwx-panel-context strong { display: block; margin-top: 3px; font-size: 18px; letter-spacing: -0.02em; }
++    .uwx-panel-context p { max-width: 620px; margin: 0; color: var(--muted-foreground); font-size: 11px; text-align: right; }
++
++    .uwx-safety-strip {
++        display: grid;
++        grid-template-columns: repeat(4, minmax(0, 1fr));
++        gap: 6px;
++    }
++    .uwx-safety-strip span {
++        display: flex;
++        align-items: center;
++        gap: 6px;
++        min-width: 0;
++        padding: 7px 9px;
++        border: 1px solid rgb(118 255 0 / 13%);
++        border-radius: 8px;
++        background: rgb(118 255 0 / 4%);
++        color: var(--muted-foreground);
++        font-size: 10px;
++        white-space: nowrap;
++    }
++    .uwx-safety-strip i { color: #76ff00; }
++
++    .uwx-osc-toolbar {
++        display: flex;
++        align-items: center;
++        justify-content: space-between;
++        gap: 16px;
++        padding: 12px 14px;
++        border: 1px solid rgb(255 255 255 / 7%);
++        border-radius: 10px;
++        background: rgb(0 0 0 / 16%);
++    }
++    .uwx-osc-toolbar > div:first-child > span { display: block; margin-top: 3px; color: var(--muted-foreground); font-size: 10px; }
++    .uwx-char-count { color: var(--muted-foreground); font-size: 11px; font-variant-numeric: tabular-nums; }
++    .uwx-char-meter { height: 3px; margin-top: 8px; overflow: hidden; border-radius: 999px; background: rgb(255 255 255 / 7%); }
++    .uwx-char-meter span { display: block; height: 100%; border-radius: inherit; background: #76ff00; transition: width 140ms ease; }
++    .uwx-chatbox-preview small { display: block; margin-top: 8px; color: var(--muted-foreground); font-size: 9px; }
++
++    @media (max-width: 900px) {
++        .uwx-panel-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
++        .uwx-panel-context { align-items: flex-start; flex-direction: column; gap: 6px; }
++        .uwx-panel-context p { text-align: left; }
++        .uwx-safety-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
++        .uwx-osc-toolbar { align-items: flex-start; flex-direction: column; }
++    }
++
+ </style>
