@@ -2,6 +2,12 @@ name: Build UnderWeb X
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "UnderWebX*-source.zip"
+      - ".github/workflows/build.yml"
 
 permissions:
   contents: read
