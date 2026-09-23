@@ -1,0 +1,311 @@
++        enabled.value = Boolean(value);
++        await persistBool(CONFIG.enabled, enabled.value);
++    }
++
++    async function setCustomStatus(value) {
++        customStatus.value = String(value || '').slice(0, 144);
++        await configRepository.setString(CONFIG.customStatus, customStatus.value);
++    }
++
++    async function setShowWorld(value) {
++        showWorld.value = Boolean(value);
++        await persistBool(CONFIG.showWorld, showWorld.value);
++    }
++
++    async function setShowEvent(value) {
++        showEvent.value = Boolean(value);
++        await persistBool(CONFIG.showEvent, showEvent.value);
++    }
++
++    async function setShowHeartRate(value) {
++        showHeartRate.value = Boolean(value);
++        await persistBool(CONFIG.showHeartRate, showHeartRate.value);
++        if (showHeartRate.value && pulsoidToken.value) connectPulsoid();
++        if (!showHeartRate.value) disconnectPulsoid();
++    }
++
++    async function setShowNowPlaying(value) {
++        showNowPlaying.value = Boolean(value);
++        await persistBool(CONFIG.showNowPlaying, showNowPlaying.value);
++    }
++
++    async function setNowPlayingTitle(value) {
++        nowPlayingTitle.value = String(value || '').slice(0, 80);
++        await configRepository.setString(CONFIG.nowPlayingTitle, nowPlayingTitle.value);
++    }
++
++    async function setNowPlayingArtist(value) {
++        nowPlayingArtist.value = String(value || '').slice(0, 80);
++        await configRepository.setString(CONFIG.nowPlayingArtist, nowPlayingArtist.value);
++    }
++
++    async function setPulsoidToken(value) {
++        pulsoidToken.value = String(value || '').trim();
++        await configRepository.setString(CONFIG.pulsoidToken, pulsoidToken.value);
++        if (showHeartRate.value && pulsoidToken.value) connectPulsoid();
++        else disconnectPulsoid();
++    }
++
++    async function setPulseAvatarParameter(value) {
++        pulseAvatarParameter.value = String(value || '').trim() || 'isHRBeat';
++        await configRepository.setString(CONFIG.pulseAvatarParameter, pulseAvatarParameter.value);
++    }
++
++    async function setBpmAvatarParameter(value) {
++        bpmAvatarParameter.value = String(value || '').trim() || 'HR';
++        await configRepository.setString(CONFIG.bpmAvatarParameter, bpmAvatarParameter.value);
++    }
++
++    async function applyPreset(name) {
++        const next = PRESETS[name] || PRESETS.normal;
++        preset.value = PRESETS[name] ? name : 'normal';
++        customStatus.value = next.customStatus;
++        showWorld.value = next.showWorld;
++        showEvent.value = next.showEvent;
++        showHeartRate.value = next.showHeartRate;
++        showNowPlaying.value = next.showNowPlaying;
++        await Promise.all([
++            configRepository.setString(CONFIG.preset, preset.value),
++            configRepository.setString(CONFIG.customStatus, customStatus.value),
++            persistBool(CONFIG.showWorld, showWorld.value),
++            persistBool(CONFIG.showEvent, showEvent.value),
++            persistBool(CONFIG.showHeartRate, showHeartRate.value),
++            persistBool(CONFIG.showNowPlaying, showNowPlaying.value)
++        ]);
++        if (showHeartRate.value && pulsoidToken.value) connectPulsoid();
++        else disconnectPulsoid();
++    }
++
++    async function sendChatbox(text = chatboxPreview.value) {
++        if (!enabled.value) {
++            toast.error('Enable OSC Lab before sending to VRChat.');
++            return false;
++        }
++        const message = clampChatbox(text);
++        if (!message) return false;
++        try {
++            await AppApi.SendOscChatbox(message, true, false);
++            lastSentAt.value = Date.now();
++            lastError.value = '';
++            return true;
++        } catch (error) {
++            lastError.value = error?.message || 'OSC send failed.';
++            toast.error(lastError.value);
++            return false;
++        }
++    }
++
++    async function sendAvatarParameter(name, type, value) {
++        if (!enabled.value) throw new Error('OSC Lab is disabled.');
++        const parameter = String(name || '').trim();
++        if (!parameter) throw new Error('Avatar parameter name is required.');
++        if (type === 'bool') return AppApi.SendOscAvatarBool(parameter, Boolean(value));
++        if (type === 'int') return AppApi.SendOscAvatarInt(parameter, Math.round(Number(value) || 0));
++        return AppApi.SendOscAvatarFloat(parameter, Number(value) || 0);
++    }
++
++    async function pushHeartRateToAvatar() {
++        if (!enabled.value || heartRate.value <= 0) return;
++        try {
++            await Promise.all([
++                sendAvatarParameter(bpmAvatarParameter.value, 'int', heartRate.value),
++                sendAvatarParameter(pulseAvatarParameter.value, 'bool', true)
++            ]);
++            window.setTimeout(() => {
++                if (enabled.value) void sendAvatarParameter(pulseAvatarParameter.value, 'bool', false);
++            }, 150);
++        } catch {
++            // Do not turn a transient OSC issue into a noisy toast every heartbeat.
++        }
++    }
++
++    function disconnectPulsoid() {
++        if (reconnectTimer) window.clearTimeout(reconnectTimer);
++        reconnectTimer = null;
++        if (pulsoidSocket) {
++            pulsoidSocket.onclose = null;
++            pulsoidSocket.close();
++        }
++        pulsoidSocket = null;
++        heartRateState.value = 'offline';
++    }
++
++    function scheduleReconnect() {
++        if (!showHeartRate.value || !pulsoidToken.value || reconnectTimer) return;
++        reconnectTimer = window.setTimeout(() => {
++            reconnectTimer = null;
++            connectPulsoid();
++        }, 5000);
++    }
++
++    function connectPulsoid() {
++        disconnectPulsoid();
++        if (!showHeartRate.value || !pulsoidToken.value) return;
++        try {
++            heartRateState.value = 'connecting';
++            const url = `wss://dev.pulsoid.net/api/v1/data/real_time?access_token=${encodeURIComponent(pulsoidToken.value)}`;
++            pulsoidSocket = new WebSocket(url);
++            pulsoidSocket.onopen = () => {
++                heartRateState.value = 'online';
++                lastError.value = '';
++            };
++            pulsoidSocket.onmessage = (event) => {
++                try {
++                    const payload = JSON.parse(event.data);
++                    const bpm = Number(payload?.data?.heart_rate || 0);
++                    if (bpm > 0) {
++                        heartRate.value = Math.round(bpm);
++                        heartRateState.value = 'online';
++                        void pushHeartRateToAvatar();
++                    }
++                } catch {
++                    const bpm = Number(event.data);
++                    if (bpm > 0) heartRate.value = Math.round(bpm);
++                }
++            };
++            pulsoidSocket.onerror = () => {
++                heartRateState.value = 'error';
++            };
++            pulsoidSocket.onclose = () => {
++                pulsoidSocket = null;
++                heartRateState.value = 'offline';
++                scheduleReconnect();
++            };
++        } catch (error) {
++            lastError.value = error?.message || 'Pulsoid connection failed.';
++            heartRateState.value = 'error';
++            scheduleReconnect();
++        }
++    }
++
++    return {
++        initialized,
++        enabled,
++        customStatus,
++        showWorld,
++        showEvent,
++        showHeartRate,
++        showNowPlaying,
++        nowPlayingTitle,
++        nowPlayingArtist,
++        pulsoidToken,
++        heartRate,
++        heartRateState,
++        pulseAvatarParameter,
++        bpmAvatarParameter,
++        preset,
++        lastSentAt,
++        lastError,
++        chatboxPreview,
++        previewLength,
++        initOscLab,
++        setEnabled,
++        setCustomStatus,
++        setShowWorld,
++        setShowEvent,
++        setShowHeartRate,
++        setShowNowPlaying,
++        setNowPlayingTitle,
++        setNowPlayingArtist,
++        setPulsoidToken,
++        setPulseAvatarParameter,
++        setBpmAvatarParameter,
++        applyPreset,
++        sendChatbox,
++        sendAvatarParameter,
++        connectPulsoid,
++        disconnectPulsoid
++    };
++});
+diff --git a/src/types/globals.d.ts b/src/types/globals.d.ts
+index e1382cd..6ece095 100644
+--- a/src/types/globals.d.ts
++++ b/src/types/globals.d.ts
+@@ -175,6 +175,10 @@ declare global {
+         GetLaunchCommand(): Promise<string>;
+         IPCAnnounceStart(): Promise<void>;
+         SendIpc(type: string, data: string): Promise<void>;
++        SendOscChatbox(text: string, sendImmediately: boolean, playNotification: boolean): Promise<void>;
++        SendOscAvatarBool(parameter: string, value: boolean): Promise<void>;
++        SendOscAvatarInt(parameter: string, value: number): Promise<void>;
++        SendOscAvatarFloat(parameter: string, value: number): Promise<void>;
+         CustomCss(): Promise<string>;
+         CustomScript(): Promise<string>;
+         CurrentCulture(): Promise<string>;
+diff --git a/src/views/UnderWeb/UnderWeb.vue b/src/views/UnderWeb/UnderWeb.vue
+index 7aef229..ec27edd 100644
+--- a/src/views/UnderWeb/UnderWeb.vue
++++ b/src/views/UnderWeb/UnderWeb.vue
+@@ -7,7 +7,7 @@
+                     <h1 class="uwx-title">UnderWeb X</h1>
+                     <Badge variant="outline">v{{ UWX_VERSION }}</Badge>
+                 </div>
+-                <p class="uwx-subtitle">VRChat network control, event operations, connected identity, and live network radar.</p>
++                <p class="uwx-subtitle">Live VRChat operations, group recruiting, OSC, and UnderWeb network tools.</p>
+             </div>
+             <div class="flex flex-col items-end gap-2">
+                 <div class="uwx-instance-badge" :class="statusClass">
+@@ -60,14 +60,37 @@
+             </div>
+         </div>
+ 
++        <div class="uwx-panel-tabs" role="tablist" aria-label="UnderWeb X sections">
++            <button
++                v-for="panel in panelTabs"
++                :key="panel.id"
++                type="button"
++                role="tab"
++                :aria-selected="activePanel === panel.id"
++                :class="{ active: activePanel === panel.id }"
++                @click="activePanel = panel.id">
++                <i :class="panel.icon" />
++                <span>{{ panel.label }}</span>
++                <small>{{ panel.short }}</small>
++            </button>
++        </div>
++
++        <div class="uwx-panel-context">
++            <div>
++                <span class="uwx-section-label">{{ activePanelMeta.eyebrow }}</span>
++                <strong>{{ activePanelMeta.title }}</strong>
++            </div>
++            <p>{{ activePanelMeta.description }}</p>
++        </div>
++
+         <div class="uwx-grid">
+-            <Card class="uwx-card uwx-card-wide">
++            <Card v-show="activePanel === 'command'" class="uwx-card uwx-card-wide uwx-command-card">
+                 <CardHeader>
+                     <div class="flex items-start justify-between gap-4">
+                         <div>
+                             <CardTitle>Group Instance Control</CardTitle>
+                             <CardDescription>
+-                                Recruit people already inside your approved group lobby, or separately invite friends into the instance.
++                                Two separate tools: recruit people already in this lobby into the group, or invite selected people into the lobby.
+                             </CardDescription>
+                         </div>
+                         <Badge variant="outline">{{ currentGroupId || 'NO GROUP INSTANCE' }}</Badge>
+@@ -78,9 +101,12 @@
+                         <div class="flex items-start justify-between gap-4">
+                             <div>
+                                 <div class="uwx-section-label">GROUP RECRUITER</div>
+-                                <h3 class="uwx-control-title">Invite lobby occupants into the VRChat group</h3>
++                                <div class="flex flex-wrap items-center gap-2">
++                                    <h3 class="uwx-control-title">Invite lobby occupants into the VRChat group</h3>
++                                    <Badge variant="outline">SAFE RECRUITMENT</Badge>
++                                </div>
+                                 <p class="text-sm text-muted-foreground mt-1">
+-                                    Watches the live player list, waits for the dwell timer, and sends group invitations to eligible non-excluded users.
++                                    Watches only the current lobby, waits for the dwell timer, then invites verified non-members who are not excluded.
+                                 </p>
+                             </div>
+                             <Switch :model-value="groupRecruitEnabled" @update:modelValue="setGroupRecruitEnabled" />
+@@ -118,9 +144,9 @@
+                                 @click="removeAllowedGroup(currentGroupId)">
+                                 Remove current group
+                             </Button>
+-                            <Button :disabled="isRecruiting || !canRecruitHere" variant="default" @click="recruitNow">
++                            <Button :disabled="isRecruiting || !canRecruitHere || !eligibleLobbyRecruits.length" variant="default" @click="recruitNow">
+                                 <i :class="isRecruiting ? 'ri-loader-4-line animate-spin' : 'ri-user-add-line'" />
+-                                Invite lobby to group now
++                                Invite {{ eligibleLobbyRecruits.length }} eligible to group
