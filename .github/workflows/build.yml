@@ -1,0 +1,89 @@
+name: Build UnderWeb X
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.15.0"
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Ensure npm requirement
+        shell: pwsh
+        run: npm install -g npm@11.5.0
+
+      - name: Install NSIS and 7-Zip
+        shell: pwsh
+        run: |
+          choco install nsis 7zip -y --no-progress
+          "C:\Program Files\7-Zip" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Locate or extract UWX source
+        shell: pwsh
+        run: |
+          if (Test-Path ".\package.json") {
+            "UWX_SOURCE=$((Resolve-Path '.').Path)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            exit 0
+          }
+
+          $zip = Get-ChildItem -Path . -File | Where-Object { $_.Name -like "UnderWebX*-source.zip" } | Select-Object -First 1
+          if (-not $zip) {
+            throw "No UnderWebX*-source.zip found in the repository root."
+          }
+
+          New-Item -ItemType Directory -Path uwx-src -Force | Out-Null
+          Expand-Archive -Path $zip.FullName -DestinationPath uwx-src -Force
+
+          $root = Get-ChildItem -Path uwx-src -Directory | Where-Object {
+            Test-Path (Join-Path $_.FullName "package.json")
+          } | Select-Object -First 1
+
+          if (-not $root) {
+            throw "Could not find an extracted UWX source folder containing package.json."
+          }
+
+          "UWX_SOURCE=$($root.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Verify build tools
+        shell: pwsh
+        run: |
+          node --version
+          npm --version
+          dotnet --version
+          7z | Select-Object -First 2
+          $nsis = "C:\Program Files (x86)\NSIS\makensis.exe"
+          if (-not (Test-Path $nsis)) {
+            throw "NSIS was not found at $nsis"
+          }
+
+      - name: Build UnderWeb X
+        shell: pwsh
+        working-directory: ${{ env.UWX_SOURCE }}
+        run: pwsh ./build-scripts/build-all.ps1
+
+      - name: Upload UnderWeb X builds
+        uses: actions/upload-artifact@v4
+        with:
+          name: UnderWebX-Windows
+          path: |
+            ${{ env.UWX_SOURCE }}/UnderWebX_*_Setup.exe
+            ${{ env.UWX_SOURCE }}/UnderWebX_*.zip
+            ${{ env.UWX_SOURCE }}/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
