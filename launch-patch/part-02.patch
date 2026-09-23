@@ -1,0 +1,203 @@
+                             </Button>
+                             <label class="uwx-dwell-input">
+                                 <span>Dwell seconds</span>
+@@ -133,9 +159,14 @@
+                             </label>
+                         </div>
+ 
+-                        <div class="uwx-warning mt-4">
+-                            <strong>Recruiter guardrails:</strong> approved current <code>grp_</code> lobby only · skips you, current group members, and the do-not-invite list ·
+-                            one attempt per user/group for 24h · paced queue · 403 disarms · 429 pauses · queue dies if the lobby changes.
++                        <div class="uwx-safety-strip mt-4">
++                            <span><i class="ri-shield-check-line" /> Existing members skipped</span>
++                            <span><i class="ri-timer-line" /> {{ groupRecruitMinPresenceSeconds }}s dwell</span>
++                            <span><i class="ri-forbid-2-line" /> Exclusions respected</span>
++                            <span><i class="ri-refresh-line" /> 24h dedupe</span>
++                        </div>
++                        <div class="uwx-warning mt-3">
++                            <strong>Guardrails:</strong> approved current <code>grp_</code> lobby only · unknown membership fails closed · paced queue · 403 disarms · 429 pauses · queue dies if the lobby changes.
+                         </div>
+                     </section>
+ 
+@@ -185,7 +216,7 @@
+                 </CardContent>
+             </Card>
+ 
+-            <Card class="uwx-card">
++            <Card v-show="activePanel === 'command'" class="uwx-card">
+                 <CardHeader>
+                     <div class="flex items-start justify-between gap-4">
+                         <div>
+@@ -230,7 +261,7 @@
+                 </CardContent>
+             </Card>
+ 
+-            <Card class="uwx-card">
++            <Card v-show="activePanel === 'command'" class="uwx-card">
+                 <CardHeader>
+                     <div class="flex items-start justify-between gap-4">
+                         <div>
+@@ -274,7 +305,7 @@
+                 </CardContent>
+             </Card>
+ 
+-            <Card class="uwx-card uwx-card-wide">
++            <Card v-show="activePanel === 'command'" class="uwx-card uwx-card-wide">
+                 <CardHeader>
+                     <div class="flex items-start justify-between gap-4">
+                         <div>
+@@ -307,7 +338,7 @@
+                             <div class="uwx-section-label">OPERATION STATUS</div>
+                             <div class="uwx-list-row mt-2"><span>Network feed</span><Badge variant="outline">{{ networkStatus }}</Badge></div>
+                             <div class="uwx-list-row"><span>Approved instance</span><Badge :variant="isCurrentGroupAllowed ? 'default' : 'outline'">{{ isCurrentGroupAllowed ? 'YES' : 'NO' }}</Badge></div>
+-                            <div class="uwx-list-row"><span>Auto Invite</span><Badge :variant="autoInviteEnabled ? 'default' : 'outline'">{{ autoInviteEnabled ? 'ARMED' : 'OFF' }}</Badge></div>
++                            <div class="uwx-list-row"><span>Instance Inviter</span><Badge :variant="autoInviteEnabled ? 'default' : 'outline'">{{ autoInviteEnabled ? 'ARMED' : 'OFF' }}</Badge></div>
+                         </div>
+                     </div>
+                     <div v-else class="uwx-event-empty">
+@@ -332,7 +363,94 @@
+                 </CardContent>
+             </Card>
+ 
+-            <Card class="uwx-card">
++            <Card v-show="activePanel === 'osc'" class="uwx-card uwx-card-wide uwx-osc-card">
++                <CardHeader>
++                    <div class="flex items-start justify-between gap-4">
++                        <div>
++                            <CardTitle>OSC Lab</CardTitle>
++                            <CardDescription>A focused workspace for VRChat chatbox output, Pulsoid, presets, and avatar parameter testing.</CardDescription>
++                        </div>
++                        <div class="flex items-center gap-2">
++                            <Badge :variant="oscEnabled ? 'default' : 'outline'">{{ oscEnabled ? 'OSC ARMED' : 'OSC OFF' }}</Badge>
++                            <Switch :model-value="oscEnabled" @update:modelValue="setOscEnabled" />
++                        </div>
++                    </div>
++                </CardHeader>
++                <CardContent class="space-y-5">
++                    <div class="uwx-osc-toolbar">
++                        <div>
++                            <div class="uwx-section-label">ACTIVE PRESET</div>
++                            <span>Switch the whole chatbox layout without rebuilding it.</span>
++                        </div>
++                        <div class="uwx-osc-preset-row">
++                        <Button v-for="name in ['normal', 'music', 'event', 'afk']" :key="name" size="sm"
++                            :variant="oscPreset === name ? 'default' : 'outline'" @click="applyOscPreset(name)">
++                            {{ name.toUpperCase() }}
++                        </Button>
++                        </div>
++                    </div>
++
++                    <div class="uwx-osc-grid">
++                        <section class="uwx-control-block">
++                            <div class="uwx-section-label">CHATBOX COMPOSER</div>
++                            <Input :model-value="oscCustomStatus" class="mt-2" placeholder="Custom status..."
++                                @change="setOscCustomStatus($event.target.value)" />
++                            <div class="uwx-osc-toggle-grid mt-3">
++                                <label class="uwx-toggle-row compact"><div><strong>World</strong><span>Current world name</span></div><Switch :model-value="oscShowWorld" @update:modelValue="setOscShowWorld" /></label>
++                                <label class="uwx-toggle-row compact"><div><strong>Event</strong><span>Live UnderWeb event</span></div><Switch :model-value="oscShowEvent" @update:modelValue="setOscShowEvent" /></label>
++                                <label class="uwx-toggle-row compact"><div><strong>Heart rate</strong><span>Live Pulsoid BPM</span></div><Switch :model-value="oscShowHeartRate" @update:modelValue="setOscShowHeartRate" /></label>
++                                <label class="uwx-toggle-row compact"><div><strong>Now playing</strong><span>Track block</span></div><Switch :model-value="oscShowNowPlaying" @update:modelValue="setOscShowNowPlaying" /></label>
++                            </div>
++                            <div class="uwx-chatbox-preview mt-4">
++                                <div class="flex items-center justify-between gap-3">
++                                    <div class="uwx-section-label">LIVE PREVIEW</div>
++                                    <strong class="uwx-char-count">{{ oscPreviewLength }}/144</strong>
++                                </div>
++                                <div class="uwx-char-meter"><span :style="{ width: `${oscPreviewPercent}%` }" /></div>
++                                <p>{{ oscChatboxPreview || 'Nothing enabled yet.' }}</p>
++                                <small>When space runs out, lower-priority blocks are dropped before text is trimmed.</small>
++                            </div>
++                            <div class="flex gap-2 mt-3">
++                                <Button size="sm" :disabled="!oscEnabled || !oscChatboxPreview" @click="sendOscChatbox()">Send now</Button>
++                            </div>
++                        </section>
++
++                        <section class="uwx-control-block">
++                            <div class="uwx-section-label">PULSOID HEART RATE</div>
++                            <div class="uwx-bpm-display mt-2">
++                                <strong>{{ oscHeartRate || '--' }}</strong><span>BPM</span><Badge variant="outline">{{ oscHeartRateState }}</Badge>
++                            </div>
++                            <Input :model-value="oscPulsoidToken" type="password" class="mt-3" placeholder="Pulsoid access token"
++                                @change="setOscPulsoidToken($event.target.value)" />
++                            <p class="uwx-help mt-2">Token stays in local UWX config and is never included in the UnderWeb network manifest.</p>
++                            <div class="grid grid-cols-2 gap-2 mt-3">
++                                <label><span class="uwx-field-label">BPM parameter</span><Input :model-value="oscBpmAvatarParameter" @change="setOscBpmAvatarParameter($event.target.value)" /></label>
++                                <label><span class="uwx-field-label">Beat parameter</span><Input :model-value="oscPulseAvatarParameter" @change="setOscPulseAvatarParameter($event.target.value)" /></label>
++                            </div>
++                        </section>
++
++                        <section class="uwx-control-block">
++                            <div class="uwx-section-label">NOW PLAYING</div>
++                            <Input :model-value="oscNowPlayingTitle" class="mt-2" placeholder="Track title" @change="setOscNowPlayingTitle($event.target.value)" />
++                            <Input :model-value="oscNowPlayingArtist" class="mt-2" placeholder="Artist" @change="setOscNowPlayingArtist($event.target.value)" />
++                            <p class="uwx-help mt-2">Manual track source for launch. Windows media-session detection can plug into this module later without changing your presets.</p>
++                        </section>
++
++                        <section class="uwx-control-block">
++                            <div class="uwx-section-label">AVATAR PARAMETER TEST</div>
++                            <Input v-model="oscTestParameter" class="mt-2" placeholder="Parameter name" />
++                            <div class="grid grid-cols-[110px_1fr] gap-2 mt-2">
++                                <select v-model="oscTestType" class="uwx-select"><option value="bool">Bool</option><option value="int">Int</option><option value="float">Float</option></select>
++                                <Input v-model="oscTestValue" placeholder="Value" />
++                            </div>
++                            <Button size="sm" variant="outline" class="mt-3" :disabled="!oscEnabled || !oscTestParameter" @click="sendOscTestParameter">Send parameter</Button>
++                            <p class="uwx-help mt-2">Sends directly to <code>/avatar/parameters/&lt;name&gt;</code> on VRChat's local OSC port.</p>
++                        </section>
++                    </div>
++                </CardContent>
++            </Card>
++
++            <Card v-show="activePanel === 'system'" class="uwx-card">
+                 <CardHeader>
+                     <CardTitle>Notification Rules</CardTitle>
+                     <CardDescription>Choose which UnderWeb signals can interrupt you.</CardDescription>
+@@ -365,7 +483,7 @@
+                 </CardContent>
+             </Card>
+ 
+-            <Card class="uwx-card">
++            <Card v-show="activePanel === 'system'" class="uwx-card">
+                 <CardHeader>
+                     <CardTitle>Release Channel</CardTitle>
+                     <CardDescription>UWX update status from the UnderWeb network manifest.</CardDescription>
+@@ -394,7 +512,21 @@
+                 </CardContent>
+             </Card>
+ 
+-            <Card class="uwx-card">
++            <Card v-show="activePanel === 'system'" class="uwx-card">
++                <CardHeader>
++                    <CardTitle>Privacy & Safety</CardTitle>
++                    <CardDescription>Know what UWX keeps local and kill active automation in one click.</CardDescription>
++                </CardHeader>
++                <CardContent class="space-y-3">
++                    <div class="uwx-list-row"><span>Activity log</span><Badge variant="outline">LOCAL ONLY</Badge></div>
++                    <div class="uwx-list-row"><span>Pulsoid token</span><Badge variant="outline">LOCAL CONFIG</Badge></div>
++                    <div class="uwx-list-row"><span>UnderWeb manifest</span><Badge variant="outline">READ ONLY</Badge></div>
++                    <div class="uwx-list-row"><span>VRChat OSC</span><Badge :variant="oscEnabled ? 'default' : 'outline'">{{ oscEnabled ? 'ACTIVE' : 'OFF' }}</Badge></div>
++                    <Button variant="destructive" class="w-full mt-2" @click="disarmUwx">Disarm recruiter, inviter & OSC</Button>
++                </CardContent>
++            </Card>
++
++            <Card v-show="activePanel === 'command'" class="uwx-card">
+                 <CardHeader>
+                     <CardTitle>UnderWeb Quick Access</CardTitle>
+                     <CardDescription>Jump between UWX and the wider network.</CardDescription>
+@@ -407,10 +539,10 @@
+                 </CardContent>
+             </Card>
+ 
+-            <Card class="uwx-card">
++            <Card v-show="activePanel === 'command'" class="uwx-card">
+                 <CardHeader>
+                     <CardTitle>Allowed Groups</CardTitle>
+-                    <CardDescription>Only these group IDs can arm Auto Invite.</CardDescription>
++                    <CardDescription>Only these VRChat groups can arm UWX lobby automation.</CardDescription>
+                 </CardHeader>
+                 <CardContent>
+                     <div class="flex gap-2 mb-3">
+@@ -427,7 +559,7 @@
+                 </CardContent>
+             </Card>
+ 
+-            <Card class="uwx-card uwx-card-wide">
