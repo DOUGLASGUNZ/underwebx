@@ -7,6 +7,7 @@ on:
       - main
     paths:
       - "UnderWebX*-source.zip"
+      - "launch-patch/**"
       - ".github/workflows/build.yml"
 
 permissions:
@@ -65,6 +66,32 @@ jobs:
           }
 
           "UWX_SOURCE=$($root.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Apply UWX launch patch
+        shell: pwsh
+        run: |
+          $parts = Get-ChildItem -Path "$env:GITHUB_WORKSPACE\launch-patch" -Filter "part-*.patch" | Sort-Object Name
+          if (-not $parts) {
+            throw "Launch patch parts were not found."
+          }
+
+          $patchFile = Join-Path $env:GITHUB_WORKSPACE "uwx-launch.patch"
+          if (Test-Path $patchFile) { Remove-Item $patchFile -Force }
+
+          $out = [System.IO.File]::OpenWrite($patchFile)
+          try {
+            foreach ($part in $parts) {
+              $bytes = [System.IO.File]::ReadAllBytes($part.FullName)
+              $out.Write($bytes, 0, $bytes.Length)
+            }
+          } finally {
+            $out.Dispose()
+          }
+
+          Push-Location $env:UWX_SOURCE
+          git apply --whitespace=nowarn $patchFile
+          Write-Host "Patched UWX version: $(Get-Content .\UWX_VERSION -Raw)"
+          Pop-Location
 
       - name: Verify build tools
         shell: pwsh
