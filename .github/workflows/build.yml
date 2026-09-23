@@ -48,7 +48,7 @@ jobs:
             exit 0
           }
 
-          $zip = Get-ChildItem -Path . -File | Where-Object { $_.Name -like "UnderWebX*-source.zip" } | Select-Object -First 1
+          $zip = Get-ChildItem -Path . -File | Where-Object { $_.Name -like "UnderWebX*-source.zip" } | Sort-Object Name -Descending | Select-Object -First 1
           if (-not $zip) {
             throw "No UnderWebX*-source.zip found in the repository root."
           }
