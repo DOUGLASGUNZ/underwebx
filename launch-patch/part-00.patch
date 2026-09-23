@@ -1,0 +1,327 @@
+diff --git a/CHANGELOG_UWX.md b/CHANGELOG_UWX.md
+index ee68675..7fe8125 100644
+--- a/CHANGELOG_UWX.md
++++ b/CHANGELOG_UWX.md
+@@ -1,5 +1,14 @@
+ # UnderWeb X changelog
+ 
++## 0.4.1-rc1 — Launch polish
++
++- Split the UnderWeb workspace into Command, OSC Lab, People, and System panels.
++- Reduced visual noise and made live lobby operations the primary hierarchy.
++- Added clear Group Recruiter safety-state chips and safer manual confirmation.
++- Manual group recruitment now shows the eligible count before sending.
++- Refined OSC Lab presets and added a 144-character live usage meter.
++- Clarified launch-safe copy, privacy boundaries, and approved-group automation wording.
++
+ ## 0.3.0
+ 
+ - Added UnderWeb network-manifest integration with cached/offline fallback.
+@@ -41,3 +50,13 @@
+ - Added **Group Recruiter**: invites eligible occupants already inside the current approved VRChat group instance into that VRChat group.
+ - Renamed the previous friend-to-instance automation to **Instance Inviter** so the two behaviors are distinct.
+ - Group Recruiter is opt-in, dwell-gated, paced, deduped per user/group for 24 hours, stops on instance changes, disarms on permission errors, and backs off on rate limits.
++
++## 0.4.0 - Launch feature freeze candidate
++
++- Added native OSC Lab with VRChat chatbox output and avatar parameter testing.
++- Added Pulsoid real-time heart-rate connection with HR/isHRBeat avatar parameter output.
++- Added chatbox composer presets, priority trimming, event/world/music/heart-rate blocks.
++- Added privacy/safety controls and one-click disarm for recruiter, instance inviter, and OSC.
++- Kept Group Recruiter safeguards, including mandatory current-group membership verification before inviting.
++- Retained Connected Accounts, role-aware Radar, Event Mode, notifications, update checking, and activity log.
++- Renamed old Auto Invite references to Instance Inviter where visible.
+\ No newline at end of file
+diff --git a/Dotnet/AppApi/Common/AppApiCommon.cs b/Dotnet/AppApi/Common/AppApiCommon.cs
+index cc4543f..0a6d590 100644
+--- a/Dotnet/AppApi/Common/AppApiCommon.cs
++++ b/Dotnet/AppApi/Common/AppApiCommon.cs
+@@ -3,6 +3,8 @@ using System.Collections.Generic;
+ using System.Diagnostics;
+ using System.Globalization;
+ using System.IO;
++using System.Net;
++using System.Net.Sockets;
+ using System.Security.Cryptography;
+ using System.Text;
+ using System.Threading.Tasks;
+@@ -99,6 +101,93 @@ namespace VRCX
+             });
+         }
+ 
++
++        private static byte[] OscPaddedString(string value)
++        {
++            var raw = Encoding.UTF8.GetBytes(value ?? string.Empty);
++            var length = raw.Length + 1;
++            var padded = (length + 3) & ~3;
++            var output = new byte[padded];
++            Buffer.BlockCopy(raw, 0, output, 0, raw.Length);
++            return output;
++        }
++
++        private static byte[] OscInt32(int value)
++        {
++            var bytes = BitConverter.GetBytes(value);
++            if (BitConverter.IsLittleEndian) Array.Reverse(bytes);
++            return bytes;
++        }
++
++        private static byte[] OscFloat32(float value)
++        {
++            var bytes = BitConverter.GetBytes(value);
++            if (BitConverter.IsLittleEndian) Array.Reverse(bytes);
++            return bytes;
++        }
++
++        private static void SendOscPacket(string address, string typeTags, params byte[][] payloadParts)
++        {
++            if (string.IsNullOrWhiteSpace(address) || !address.StartsWith('/'))
++                throw new ArgumentException("Invalid OSC address", nameof(address));
++
++            var parts = new List<byte[]>
++            {
++                OscPaddedString(address),
++                OscPaddedString("," + typeTags)
++            };
++            parts.AddRange(payloadParts ?? Array.Empty<byte[]>());
++            var size = 0;
++            foreach (var part in parts) size += part.Length;
++            var packet = new byte[size];
++            var offset = 0;
++            foreach (var part in parts)
++            {
++                Buffer.BlockCopy(part, 0, packet, offset, part.Length);
++                offset += part.Length;
++            }
++
++            using var udp = new UdpClient();
++            udp.Send(packet, packet.Length, new IPEndPoint(IPAddress.Loopback, 9000));
++        }
++
++        public void SendOscChatbox(string text, bool sendImmediately, bool playNotification)
++        {
++            var safe = text ?? string.Empty;
++            if (safe.Length > 512) safe = safe[..512];
++            SendOscPacket(
++                "/chatbox/input",
++                "s" + (sendImmediately ? "T" : "F") + (playNotification ? "T" : "F"),
++                OscPaddedString(safe)
++            );
++        }
++
++        private static string NormalizeOscParameter(string parameter)
++        {
++            var value = (parameter ?? string.Empty).Trim();
++            if (string.IsNullOrWhiteSpace(value) || value.Contains("..") || value.Contains('\\'))
++                throw new ArgumentException("Invalid OSC avatar parameter", nameof(parameter));
++            return value.Trim('/');
++        }
++
++        public void SendOscAvatarBool(string parameter, bool value)
++        {
++            var name = NormalizeOscParameter(parameter);
++            SendOscPacket($"/avatar/parameters/{name}", value ? "T" : "F");
++        }
++
++        public void SendOscAvatarInt(string parameter, int value)
++        {
++            var name = NormalizeOscParameter(parameter);
++            SendOscPacket($"/avatar/parameters/{name}", "i", OscInt32(value));
++        }
++
++        public void SendOscAvatarFloat(string parameter, double value)
++        {
++            var name = NormalizeOscParameter(parameter);
++            SendOscPacket($"/avatar/parameters/{name}", "f", OscFloat32((float)value));
++        }
++
+         public string CustomCss()
+         {
+             var filePath = Path.Join(Program.AppDataDirectory, "custom.css");
+diff --git a/UWX_VERSION b/UWX_VERSION
+index 0d91a54..20e5763 100644
+--- a/UWX_VERSION
++++ b/UWX_VERSION
+@@ -1 +1 @@
+-0.3.0
++0.4.1-rc1
+diff --git a/src/shared/constants/uwx.js b/src/shared/constants/uwx.js
+index ac9b782..4a003a0 100644
+--- a/src/shared/constants/uwx.js
++++ b/src/shared/constants/uwx.js
+@@ -1,2 +1,2 @@
+-export const UWX_VERSION = '0.3.0';
++export const UWX_VERSION = '0.4.1-rc1';
+ export const UWX_MANIFEST_URL = 'https://underweb.cloud/api/uwx/manifest';
+diff --git a/src/stores/index.js b/src/stores/index.js
+index 36e04e2..cc49f08 100644
+--- a/src/stores/index.js
++++ b/src/stores/index.js
+@@ -35,6 +35,7 @@ import { useUiStore } from './ui';
+ import { useToolsStore } from './tools';
+ import { useUnderWebStore } from './underweb';
+ import { useUnderWebNetworkStore } from './underwebNetwork';
++import { useOscLabStore } from './oscLab';
+ import { useUpdateLoopStore } from './updateLoop';
+ import { useUserStore } from './user';
+ import { useVRCXUpdaterStore } from './vrcxUpdater';
+@@ -150,6 +151,7 @@ export function createGlobalStores() {
+         tools: useToolsStore(),
+         underWeb: useUnderWebStore(),
+         underWebNetwork: useUnderWebNetworkStore(),
++        oscLab: useOscLabStore(),
+         gameLog: useGameLogStore(),
+         search: useSearchStore(),
+         game: useGameStore(),
+@@ -199,6 +201,7 @@ export {
+     useToolsStore,
+     useUnderWebStore,
+     useUnderWebNetworkStore,
++    useOscLabStore,
+     useUiStore,
+     useUserStore,
+     useVrStore,
+diff --git a/src/stores/oscLab.js b/src/stores/oscLab.js
+new file mode 100644
+index 0000000..eef7a39
+--- /dev/null
++++ b/src/stores/oscLab.js
+@@ -0,0 +1,356 @@
++import { computed, ref } from 'vue';
++import { defineStore } from 'pinia';
++import { toast } from 'vue-sonner';
++
++import configRepository from '../services/config';
++import { useUnderWebNetworkStore } from './underwebNetwork';
++import { useLocationStore } from './location';
++
++const CONFIG = Object.freeze({
++    enabled: 'UWX_oscEnabled',
++    customStatus: 'UWX_oscCustomStatus',
++    showWorld: 'UWX_oscShowWorld',
++    showEvent: 'UWX_oscShowEvent',
++    showHeartRate: 'UWX_oscShowHeartRate',
++    showNowPlaying: 'UWX_oscShowNowPlaying',
++    nowPlayingTitle: 'UWX_oscNowPlayingTitle',
++    nowPlayingArtist: 'UWX_oscNowPlayingArtist',
++    pulsoidToken: 'UWX_pulsoidToken',
++    pulseAvatarParameter: 'UWX_pulseAvatarParameter',
++    bpmAvatarParameter: 'UWX_bpmAvatarParameter',
++    preset: 'UWX_oscPreset'
++});
++
++const PRESETS = Object.freeze({
++    normal: { customStatus: '', showWorld: true, showEvent: false, showHeartRate: false, showNowPlaying: false },
++    music: { customStatus: '', showWorld: false, showEvent: false, showHeartRate: false, showNowPlaying: true },
++    event: { customStatus: 'UNDERWEB // EVENT LIVE', showWorld: true, showEvent: true, showHeartRate: true, showNowPlaying: true },
++    afk: { customStatus: 'AFK', showWorld: false, showEvent: false, showHeartRate: false, showNowPlaying: false }
++});
++
++const clampChatbox = (text) => Array.from(String(text || '')).slice(0, 144).join('');
++
++export const useOscLabStore = defineStore('OscLab', () => {
++    const networkStore = useUnderWebNetworkStore();
++    const locationStore = useLocationStore();
++
++    const initialized = ref(false);
++    const enabled = ref(false);
++    const customStatus = ref('');
++    const showWorld = ref(true);
++    const showEvent = ref(true);
++    const showHeartRate = ref(false);
++    const showNowPlaying = ref(false);
++    const nowPlayingTitle = ref('');
++    const nowPlayingArtist = ref('');
++    const pulsoidToken = ref('');
++    const heartRate = ref(0);
++    const heartRateState = ref('offline');
++    const pulseAvatarParameter = ref('isHRBeat');
++    const bpmAvatarParameter = ref('HR');
++    const preset = ref('normal');
++    const lastSentAt = ref(0);
++    const lastError = ref('');
++
++    let pulsoidSocket = null;
++    let reconnectTimer = null;
++
++    const worldName = computed(() => locationStore.lastLocation.name || 'VRChat');
++    const activeEvent = computed(() => networkStore.activeEvent);
++
++    const chatboxParts = computed(() => {
++        const parts = [];
++        if (customStatus.value.trim()) parts.push(customStatus.value.trim());
++        if (showEvent.value && activeEvent.value?.title) parts.push(`🕷 ${activeEvent.value.title}`);
++        if (showNowPlaying.value && nowPlayingTitle.value.trim()) {
++            parts.push(`🎵 ${nowPlayingTitle.value.trim()}${nowPlayingArtist.value.trim() ? ` — ${nowPlayingArtist.value.trim()}` : ''}`);
++        }
++        if (showHeartRate.value && heartRate.value > 0) parts.push(`♥ ${heartRate.value} BPM`);
++        if (showWorld.value && worldName.value) parts.push(`🌎 ${worldName.value}`);
++        return parts;
++    });
++
++    const chatboxPreview = computed(() => {
++        const preferred = chatboxParts.value.join(' · ');
++        if (preferred.length <= 144) return preferred;
++        // Drop lower-priority trailing blocks before hard truncation.
++        const priority = [...chatboxParts.value];
++        while (priority.length > 1 && priority.join(' · ').length > 144) priority.pop();
++        return clampChatbox(priority.join(' · '));
++    });
++
++    const previewLength = computed(() => Array.from(chatboxPreview.value).length);
++
++    async function loadSettings() {
++        const [
++            storedEnabled,
++            storedStatus,
++            storedWorld,
++            storedEvent,
++            storedHeartRate,
++            storedNowPlaying,
++            storedTitle,
++            storedArtist,
++            storedToken,
++            storedPulseParam,
++            storedBpmParam,
++            storedPreset
++        ] = await Promise.all([
++            configRepository.getBool(CONFIG.enabled, false),
++            configRepository.getString(CONFIG.customStatus, ''),
++            configRepository.getBool(CONFIG.showWorld, true),
++            configRepository.getBool(CONFIG.showEvent, true),
++            configRepository.getBool(CONFIG.showHeartRate, false),
++            configRepository.getBool(CONFIG.showNowPlaying, false),
++            configRepository.getString(CONFIG.nowPlayingTitle, ''),
++            configRepository.getString(CONFIG.nowPlayingArtist, ''),
++            configRepository.getString(CONFIG.pulsoidToken, ''),
++            configRepository.getString(CONFIG.pulseAvatarParameter, 'isHRBeat'),
++            configRepository.getString(CONFIG.bpmAvatarParameter, 'HR'),
++            configRepository.getString(CONFIG.preset, 'normal')
++        ]);
++        enabled.value = Boolean(storedEnabled);
++        customStatus.value = storedStatus || '';
++        showWorld.value = Boolean(storedWorld);
++        showEvent.value = Boolean(storedEvent);
++        showHeartRate.value = Boolean(storedHeartRate);
++        showNowPlaying.value = Boolean(storedNowPlaying);
++        nowPlayingTitle.value = storedTitle || '';
++        nowPlayingArtist.value = storedArtist || '';
++        pulsoidToken.value = storedToken || '';
++        pulseAvatarParameter.value = storedPulseParam || 'isHRBeat';
++        bpmAvatarParameter.value = storedBpmParam || 'HR';
++        preset.value = PRESETS[storedPreset] ? storedPreset : 'normal';
++    }
++
++    async function initOscLab() {
++        if (initialized.value) return;
++        await loadSettings();
++        initialized.value = true;
++        if (showHeartRate.value && pulsoidToken.value) connectPulsoid();
++    }
++
++    async function persistBool(key, value) {
++        await configRepository.setBool(key, Boolean(value));
++    }
++
++    async function setEnabled(value) {
