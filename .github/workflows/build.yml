@@ -61,6 +61,13 @@ jobs:
 
           "UWX_SOURCE=$($root.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
+      - name: Upload pinned base source for diagnostics
+        uses: actions/upload-artifact@v4
+        with:
+          name: UWX-Pinned-Base-Source
+          path: UnderWebX-v0.2.0-source.zip
+          retention-days: 2
+
       - name: Apply validated full RC1 patch
         shell: pwsh
         run: |
