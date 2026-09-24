@@ -997,7 +997,8 @@ index 42992d2..a44ddaf 100644
 +                    addLog(
 +                        'warning',
 +                        `Skipped ${player.displayName}: group membership could not be verified, so no invite was sent.`,
-+                        { userId: player.userId, groupId: scanGroupId, status }+                    );
++                        { userId: player.userId, groupId: scanGroupId, status }
++                    );
 +                    if (status === 429) {
 +                        groupRecruitBackoffUntil.value = Date.now() + 60000;
 +                        addLog('warning', 'VRChat rate limit reached during membership verification. Group Recruiter paused for 60 seconds.');
