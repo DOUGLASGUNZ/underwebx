@@ -83,8 +83,20 @@ jobs:
           }
 
           Push-Location $env:UWX_SOURCE
-          git apply --check $patchFile
-          git apply --whitespace=nowarn $patchFile
+          $diag = Join-Path $env:GITHUB_WORKSPACE "patch-diagnostics.txt"
+          "UWX_SOURCE=$env:UWX_SOURCE" | Out-File $diag -Encoding utf8
+          "VERSION_BEFORE=$((Get-Content .\UWX_VERSION -Raw).Trim())" | Out-File $diag -Append -Encoding utf8
+          "PATCH_BYTES=$((Get-Item $patchFile).Length)" | Out-File $diag -Append -Encoding utf8
+          git apply --check --verbose $patchFile 2>&1 | Tee-Object -FilePath $diag -Append
+          if ($LASTEXITCODE -ne 0) {
+            Pop-Location
+            throw "git apply --check failed; see patch-diagnostics artifact."
+          }
+          git apply --whitespace=nowarn $patchFile 2>&1 | Tee-Object -FilePath $diag -Append
+          if ($LASTEXITCODE -ne 0) {
+            Pop-Location
+            throw "git apply failed; see patch-diagnostics artifact."
+          }
           $version = (Get-Content .\UWX_VERSION -Raw).Trim()
           if ($version -ne "0.4.1-rc1") {
             throw "Full patch did not produce UWX 0.4.1-rc1; got '$version'."
@@ -127,6 +139,15 @@ jobs:
         shell: pwsh
         working-directory: ${{ env.UWX_SOURCE }}
         run: pwsh ./build-scripts/build-all.ps1
+
+      - name: Upload patch diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: UWX-Patch-Diagnostics
+          path: patch-diagnostics.txt
+          if-no-files-found: ignore
+          retention-days: 2
 
       - name: Upload UnderWeb X builds
         uses: actions/upload-artifact@v4
