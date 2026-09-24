@@ -1,0 +1,336 @@
+Open UnderWeb profile
+                             </Button>
++                        </template>
++                        <div v-else class="uwx-profile-empty">
++                            <i class="ri-user-search-line" />
++                            <span>Select a friend to inspect their network profile.</span>
+                         </div>
+                     </div>
+                 </CardContent>
+@@ -287,7 +512,7 @@
+                 <CardHeader>
+                     <div class="flex items-start justify-between gap-4">
+                         <div>
+-                            <CardTitle>UWX activity</CardTitle>
++                            <CardTitle>UWX Activity</CardTitle>
+                             <CardDescription>Local activity log for the UnderWeb control layer.</CardDescription>
+                         </div>
+                         <Button size="sm" variant="ghost" @click="clearActivityLog">Clear</Button>
+@@ -312,19 +537,23 @@
+     import { computed, ref } from 'vue';
+     import { storeToRefs } from 'pinia';
+     import { useRouter } from 'vue-router';
++    import { toast } from 'vue-sonner';
+     import { Badge } from '@/components/ui/badge';
+     import { Button } from '@/components/ui/button';
+     import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+     import { Input } from '@/components/ui/input';
+     import { Switch } from '@/components/ui/switch';
+ 
++    import { UWX_VERSION } from '../../shared/constants/uwx';
+     import { openExternalLink, parseLocation } from '../../shared/utils';
+-    import { useFriendStore, useLocationStore, useUnderWebStore } from '../../stores';
++    import { useFriendStore, useLocationStore, useUnderWebNetworkStore, useUnderWebStore } from '../../stores';
+ 
+     const router = useRouter();
+     const underWebStore = useUnderWebStore();
++    const networkStore = useUnderWebNetworkStore();
+     const friendStore = useFriendStore();
+     const locationStore = useLocationStore();
++
+     const {
+         autoInviteEnabled,
+         allowedGroupIds,
+@@ -336,28 +565,62 @@
+         lastScanAt,
+         activityLog,
+         sessionInvitesSent,
++        groupRecruitEnabled,
++        groupRecruitMinPresenceSeconds,
++        isRecruiting,
++        sessionGroupInvitesSent,
+         currentGroupId,
+         currentParsedLocation,
+         isGroupInstance,
+         isCurrentGroupAllowed,
+         canAutoInviteHere,
++        canRecruitHere,
++        eligibleLobbyRecruits,
+         eligibleInviteFriends
+     } = storeToRefs(underWebStore);
+ 
++    const {
++        manifest,
++        isRefreshing,
++        networkStatus,
++        lastNetworkError,
++        notificationRules,
++        connectedAccounts,
++        activeEvent,
++        upcomingEvents,
++        latestRelease,
++        staffUserIds,
++        creatorUserIds,
++        partnerUserIds
++    } = storeToRefs(networkStore);
++
+     const {
+         setAutoInviteEnabled,
++        setGroupRecruitEnabled,
++        setGroupRecruitMinPresenceSeconds,
+         setInviteScope,
+-        setCooldownMinutes,
+         addAllowedGroup,
+         removeAllowedGroup,
+         toggleSelectedUser,
+         toggleExcludedUser,
+         clearActivityLog,
+-        scanAndInvite
++        scanAndInvite,
++        scanAndRecruitGroup
+     } = underWebStore;
+ 
++    const { rolesForUser, setNotificationRule, refreshNetwork } = networkStore;
++
+     const groupInput = ref('');
+     const friendSearch = ref('');
++    const radarFilter = ref('all');
++    const profileUserId = ref('');
++    const radarFilters = [
++        { id: 'all', label: 'All' },
++        { id: 'underweb', label: 'UnderWeb' },
++        { id: 'staff', label: 'Staff' },
++        { id: 'creators', label: 'Creators' },
++        { id: 'partners', label: 'Partners' }
++    ];
+ 
+     const allFriends = computed(() => {
+         return Array.from(friendStore.friends.values())
+@@ -382,27 +645,48 @@
+         );
+     });
+ 
+-    const onlineFriendsCount = computed(() => allFriends.value.filter((friend) => friend.state === 'online').length);
++    const onlineFriends = computed(() => allFriends.value.filter((friend) => friend.state === 'online'));
++    const onlineFriendsCount = computed(() => onlineFriends.value.length);
+     const favoriteOnlineCount = computed(() => friendStore.allFavoriteOnlineFriends.length);
+     const currentPlayerCount = computed(() => locationStore.lastLocation.playerList?.size || 0);
+     const currentFriendsHere = computed(() => locationStore.lastLocation.friendList?.size || 0);
+     const currentWorldName = computed(() => locationStore.lastLocation.name || currentParsedLocation.value.worldId || 'VRChat');
++    const networkMemberCount = computed(() => manifest.value.members.length);
++    const networkOnlineCount = computed(() => onlineFriends.value.filter((friend) => networkStore.memberByVrchatId.has(friend.id)).length);
++    const staffOnlineCount = computed(() => onlineFriends.value.filter((friend) => staffUserIds.value.has(friend.id)).length);
++    const creatorOnlineCount = computed(() => onlineFriends.value.filter((friend) => creatorUserIds.value.has(friend.id)).length);
++    const partnerOnlineCount = computed(() => onlineFriends.value.filter((friend) => partnerUserIds.value.has(friend.id)).length);
+ 
+     const inviteScopeLabel = computed(() => {
+-        if (inviteScope.value === 'favorites') return 'Favorite friends';
+-        if (inviteScope.value === 'all-online') return 'All online friends';
+-        return 'Selected friends';
++        const labels = {
++            selected: 'Selected friends',
++            favorites: 'Favorite friends',
++            'all-online': 'All online friends',
++            staff: 'UnderWeb staff',
++            creators: 'UnderWeb creators',
++            partners: 'UnderWeb partners'
++        };
++        return labels[inviteScope.value] || 'Selected friends';
+     });
+ 
+-    const lastScanText = computed(() => {
+-        if (!lastScanAt.value) return 'Not yet';
+-        return new Date(lastScanAt.value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
++    const updateAvailable = computed(() => {
++        const latest = String(latestRelease.value?.version || '').replace(/^v/i, '');
++        if (!latest) return false;
++        return latest !== UWX_VERSION;
+     });
+ 
++    function includeInRadar(friend) {
++        if (radarFilter.value === 'underweb') return networkStore.memberByVrchatId.has(friend.id);
++        if (radarFilter.value === 'staff') return staffUserIds.value.has(friend.id);
++        if (radarFilter.value === 'creators') return creatorUserIds.value.has(friend.id);
++        if (radarFilter.value === 'partners') return partnerUserIds.value.has(friend.id);
++        return true;
++    }
++
+     const radarClusters = computed(() => {
+         const clusters = new Map();
+-        for (const friend of allFriends.value) {
+-            if (friend.state !== 'online' || !friend.location) continue;
++        for (const friend of onlineFriends.value) {
++            if (!includeInRadar(friend) || !friend.location) continue;
+             const parsed = parseLocation(friend.location);
+             if (!parsed.isRealInstance || !parsed.instanceId) continue;
+             const existing = clusters.get(parsed.tag) || {
+@@ -411,60 +695,77 @@
+                 instanceName: parsed.instanceName,
+                 groupId: parsed.groupId || '',
+                 count: 0,
+-                names: []
++                names: [],
++                roleCounts: { staff: 0, creators: 0, partners: 0 }
+             };
+             existing.count += 1;
+-            if (existing.names.length < 4) {
+-                existing.names.push(friend.displayName);
+-            }
++            if (existing.names.length < 4) existing.names.push(friend.displayName);
++            if (staffUserIds.value.has(friend.id)) existing.roleCounts.staff += 1;
++            if (creatorUserIds.value.has(friend.id)) existing.roleCounts.creators += 1;
++            if (partnerUserIds.value.has(friend.id)) existing.roleCounts.partners += 1;
+             clusters.set(parsed.tag, existing);
+         }
+         return [...clusters.values()]
+-            .map((cluster) => ({
+-                ...cluster,
+-                isNetworkGroup: Boolean(cluster.groupId && allowedGroupIds.value.includes(cluster.groupId)),
+-                label: `${cluster.worldId || 'World'} · ${cluster.instanceName || 'instance'}`
+-            }))
++            .map((cluster) => {
++                const roleSummary = [
++                    cluster.roleCounts.staff ? `${cluster.roleCounts.staff} staff` : '',
++                    cluster.roleCounts.creators ? `${cluster.roleCounts.creators} creators` : '',
++                    cluster.roleCounts.partners ? `${cluster.roleCounts.partners} partners` : ''
++                ]
++                    .filter(Boolean)
++                    .join(' · ');
++                return {
++                    ...cluster,
++                    roleSummary,
++                    isNetworkGroup: Boolean(cluster.groupId && allowedGroupIds.value.includes(cluster.groupId)),
++                    label: `${cluster.worldId || 'World'} · ${cluster.instanceName || 'instance'}`
++                };
++            })
+             .sort((a, b) => {
+                 if (a.isNetworkGroup !== b.isNetworkGroup) return a.isNetworkGroup ? -1 : 1;
+                 return b.count - a.count;
+             })
+-            .slice(0, 6);
++            .slice(0, 8);
+     });
+ 
++    const selectedProfileFriend = computed(() => allFriends.value.find((friend) => friend.id === profileUserId.value) || null);
++    const selectedNetworkMember = computed(() =>
++        selectedProfileFriend.value ? networkStore.memberByVrchatId.get(selectedProfileFriend.value.id) || null : null
++    );
++    const selectedProfileRoles = computed(() =>
++        selectedProfileFriend.value ? rolesForUser(selectedProfileFriend.value.id).slice(0, 10) : []
++    );
++
+     const statusText = computed(() => {
+         if (!isGroupInstance.value) return 'NOT IN GROUP INSTANCE';
+         if (!isCurrentGroupAllowed.value) return 'GROUP NOT ALLOWED';
+-        if (!autoInviteEnabled.value) return 'READY / DISARMED';
+-        return 'AUTO INVITE ARMED';
++        if (groupRecruitEnabled.value) return 'GROUP RECRUITER ARMED';
++        if (autoInviteEnabled.value) return 'INSTANCE INVITER ARMED';
++        return 'READY / DISARMED';
+     });
+ 
+     const statusClass = computed(() => ({
+-        ready: canAutoInviteHere.value && !autoInviteEnabled.value,
+-        armed: canAutoInviteHere.value && autoInviteEnabled.value,
++        ready: canAutoInviteHere.value && !autoInviteEnabled.value && !groupRecruitEnabled.value,
++        armed: canAutoInviteHere.value && (autoInviteEnabled.value || groupRecruitEnabled.value),
+         blocked: !canAutoInviteHere.value
+     }));
+ 
+     async function addCurrentGroup() {
+-        if (currentGroupId.value) {
+-            await addAllowedGroup(currentGroupId.value);
+-        }
++        if (currentGroupId.value) await addAllowedGroup(currentGroupId.value);
+     }
+ 
+     async function addGroupFromInput() {
+-        if (await addAllowedGroup(groupInput.value)) {
+-            groupInput.value = '';
+-        }
+-    }
+-
+-    function updateCooldown(event) {
+-        void setCooldownMinutes(event.target.value);
++        if (await addAllowedGroup(groupInput.value)) groupInput.value = '';
+     }
+ 
+     function inviteNow() {
+         void scanAndInvite({ source: 'manual', force: true });
+     }
+ 
++    function recruitNow() {
++        void scanAndRecruitGroup({ source: 'manual', force: true });
++    }
++
+     function openUnderWeb() {
+         openExternalLink('https://underweb.cloud');
+     }
+@@ -473,6 +774,10 @@
+         openExternalLink('https://underweb.cloud/events');
+     }
+ 
++    function openConnections() {
++        openExternalLink('https://underweb.cloud/settings/connections');
++    }
++
+     function openFriendsLocations() {
+         router.push({ name: 'friends-locations' });
+     }
+@@ -481,6 +786,37 @@
+         openExternalLink('https://vrchat.com/home/groups');
+     }
+ 
++    function openEvent(event) {
++        const suffix = event?.id ? `/${encodeURIComponent(event.id)}` : '';
++        openExternalLink(`https://underweb.cloud/events${suffix}`);
++    }
++
++    function openUnderWebProfile(member) {
++        if (!member?.underwebUserId) return;
++        openExternalLink(`https://underweb.cloud/profile/${encodeURIComponent(member.underwebUserId)}`);
++    }
++
++    async function copyText(value) {
++        try {
++            await navigator.clipboard.writeText(value);
++            toast.success('Copied to clipboard.');
++        } catch {
++            toast.error('Could not copy to clipboard.');
++        }
++    }
++
++    function formatEventTime(event) {
++        if (!event?.startAt) return 'Schedule pending';
++        const start = new Date(event.startAt);
++        if (Number.isNaN(start.getTime())) return 'Schedule pending';
++        return start.toLocaleString([], {
++            month: 'short',
++            day: 'numeric',
++            hour: 'numeric',
++            minute: '2-digit'
++        });
++    }
++
+     function formatTime(timestamp) {
+         return new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+     }
+@@ -489,8 +825,9 @@
+ <style scoped>
+     .uwx-page {
+         background:
+-            radial-gradient(circle at 12% 0%, rgb(103 255 0 / 9%), transparent 30%),
+-            linear-gradient(180deg, rgb(0 0 0 / 10%), transparent 30%),
++            radial-gradient(circle at 12% 0%, rgb(103 255 0 / 10%), transparent 30%),
++            radial-gradient(circle at 90% 18%, rgb(0 144 255 / 6%), transparent 26%),
++            linear-gradient(180deg, rgb(0 0 0 / 12%), transparent 30%),
+             var(--sidebar);
+     }
+ 
+@@ -504,11 +841,13 @@
+         margin-bottom: 16px;
+     }
+ 
+-    .uwx-kicker {
+-        font-size: 11px;
+-        letter
