@@ -55,9 +55,8 @@ diff --git a/src/stores/oscLab.js b/src/stores/oscLab.js
      const nowPlayingTitle = ref('');
      const nowPlayingArtist = ref('');
      const pulsoidToken = ref('');
-@@ -78,21 +82,24 @@ export const useOscLabStore = defineStore('OscLab', () => {
-     const activeEvent = computed(() => networkStore.activeEvent);
-     const playerCount = computed(() => locationStore.lastLocation.playerList?.size || 0);
+@@ -83,22 +87,25 @@ export const useOscLabStore = defineStore('OscLab', () => {
+     }
  
      const chatboxParts = computed(() => {
 -        const parts = [];
@@ -89,6 +88,8 @@ diff --git a/src/stores/oscLab.js b/src/stores/oscLab.js
 -        return parts;
 +        return blockOrder.value.map((key) => blocks[key]).filter(Boolean);
      });
+ 
+     const chatboxPreview = computed(() => {
 @@ -113,6 +130,7 @@ export const useOscLabStore = defineStore('OscLab', () => {
              storedAutoBroadcast,
              storedAutoMedia,
@@ -240,8 +241,9 @@ diff --git a/src/views/UnderWeb/UnderWeb.vue b/src/views/UnderWeb/UnderWeb.vue
          setSignatureMode: setOscSignatureMode,
 +        moveBlock: moveOscBlock,
          setNowPlayingTitle: setOscNowPlayingTitle,
-@@ -790,2 +815,12 @@
-     } = oscLabStore;
+@@ -800,6 +822,16 @@
+ 
+     void initOscLab();
  
 +    const oscBlockLabels = {
 +        signature: 'UWX signature',
@@ -253,6 +255,9 @@ diff --git a/src/views/UnderWeb/UnderWeb.vue b/src/views/UnderWeb/UnderWeb.vue
 +        population: 'People here'
 +    };
 +
+     const {
+         setAutoInviteEnabled,
+         setGroupRecruitEnabled,
 @@ -824,4 +858,4 @@
      const panelTabs = [
          { id: 'command', label: 'Command', short: 'Live ops', icon: 'ri-dashboard-3-line' },
