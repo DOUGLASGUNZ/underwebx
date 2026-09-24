@@ -1,1 +1,1641 @@
-The requested file reference is not currently visible. Use files.search or files.list to rediscover the file, then retry with a returned ref_id or file_id.
+diff --git a/src/views/UnderWeb/UnderWeb.vue b/src/views/UnderWeb/UnderWeb.vue
+index 1cac442..ec27edd 100644
+--- a/src/views/UnderWeb/UnderWeb.vue
++++ b/src/views/UnderWeb/UnderWeb.vue
+@@ -2,13 +2,22 @@
+     <div class="x-container uwx-page">
+         <div class="uwx-hero">
+             <div>
+-                <div class="uwx-kicker">UNDERWEB // NETWORK</div>
+-                <h1 class="uwx-title">UnderWeb X</h1>
+-                <p class="uwx-subtitle">VRChat network control, group-instance tools, and live friend radar.</p>
++                <div class="uwx-kicker">UNDERWEB // COMMAND CENTER</div>
++                <div class="flex flex-wrap items-end gap-3">
++                    <h1 class="uwx-title">UnderWeb X</h1>
++                    <Badge variant="outline">v{{ UWX_VERSION }}</Badge>
++                </div>
++                <p class="uwx-subtitle">Live VRChat operations, group recruiting, OSC, and UnderWeb network tools.</p>
+             </div>
+-            <div class="uwx-instance-badge" :class="statusClass">
+-                <span class="uwx-status-dot"></span>
+-                <span>{{ statusText }}</span>
++            <div class="flex flex-col items-end gap-2">
++                <div class="uwx-instance-badge" :class="statusClass">
++                    <span class="uwx-status-dot"></span>
++                    <span>{{ statusText }}</span>
++                </div>
++                <button class="uwx-network-state" type="button" @click="refreshNetwork({ quiet: false })">
++                    <i :class="isRefreshing ? 'ri-loader-4-line animate-spin' : 'ri-radar-line'" />
++                    NETWORK {{ networkStatus.toUpperCase() }}
++                </button>
+             </div>
+         </div>
+ 
+@@ -24,111 +33,211 @@
+                 <small>{{ currentFriendsHere }} friend{{ currentFriendsHere === 1 ? '' : 's' }} here</small>
+             </div>
+             <div class="uwx-overview-tile">
+-                <span>FRIENDS ONLINE</span>
+-                <strong>{{ onlineFriendsCount }}</strong>
+-                <small>{{ favoriteOnlineCount }} favorite{{ favoriteOnlineCount === 1 ? '' : 's' }}</small>
++                <span>NETWORK ONLINE</span>
++                <strong>{{ networkOnlineCount }}</strong>
++                <small>{{ staffOnlineCount }} staff · {{ creatorOnlineCount }} creators</small>
+             </div>
+             <div class="uwx-overview-tile">
+                 <span>UWX SESSION</span>
+-                <strong>{{ sessionInvitesSent }} invite{{ sessionInvitesSent === 1 ? '' : 's' }}</strong>
++                <strong>{{ sessionGroupInvitesSent }} group · {{ sessionInvitesSent }} instance</strong>
+                 <small>{{ allowedGroupIds.length }} approved group{{ allowedGroupIds.length === 1 ? '' : 's' }}</small>
+             </div>
+         </div>
+ 
++        <div v-if="activeEvent" class="uwx-event-banner">
++            <div class="uwx-event-live">LIVE EVENT</div>
++            <div class="min-w-0 flex-1">
++                <strong class="block truncate">{{ activeEvent.title }}</strong>
++                <span class="text-sm text-muted-foreground">
++                    {{ activeEvent.host || 'UnderWeb' }}
++                    <template v-if="activeEvent.worldId"> · {{ activeEvent.worldId }}</template>
++                </span>
++            </div>
++            <div class="flex flex-wrap items-center gap-2">
++                <Badge variant="outline">{{ activeEvent.staff.length }} staff</Badge>
++                <Badge variant="outline">{{ activeEvent.performers.length }} performers</Badge>
++                <Button size="sm" @click="openEvent(activeEvent)">Open event</Button>
++            </div>
++        </div>
++
++        <div class="uwx-panel-tabs" role="tablist" aria-label="UnderWeb X sections">
++            <button
++                v-for="panel in panelTabs"
++                :key="panel.id"
++                type="button"
++                role="tab"
++                :aria-selected="activePanel === panel.id"
++                :class="{ active: activePanel === panel.id }"
++                @click="activePanel = panel.id">
++                <i :class="panel.icon" />
++                <span>{{ panel.label }}</span>
++                <small>{{ panel.short }}</small>
++            </button>
++        </div>
++
++        <div class="uwx-panel-context">
++            <div>
++                <span class="uwx-section-label">{{ activePanelMeta.eyebrow }}</span>
++                <strong>{{ activePanelMeta.title }}</strong>
++            </div>
++            <p>{{ activePanelMeta.description }}</p>
++        </div>
++
+         <div class="uwx-grid">
+-            <Card class="uwx-card uwx-card-wide">
++            <Card v-show="activePanel === 'command'" class="uwx-card uwx-card-wide uwx-command-card">
+                 <CardHeader>
+                     <div class="flex items-start justify-between gap-4">
+                         <div>
+                             <CardTitle>Group Instance Control</CardTitle>
+                             <CardDescription>
+-                                Auto Invite only arms inside explicitly approved group instances. Choose the audience, keep
+-                                exclusions local, and kill the queue instantly by disarming it.
++                                Two separate tools: recruit people already in this lobby into the group, or invite selected people into the lobby.
+                             </CardDescription>
+                         </div>
+-                        <Switch :model-value="autoInviteEnabled" @update:modelValue="setAutoInviteEnabled" />
++                        <Badge variant="outline">{{ currentGroupId || 'NO GROUP INSTANCE' }}</Badge>
+                     </div>
+                 </CardHeader>
+-                <CardContent class="space-y-5">
+-                    <div class="uwx-stat-row">
+-                        <div class="uwx-stat">
+-                            <span class="uwx-stat-label">CURRENT GROUP</span>
+-                            <strong>{{ currentGroupId || 'Not in a group instance' }}</strong>
+-                        </div>
+-                        <div class="uwx-stat">
+-                            <span class="uwx-stat-label">SCOPE</span>
+-                            <strong>{{ inviteScopeLabel }}</strong>
+-                        </div>
+-                        <div class="uwx-stat">
+-                            <span class="uwx-stat-label">ELIGIBLE NOW</span>
+-                            <strong>{{ eligibleInviteFriends.length }}</strong>
++                <CardContent class="space-y-6">
++                    <section class="uwx-control-block uwx-control-primary">
++                        <div class="flex items-start justify-between gap-4">
++                            <div>
++                                <div class="uwx-section-label">GROUP RECRUITER</div>
++                                <div class="flex flex-wrap items-center gap-2">
++                                    <h3 class="uwx-control-title">Invite lobby occupants into the VRChat group</h3>
++                                    <Badge variant="outline">SAFE RECRUITMENT</Badge>
++                                </div>
++                                <p class="text-sm text-muted-foreground mt-1">
++                                    Watches only the current lobby, waits for the dwell timer, then invites verified non-members who are not excluded.
++                                </p>
++                            </div>
++                            <Switch :model-value="groupRecruitEnabled" @update:modelValue="setGroupRecruitEnabled" />
+                         </div>
+-                        <div class="uwx-stat">
+-                            <span class="uwx-stat-label">COOLDOWN</span>
+-                            <strong>{{ cooldownMinutes }}m</strong>
++
++                        <div class="uwx-stat-row mt-4">
++                            <div class="uwx-stat">
++                                <span class="uwx-stat-label">LOBBY</span>
++                                <strong>{{ currentPlayerCount }} players</strong>
++                            </div>
++                            <div class="uwx-stat">
++                                <span class="uwx-stat-label">ELIGIBLE</span>
++                                <strong>{{ eligibleLobbyRecruits.length }}</strong>
++                            </div>
++                            <div class="uwx-stat">
++                                <span class="uwx-stat-label">DWELL</span>
++                                <strong>{{ groupRecruitMinPresenceSeconds }}s</strong>
++                            </div>
++                            <div class="uwx-stat">
++                                <span class="uwx-stat-label">SENT</span>
++                                <strong>{{ sessionGroupInvitesSent }}</strong>
++                            </div>
+                         </div>
+-                    </div>
+ 
+-                    <div>
+-                        <div class="uwx-section-label">INVITE AUDIENCE</div>
+-                        <div class="flex flex-wrap gap-2 mt-2">
++                        <div class="flex flex-wrap items-center gap-2 mt-4">
+                             <Button
+-                                :variant="inviteScope === 'selected' ? 'default' : 'outline'"
+-                                @click="setInviteScope('selected')">
+-                                Selected ({{ selectedUserIds.length }})
++                                v-if="currentGroupId && !isCurrentGroupAllowed"
++                                variant="default"
++                                @click="addCurrentGroup">
++                                Allow current group
+                             </Button>
+                             <Button
+-                                :variant="inviteScope === 'favorites' ? 'default' : 'outline'"
+-                                @click="setInviteScope('favorites')">
+-                                Favorites ({{ favoriteOnlineCount }})
++                                v-if="currentGroupId && isCurrentGroupAllowed"
++                                variant="outline"
++                                @click="removeAllowedGroup(currentGroupId)">
++                                Remove current group
+                             </Button>
+-                            <Button
+-                                :variant="inviteScope === 'all-online' ? 'default' : 'outline'"
+-                                @click="setInviteScope('all-online')">
+-                                All Online ({{ onlineFriendsCount }})
++                            <Button :disabled="isRecruiting || !canRecruitHere || !eligibleLobbyRecruits.length" variant="default" @click="recruitNow">
++                                <i :class="isRecruiting ? 'ri-loader-4-line animate-spin' : 'ri-user-add-line'" />
++                                Invite {{ eligibleLobbyRecruits.length }} eligible to group
+                             </Button>
++                            <label class="uwx-dwell-input">
++                                <span>Dwell seconds</span>
++                                <Input
++                                    type="number"
++                                    min="0"
++                                    max="600"
++                                    :model-value="String(groupRecruitMinPresenceSeconds)"
++                                    @change="setGroupRecruitMinPresenceSeconds($event.target.value)" />
++                            </label>
+                         </div>
+-                    </div>
+ 
+-                    <div class="flex flex-wrap gap-2">
+-                        <Button
+-                            v-if="currentGroupId && !isCurrentGroupAllowed"
+-                            variant="default"
+-                            @click="addCurrentGroup">
+-                            Allow current group
+-                        </Button>
+-                        <Button
+-                            v-if="currentGroupId && isCurrentGroupAllowed"
+-                            variant="outline"
+-                            @click="removeAllowedGroup(currentGroupId)">
+-                            Remove current group
+-                        </Button>
+-                        <Button :disabled="isScanning || !canAutoInviteHere" variant="secondary" @click="inviteNow">
++                        <div class="uwx-safety-strip mt-4">
++                            <span><i class="ri-shield-check-line" /> Existing members skipped</span>
++                            <span><i class="ri-timer-line" /> {{ groupRecruitMinPresenceSeconds }}s dwell</span>
++                            <span><i class="ri-forbid-2-line" /> Exclusions respected</span>
++                            <span><i class="ri-refresh-line" /> 24h dedupe</span>
++                        </div>
++                        <div class="uwx-warning mt-3">
++                            <strong>Guardrails:</strong> approved current <code>grp_</code> lobby only · unknown membership fails closed · paced queue · 403 disarms · 429 pauses · queue dies if the lobby changes.
++                        </div>
++                    </section>
++
++                    <section class="uwx-control-block">
++                        <div class="flex items-start justify-between gap-4">
++                            <div>
++                                <div class="uwx-section-label">INSTANCE INVITER</div>
++                                <h3 class="uwx-control-title">Bring friends and UnderWeb roles into this lobby</h3>
++                                <p class="text-sm text-muted-foreground mt-1">
++                                    This is the old Auto Invite behavior, now named correctly so it is not confused with group recruiting.
++                                </p>
++                            </div>
++                            <Switch :model-value="autoInviteEnabled" @update:modelValue="setAutoInviteEnabled" />
++                        </div>
++
++                        <div class="uwx-stat-row mt-4">
++                            <div class="uwx-stat"><span class="uwx-stat-label">SCOPE</span><strong>{{ inviteScopeLabel }}</strong></div>
++                            <div class="uwx-stat"><span class="uwx-stat-label">ELIGIBLE</span><strong>{{ eligibleInviteFriends.length }}</strong></div>
++                            <div class="uwx-stat"><span class="uwx-stat-label">COOLDOWN</span><strong>{{ cooldownMinutes }}m</strong></div>
++                            <div class="uwx-stat"><span class="uwx-stat-label">SENT</span><strong>{{ sessionInvitesSent }}</strong></div>
++                        </div>
++
++                        <div class="uwx-scope-grid mt-4">
++                            <div>
++                                <div class="uwx-section-label">FRIEND AUDIENCES</div>
++                                <div class="flex flex-wrap gap-2 mt-2">
++                                    <Button :variant="inviteScope === 'selected' ? 'default' : 'outline'" @click="setInviteScope('selected')">Selected ({{ selectedUserIds.length }})</Button>
++                                    <Button :variant="inviteScope === 'favorites' ? 'default' : 'outline'" @click="setInviteScope('favorites')">Favorites ({{ favoriteOnlineCount }})</Button>
++                                    <Button :variant="inviteScope === 'all-online' ? 'default' : 'outline'" @click="setInviteScope('all-online')">All Online ({{ onlineFriendsCount }})</Button>
++                                </div>
++                            </div>
++                            <div>
++                                <div class="uwx-section-label">UNDERWEB AUDIENCES</div>
++                                <div class="flex flex-wrap gap-2 mt-2">
++                                    <Button :variant="inviteScope === 'staff' ? 'default' : 'outline'" :disabled="!networkMemberCount" @click="setInviteScope('staff')">Staff ({{ staffOnlineCount }})</Button>
++                                    <Button :variant="inviteScope === 'creators' ? 'default' : 'outline'" :disabled="!networkMemberCount" @click="setInviteScope('creators')">Creators ({{ creatorOnlineCount }})</Button>
++                                    <Button :variant="inviteScope === 'partners' ? 'default' : 'outline'" :disabled="!networkMemberCount" @click="setInviteScope('partners')">Partners ({{ partnerOnlineCount }})</Button>
++                                </div>
++                            </div>
++                        </div>
++
++                        <Button class="mt-4" :disabled="isScanning || !canAutoInviteHere" variant="secondary" @click="inviteNow">
+                             <i :class="isScanning ? 'ri-loader-4-line animate-spin' : 'ri-send-plane-2-line'" />
+-                            Invite eligible now
++                            Invite selected audience into lobby
+                         </Button>
+-                    </div>
+-
+-                    <div class="uwx-warning">
+-                        <strong>Guardrails:</strong> UWX refuses to auto-invite outside an approved <code>grp_</code>
+-                        instance, skips people already with you, respects the per-user cooldown, honors the do-not-invite
+-                        list, and stops the active queue if your instance changes.
+-                    </div>
++                    </section>
+                 </CardContent>
+             </Card>
+ 
+-            <Card class="uwx-card">
++            <Card v-show="activePanel === 'command'" class="uwx-card">
+                 <CardHeader>
+                     <div class="flex items-start justify-between gap-4">
+                         <div>
+                             <CardTitle>Network Radar</CardTitle>
+-                            <CardDescription>Live friend clusters from presence data already available to VRCX.</CardDescription>
++                            <CardDescription>Presence clusters with UnderWeb role-aware filtering.</CardDescription>
+                         </div>
+                         <Badge variant="outline">{{ radarClusters.length }} clusters</Badge>
+                     </div>
+                 </CardHeader>
+                 <CardContent>
+-                    <div v-if="radarClusters.length" class="uwx-radar-list">
++                    <div class="uwx-filter-row">
++                        <button
++                            v-for="filter in radarFilters"
++                            :key="filter.id"
++                            type="button"
++                            :class="{ active: radarFilter === filter.id }"
++                            @click="radarFilter = filter.id">
++                            {{ filter.label }}
++                        </button>
++                    </div>
++                    <div v-if="radarClusters.length" class="uwx-radar-list mt-3">
+                         <button
+                             v-for="cluster in radarClusters"
+                             :key="cluster.location"
+@@ -143,151 +252,399 @@
+                                 <div class="text-xs text-muted-foreground truncate">
+                                     {{ cluster.names.join(', ') }}
+                                 </div>
++                                <div v-if="cluster.roleSummary" class="uwx-role-summary">{{ cluster.roleSummary }}</div>
+                             </div>
+                             <div class="uwx-radar-count">{{ cluster.count }}</div>
+                         </button>
+                     </div>
+-                    <p v-else class="text-sm text-muted-foreground">No visible friend clusters right now.</p>
++                    <p v-else class="mt-3 text-sm text-muted-foreground">No visible clusters match this filter.</p>
+                 </CardContent>
+             </Card>
+ 
+-            <Card class="uwx-card">
++            <Card v-show="activePanel === 'command'" class="uwx-card">
+                 <CardHeader>
+-                    <CardTitle>UnderWeb Quick Access</CardTitle>
+-                    <CardDescription>Jump between the desktop client and the network.</CardDescription>
++                    <div class="flex items-start justify-between gap-4">
++                        <div>
++                            <CardTitle>Connected Accounts</CardTitle>
++                            <CardDescription>One UnderWeb account, linked to VRChat and Discord.</CardDescription>
++                        </div>
++                        <Button size="sm" variant="ghost" @click="openConnections">Manage</Button>
++                    </div>
+                 </CardHeader>
+-                <CardContent class="uwx-quick-grid">
+-                    <Button variant="outline" @click="openUnderWeb">
+-                        <i class="ri-global-line" />
+-                        underweb.cloud
+-                    </Button>
+-                    <Button variant="outline" @click="openUnderWebEvents">
+-                        <i class="ri-calendar-event-line" />
+-                        Events
+-                    </Button>
+-                    <Button variant="outline" @click="openFriendsLocations">
+-                        <i class="ri-user-location-line" />
+-                        Friends Radar
+-                    </Button>
+-                    <Button variant="outline" @click="openGroups">
+-                        <i class="ri-group-2-line" />
+-                        VRChat Groups
+-                    </Button>
++                <CardContent class="space-y-2">
++                    <div class="uwx-account-row">
++                        <div class="uwx-account-icon"><i class="ri-spider-line" /></div>
++                        <div class="min-w-0 flex-1">
++                            <strong>UnderWeb</strong>
++                            <span>{{ connectedAccounts.underweb.label }}</span>
++                        </div>
++                        <Badge :variant="connectedAccounts.underweb.connected ? 'default' : 'outline'">
++                            {{ connectedAccounts.underweb.connected ? 'CONNECTED' : 'NOT LINKED' }}
++                        </Badge>
++                    </div>
++                    <div class="uwx-account-row">
++                        <div class="uwx-account-icon"><i class="ri-gamepad-line" /></div>
++                        <div class="min-w-0 flex-1">
++                            <strong>VRChat</strong>
++                            <span>{{ connectedAccounts.vrchat.label }}</span>
++                        </div>
++                        <Badge :variant="connectedAccounts.vrchat.verified ? 'default' : 'outline'">
++                            {{ connectedAccounts.vrchat.verified ? 'VERIFIED' : 'LOCAL SESSION' }}
++                        </Badge>
++                    </div>
++                    <div class="uwx-account-row">
++                        <div class="uwx-account-icon"><i class="ri-discord-line" /></div>
++                        <div class="min-w-0 flex-1">
++                            <strong>Discord</strong>
++                            <span>{{ connectedAccounts.discord.label }}</span>
++                        </div>
++                        <Badge :variant="connectedAccounts.discord.connected ? 'default' : 'outline'">
++                            {{ connectedAccounts.discord.connected ? 'CONNECTED' : 'NOT LINKED' }}
++                        </Badge>
++                    </div>
+                 </CardContent>
+             </Card>
+ 
+-            <Card class="uwx-card">
++            <Card v-show="activePanel === 'command'" class="uwx-card uwx-card-wide">
+                 <CardHeader>
+-                    <CardTitle>Allowed groups</CardTitle>
+-                    <CardDescription>Only these group IDs can arm Auto Invite.</CardDescription>
++                    <div class="flex items-start justify-between gap-4">
++                        <div>
++                            <CardTitle>Event Mode</CardTitle>
++                            <CardDescription>Live event operations and the next scheduled UnderWeb signals.</CardDescription>
++                        </div>
++                        <Badge :variant="activeEvent ? 'default' : 'outline'">{{ activeEvent ? 'LIVE' : 'STANDBY' }}</Badge>
++                    </div>
+                 </CardHeader>
+                 <CardContent>
+-                    <div class="flex gap-2 mb-3">
+-                        <Input v-model="groupInput" placeholder="grp_..." @keyup.enter="addGroupFromInput" />
+-                        <Button variant="outline" @click="addGroupFromInput">Add</Button>
++                    <div v-if="activeEvent" class="uwx-event-grid">
++                        <div class="uwx-event-primary">
++                            <div class="uwx-event-eyebrow">ACTIVE SIGNAL</div>
++                            <h3>{{ activeEvent.title }}</h3>
++                            <p>{{ formatEventTime(activeEvent) }}</p>
++                            <div class="flex flex-wrap gap-2 mt-4">
++                                <Badge v-if="activeEvent.host" variant="outline">HOST · {{ activeEvent.host }}</Badge>
++                                <Badge v-if="activeEvent.groupId" variant="outline">GROUP INSTANCE</Badge>
++                                <Badge variant="outline">{{ activeEvent.staff.length }} STAFF</Badge>
++                                <Badge variant="outline">{{ activeEvent.performers.length }} TALENT</Badge>
++                            </div>
++                            <div class="flex flex-wrap gap-2 mt-5">
++                                <Button @click="openEvent(activeEvent)">Open event page</Button>
++                                <Button v-if="activeEvent.instanceTag" variant="outline" @click="copyText(activeEvent.instanceTag)">
++                                    Copy instance
++                                </Button>
++                            </div>
++                        </div>
++                        <div class="uwx-event-side">
++                            <div class="uwx-section-label">OPERATION STATUS</div>
++                            <div class="uwx-list-row mt-2"><span>Network feed</span><Badge variant="outline">{{ networkStatus }}</Badge></div>
++                            <div class="uwx-list-row"><span>Approved instance</span><Badge :variant="isCurrentGroupAllowed ? 'default' : 'outline'">{{ isCurrentGroupAllowed ? 'YES' : 'NO' }}</Badge></div>
++                            <div class="uwx-list-row"><span>Instance Inviter</span><Badge :variant="autoInviteEnabled ? 'default' : 'outline'">{{ autoInviteEnabled ? 'ARMED' : 'OFF' }}</Badge></div>
++                        </div>
+                     </div>
+-                    <div v-if="allowedGroupIds.length" class="space-y-2">
+-                        <div v-for="groupId in allowedGroupIds" :key="groupId" class="uwx-list-row">
+-                            <code class="truncate">{{ groupId }}</code>
+-                            <Button size="sm" variant="ghost" @click="removeAllowedGroup(groupId)">Remove</Button>
++                    <div v-else class="uwx-event-empty">
++                        <i class="ri-calendar-schedule-line" />
++                        <div>
++                            <strong>No live UnderWeb event.</strong>
++                            <p>The command center will switch into Event Mode when the network manifest marks an event live.</p>
+                         </div>
+                     </div>
+-                    <p v-else class="text-sm text-muted-foreground">No groups allowed yet.</p>
++
++                    <div class="uwx-section-label mt-5">UP NEXT</div>
++                    <div v-if="upcomingEvents.length" class="uwx-upcoming-list mt-2">
++                        <button v-for="event in upcomingEvents.slice(0, 4)" :key="event.id" type="button" @click="openEvent(event)">
++                            <div class="min-w-0">
++                                <strong class="block truncate">{{ event.title }}</strong>
++                                <span>{{ formatEventTime(event) }}</span>
++                            </div>
++                            <i class="ri-arrow-right-line" />
++                        </button>
++                    </div>
++                    <p v-else class="mt-2 text-sm text-muted-foreground">No upcoming event data in the network feed.</p>
+                 </CardContent>
+             </Card>
+ 
+-            <Card class="uwx-card">
++            <Card v-show="activePanel === 'osc'" class="uwx-card uwx-card-wide uwx-osc-card">
+                 <CardHeader>
+-                    <CardTitle>Safety controls</CardTitle>
+-                    <CardDescription>Invite pacing, repeat protection, and exclusions.</CardDescription>
++                    <div class="flex items-start justify-between gap-4">
++                        <div>
++                            <CardTitle>OSC Lab</CardTitle>
++                            <CardDescription>A focused workspace for VRChat chatbox output, Pulsoid, presets, and avatar parameter testing.</CardDescription>
++                        </div>
++                        <div class="flex items-center gap-2">
++                            <Badge :variant="oscEnabled ? 'default' : 'outline'">{{ oscEnabled ? 'OSC ARMED' : 'OSC OFF' }}</Badge>
++                            <Switch :model-value="oscEnabled" @update:modelValue="setOscEnabled" />
++                        </div>
++                    </div>
+                 </CardHeader>
+-                <CardContent class="space-y-4">
+-                    <div>
+-                        <label class="text-sm font-medium">Per-user cooldown (minutes)</label>
+-                        <Input
+-                            class="mt-2"
+-                            type="number"
+-                            min="1"
+-                            max="1440"
+-                            :model-value="cooldownMinutes"
+-                            @change="updateCooldown" />
++                <CardContent class="space-y-5">
++                    <div class="uwx-osc-toolbar">
++                        <div>
++                            <div class="uwx-section-label">ACTIVE PRESET</div>
++                            <span>Switch the whole chatbox layout without rebuilding it.</span>
++                        </div>
++                        <div class="uwx-osc-preset-row">
++                        <Button v-for="name in ['normal', 'music', 'event', 'afk']" :key="name" size="sm"
++                            :variant="oscPreset === name ? 'default' : 'outline'" @click="applyOscPreset(name)">
++                            {{ name.toUpperCase() }}
++                        </Button>
++                        </div>
+                     </div>
+-                    <div class="uwx-list-row">
+-                        <span>Do-not-invite list</span>
+-                        <Badge variant="outline">{{ excludedUserIds.length }}</Badge>
++
++                    <div class="uwx-osc-grid">
++                        <section class="uwx-control-block">
++                            <div class="uwx-section-label">CHATBOX COMPOSER</div>
++                            <Input :model-value="oscCustomStatus" class="mt-2" placeholder="Custom status..."
++                                @change="setOscCustomStatus($event.target.value)" />
++                            <div class="uwx-osc-toggle-grid mt-3">
++                                <label class="uwx-toggle-row compact"><div><strong>World</strong><span>Current world name</span></div><Switch :model-value="oscShowWorld" @update:modelValue="setOscShowWorld" /></label>
++                                <label class="uwx-toggle-row compact"><div><strong>Event</strong><span>Live UnderWeb event</span></div><Switch :model-value="oscShowEvent" @update:modelValue="setOscShowEvent" /></label>
++                                <label class="uwx-toggle-row compact"><div><strong>Heart rate</strong><span>Live Pulsoid BPM</span></div><Switch :model-value="oscShowHeartRate" @update:modelValue="setOscShowHeartRate" /></label>
++                                <label class="uwx-toggle-row compact"><div><strong>Now playing</strong><span>Track block</span></div><Switch :model-value="oscShowNowPlaying" @update:modelValue="setOscShowNowPlaying" /></label>
++                            </div>
++                            <div class="uwx-chatbox-preview mt-4">
++                                <div class="flex items-center justify-between gap-3">
++                                    <div class="uwx-section-label">LIVE PREVIEW</div>
++                                    <strong class="uwx-char-count">{{ oscPreviewLength }}/144</strong>
++                                </div>
++                                <div class="uwx-char-meter"><span :style="{ width: `${oscPreviewPercent}%` }" /></div>
++                                <p>{{ oscChatboxPreview || 'Nothing enabled yet.' }}</p>
++                                <small>When space runs out, lower-priority blocks are dropped before text is trimmed.</small>
++                            </div>
++                            <div class="flex gap-2 mt-3">
++                                <Button size="sm" :disabled="!oscEnabled || !oscChatboxPreview" @click="sendOscChatbox()">Send now</Button>
++                            </div>
++                        </section>
++
++                        <section class="uwx-control-block">
++                            <div class="uwx-section-label">PULSOID HEART RATE</div>
++                            <div class="uwx-bpm-display mt-2">
++                                <strong>{{ oscHeartRate || '--' }}</strong><span>BPM</span><Badge variant="outline">{{ oscHeartRateState }}</Badge>
++                            </div>
++                            <Input :model-value="oscPulsoidToken" type="password" class="mt-3" placeholder="Pulsoid access token"
++                                @change="setOscPulsoidToken($event.target.value)" />
++                            <p class="uwx-help mt-2">Token stays in local UWX config and is never included in the UnderWeb network manifest.</p>
++                            <div class="grid grid-cols-2 gap-2 mt-3">
++                                <label><span class="uwx-field-label">BPM parameter</span><Input :model-value="oscBpmAvatarParameter" @change="setOscBpmAvatarParameter($event.target.value)" /></label>
++                                <label><span class="uwx-field-label">Beat parameter</span><Input :model-value="oscPulseAvatarParameter" @change="setOscPulseAvatarParameter($event.target.value)" /></label>
++                            </div>
++                        </section>
++
++                        <section class="uwx-control-block">
++                            <div class="uwx-section-label">NOW PLAYING</div>
++                            <Input :model-value="oscNowPlayingTitle" class="mt-2" placeholder="Track title" @change="setOscNowPlayingTitle($event.target.value)" />
++                            <Input :model-value="oscNowPlayingArtist" class="mt-2" placeholder="Artist" @change="setOscNowPlayingArtist($event.target.value)" />
++                            <p class="uwx-help mt-2">Manual track source for launch. Windows media-session detection can plug into this module later without changing your presets.</p>
++                        </section>
++
++                        <section class="uwx-control-block">
++                            <div class="uwx-section-label">AVATAR PARAMETER TEST</div>
++                            <Input v-model="oscTestParameter" class="mt-2" placeholder="Parameter name" />
++                            <div class="grid grid-cols-[110px_1fr] gap-2 mt-2">
++                                <select v-model="oscTestType" class="uwx-select"><option value="bool">Bool</option><option value="int">Int</option><option value="float">Float</option></select>
++                                <Input v-model="oscTestValue" placeholder="Value" />
++                            </div>
++                            <Button size="sm" variant="outline" class="mt-3" :disabled="!oscEnabled || !oscTestParameter" @click="sendOscTestParameter">Send parameter</Button>
++                            <p class="uwx-help mt-2">Sends directly to <code>/avatar/parameters/&lt;name&gt;</code> on VRChat's local OSC port.</p>
++                        </section>
+                     </div>
+-                    <div class="uwx-list-row">
+-                        <span>Send pacing</span>
+-                        <Badge variant="outline">2.5 sec</Badge>
++                </CardContent>
++            </Card>
++
++            <Card v-show="activePanel === 'system'" class="uwx-card">
++                <CardHeader>
++                    <CardTitle>Notification Rules</CardTitle>
++                    <CardDescription>Choose which UnderWeb signals can interrupt you.</CardDescription>
++                </CardHeader>
++                <CardContent class="space-y-3">
++                    <label class="uwx-toggle-row">
++                        <div><strong>Event goes live</strong><span>Alert when an UnderWeb event switches live.</span></div>
++                        <Switch
++                            :model-value="notificationRules.eventLive"
++                            @update:modelValue="(value) => setNotificationRule('eventLive', value)" />
++                    </label>
++                    <label class="uwx-toggle-row">
++                        <div><strong>Approved instance</strong><span>Notify when an approved group instance becomes relevant.</span></div>
++                        <Switch
++                            :model-value="notificationRules.approvedInstance"
++                            @update:modelValue="(value) => setNotificationRule('approvedInstance', value)" />
++                    </label>
++                    <label class="uwx-toggle-row">
++                        <div><strong>Favorite online</strong><span>Reserved for favorite-friend presence alerts.</span></div>
++                        <Switch
++                            :model-value="notificationRules.favoriteOnline"
++                            @update:modelValue="(value) => setNotificationRule('favoriteOnline', value)" />
++                    </label>
++                    <label class="uwx-toggle-row">
++                        <div><strong>UWX update</strong><span>Alert when the UnderWeb release feed reports a newer build.</span></div>
++                        <Switch
++                            :model-value="notificationRules.updateAvailable"
++                            @update:modelValue="(value) => setNotificationRule('updateAvailable', value)" />
++                    </label>
++                </CardContent>
++            </Card>
++
++            <Card v-show="activePanel === 'system'" class="uwx-card">
++                <CardHeader>
++                    <CardTitle>Release Channel</CardTitle>
++                    <CardDescription>UWX update status from the UnderWeb network manifest.</CardDescription>
++                </CardHeader>
++                <CardContent>
++                    <div class="uwx-release-card" :class="{ available: updateAvailable }">
++                        <div>
++                            <div class="uwx-section-label">INSTALLED</div>
++                            <strong>UnderWeb X {{ UWX_VERSION }}</strong>
++                        </div>
++                        <i class="ri-arrow-right-line" />
++                        <div>
++                            <div class="uwx-section-label">LATEST</div>
++                            <strong>{{ latestRelease?.version || 'Feed unavailable' }}</strong>
++                        </div>
+                     </div>
+-                    <div class="uwx-list-row">
+-                        <span>Background scan</span>
+-                        <Badge variant="outline">15 sec</Badge>
++                    <div class="flex flex-wrap gap-2 mt-4">
++                        <Button size="sm" variant="outline" :disabled="isRefreshing" @click="refreshNetwork({ quiet: false })">
++                            Check now
++                        </Button>
++                        <Button v-if="updateAvailable && latestRelease?.downloadUrl" size="sm" @click="openExternalLink(latestRelease.downloadUrl)">
++                            Get update
++                        </Button>
+                     </div>
+-                    <div class="uwx-list-row">
+-                        <span>Last scan</span>
+-                        <Badge variant="outline">{{ lastScanText }}</Badge>
++                    <p v-if="lastNetworkError" class="mt-3 text-xs text-muted-foreground">{{ lastNetworkError }}</p>
++                </CardContent>
++            </Card>
++
++            <Card v-show="activePanel === 'system'" class="uwx-card">
++                <CardHeader>
++                    <CardTitle>Privacy & Safety</CardTitle>
++                    <CardDescription>Know what UWX keeps local and kill active automation in one click.</CardDescription>
++                </CardHeader>
++                <CardContent class="space-y-3">
++                    <div class="uwx-list-row"><span>Activity log</span><Badge variant="outline">LOCAL ONLY</Badge></div>
++                    <div class="uwx-list-row"><span>Pulsoid token</span><Badge variant="outline">LOCAL CONFIG</Badge></div>
++                    <div class="uwx-list-row"><span>UnderWeb manifest</span><Badge variant="outline">READ ONLY</Badge></div>
++                    <div class="uwx-list-row"><span>VRChat OSC</span><Badge :variant="oscEnabled ? 'default' : 'outline'">{{ oscEnabled ? 'ACTIVE' : 'OFF' }}</Badge></div>
++                    <Button variant="destructive" class="w-full mt-2" @click="disarmUwx">Disarm recruiter, inviter & OSC</Button>
++                </CardContent>
++            </Card>
++
++            <Card v-show="activePanel === 'command'" class="uwx-card">
++                <CardHeader>
++                    <CardTitle>UnderWeb Quick Access</CardTitle>
++                    <CardDescription>Jump between UWX and the wider network.</CardDescription>
++                </CardHeader>
++                <CardContent class="uwx-quick-grid">
++                    <Button variant="outline" @click="openUnderWeb"><i class="ri-global-line" />underweb.cloud</Button>
++                    <Button variant="outline" @click="openUnderWebEvents"><i class="ri-calendar-event-line" />Events</Button>
++                    <Button variant="outline" @click="openFriendsLocations"><i class="ri-user-location-line" />Friends Radar</Button>
++                    <Button variant="outline" @click="openGroups"><i class="ri-group-2-line" />VRChat Groups</Button>
++                </CardContent>
++            </Card>
++
++            <Card v-show="activePanel === 'command'" class="uwx-card">
++                <CardHeader>
++                    <CardTitle>Allowed Groups</CardTitle>
++                    <CardDescription>Only these VRChat groups can arm UWX lobby automation.</CardDescription>
++                </CardHeader>
++                <CardContent>
++                    <div class="flex gap-2 mb-3">
++                        <Input v-model="groupInput" placeholder="grp_..." @keyup.enter="addGroupFromInput" />
++                        <Button variant="outline" @click="addGroupFromInput">Add</Button>
++                    </div>
++                    <div v-if="allowedGroupIds.length" class="space-y-2">
++                        <div v-for="groupId in allowedGroupIds" :key="groupId" class="uwx-list-row">
++                            <code class="truncate">{{ groupId }}</code>
++                            <Button size="sm" variant="ghost" @click="removeAllowedGroup(groupId)">Remove</Button>
++                        </div>
+                     </div>
++                    <p v-else class="text-sm text-muted-foreground">No groups allowed yet.</p>
+                 </CardContent>
+             </Card>
+ 
+-            <Card class="uwx-card uwx-card-wide">
++            <Card v-show="activePanel === 'people'" class="uwx-card uwx-card-wide">
+                 <CardHeader>
+                     <div class="flex items-start justify-between gap-4">
+                         <div>
+-                            <CardTitle>Invite List & Exclusions</CardTitle>
+-                            <CardDescription>
+-                                Select people for Selected mode. The shield icon blocks a user from every invite scope.
+-                            </CardDescription>
++                            <CardTitle>Invite List, Roles & Profile Quick-View</CardTitle>
++                            <CardDescription>Select friends, inspect UnderWeb roles, or hard-block them from all invite scopes.</CardDescription>
+                         </div>
+                         <Badge variant="outline">{{ filteredFriends.length }} shown</Badge>
+                     </div>
+                 </CardHeader>
+-                <CardContent>
+-                    <Input v-model="friendSearch" class="mb-3" placeholder="Search friends..." />
+-                    <div class="uwx-friend-list">
+-                        <div
+-                            v-for="friend in filteredFriends"
+-                            :key="friend.id"
+-                            class="uwx-friend-row"
+-                            :class="{
+-                                selected: selectedUserIds.includes(friend.id),
+-                                excluded: excludedUserIds.includes(friend.id)
+-                            }">
+-                            <button class="uwx-friend-main" type="button" @click="toggleSelectedUser(friend.id)">
+-                                <div class="min-w-0 text-left">
+-                                    <div class="font-medium truncate">{{ friend.displayName }}</div>
+-                                    <div class="text-xs text-muted-foreground truncate">{{ friend.id }}</div>
+-                                </div>
+-                                <div class="flex items-center gap-2">
+-                                    <Badge v-if="excludedUserIds.includes(friend.id)" variant="destructive">NO INVITE</Badge>
+-                                    <Badge :variant="friend.state === 'online' ? 'default' : 'outline'">{{ friend.state }}</Badge>
+-                                    <i
+-                                        :class="
+-                                            selectedUserIds.includes(friend.id)
+-                                                ? 'ri-checkbox-circle-fill text-primary'
+-                                                : 'ri-checkbox-blank-circle-line text-muted-foreground'
+-                                        "
+-                                        class="text-lg" />
+-                                </div>
+-                            </button>
++                <CardContent class="uwx-friend-layout">
++                    <div>
++                        <Input v-model="friendSearch" class="mb-3" placeholder="Search friends..." />
++                        <div class="uwx-friend-list">
++                            <div
++                                v-for="friend in filteredFriends"
++                                :key="friend.id"
++                                class="uwx-friend-row"
++                                :class="{
++                                    selected: selectedUserIds.includes(friend.id),
++                                    excluded: excludedUserIds.includes(friend.id),
++                                    profiled: profileUserId === friend.id
++                                }">
++                                <button class="uwx-friend-main" type="button" @click="profileUserId = friend.id">
++                                    <div class="min-w-0 text-left">
++                                        <div class="font-medium truncate">{{ friend.displayName }}</div>
++                                        <div class="flex flex-wrap gap-1 mt-1">
++                                            <span v-for="role in rolesForUser(friend.id).slice(0, 3)" :key="role" class="uwx-mini-role">{{ role }}</span>
++                                        </div>
++                                    </div>
++                                    <div class="flex items-center gap-2">
++                                        <Badge v-if="excludedUserIds.includes(friend.id)" variant="destructive">NO INVITE</Badge>
++                                        <Badge :variant="friend.state === 'online' ? 'default' : 'outline'">{{ friend.state }}</Badge>
++                                    </div>
++                                </button>
++                                <Button
++                                    size="icon"
++                                    :variant="selectedUserIds.includes(friend.id) ? 'default' : 'ghost'"
++                                    title="Toggle Selected invite audience"
++                                    @click="toggleSelectedUser(friend.id)">
++                                    <i :class="selectedUserIds.includes(friend.id) ? 'ri-user-follow-fill' : 'ri-user-add-line'" />
++                                </Button>
++                                <Button
++                                    size="icon"
++                                    :variant="excludedUserIds.includes(friend.id) ? 'destructive' : 'ghost'"
++                                    :title="excludedUserIds.includes(friend.id) ? 'Allow invites again' : 'Never auto-invite this user'"
++                                    @click="toggleExcludedUser(friend.id)">
++                                    <i :class="excludedUserIds.includes(friend.id) ? 'ri-shield-check-fill' : 'ri-shield-line'" />
++                                </Button>
++                            </div>
++                        </div>
++                    </div>
++                    <div class="uwx-profile-preview">
++                        <template v-if="selectedProfileFriend">
++                            <div class="uwx-profile-kicker">NETWORK PROFILE</div>
++                            <h3>{{ selectedProfileFriend.displayName }}</h3>
++                            <p>{{ selectedProfileFriend.id }}</p>
++                            <div class="flex flex-wrap gap-1 mt-4">
++                                <Badge v-for="role in selectedProfileRoles" :key="role" variant="outline">{{ role }}</Badge>
++                                <Badge v-if="!selectedProfileRoles.length" variant="outline">No UnderWeb roles</Badge>
++                            </div>
++                            <div class="uwx-profile-status mt-5">
++                                <div><span>VRChat</span><strong>{{ selectedProfileFriend.state }}</strong></div>
++                                <div><span>UnderWeb</span><strong>{{ selectedNetworkMember ? 'linked' : 'not linked' }}</strong></div>
++                            </div>
+                             <Button
+-                                size="icon"
+-                                :variant="excludedUserIds.includes(friend.id) ? 'destructive' : 'ghost'"
+-                                :title="excludedUserIds.includes(friend.id) ? 'Allow invites again' : 'Never auto-invite this user'"
+-                                @click="toggleExcludedUser(friend.id)">
+-                                <i :class="excludedUserIds.includes(friend.id) ? 'ri-shield-check-fill' : 'ri-shield-line'" />
++                                v-if="selectedNetworkMember?.underwebUserId"
++                                class="mt-5 w-full"
++                                variant="outline"
++                                @click="openUnderWebProfile(selectedNetworkMember)">
++                                Open UnderWeb profile
+                             </Button>
++                        </template>
++                        <div v-else class="uwx-profile-empty">
++                            <i class="ri-user-search-line" />
++                            <span>Select a friend to inspect their network profile.</span>
+                         </div>
+                     </div>
+                 </CardContent>
+             </Card>
+ 
+-            <Card class="uwx-card uwx-card-wide">
++            <Card v-show="activePanel === 'people'" class="uwx-card uwx-card-wide">
+                 <CardHeader>
+                     <div class="flex items-start justify-between gap-4">
+                         <div>
+-                            <CardTitle>UWX activity</CardTitle>
++                            <CardTitle>UWX Activity</CardTitle>
+                             <CardDescription>Local activity log for the UnderWeb control layer.</CardDescription>
+                         </div>
+                         <Button size="sm" variant="ghost" @click="clearActivityLog">Clear</Button>
+@@ -312,19 +669,24 @@
+     import { computed, ref } from 'vue';
+     import { storeToRefs } from 'pinia';
+     import { useRouter } from 'vue-router';
++    import { toast } from 'vue-sonner';
+     import { Badge } from '@/components/ui/badge';
+     import { Button } from '@/components/ui/button';
+     import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+     import { Input } from '@/components/ui/input';
+     import { Switch } from '@/components/ui/switch';
+ 
++    import { UWX_VERSION } from '../../shared/constants/uwx';
+     import { openExternalLink, parseLocation } from '../../shared/utils';
+-    import { useFriendStore, useLocationStore, useUnderWebStore } from '../../stores';
++    import { useFriendStore, useLocationStore, useOscLabStore, useUnderWebNetworkStore, useUnderWebStore } from '../../stores';
+ 
+     const router = useRouter();
+     const underWebStore = useUnderWebStore();
++    const networkStore = useUnderWebNetworkStore();
+     const friendStore = useFriendStore();
+     const locationStore = useLocationStore();
++    const oscLabStore = useOscLabStore();
++
+     const {
+         autoInviteEnabled,
+         allowedGroupIds,
+@@ -336,28 +698,119 @@
+         lastScanAt,
+         activityLog,
+         sessionInvitesSent,
++        groupRecruitEnabled,
++        groupRecruitMinPresenceSeconds,
++        isRecruiting,
++        sessionGroupInvitesSent,
+         currentGroupId,
+         currentParsedLocation,
+         isGroupInstance,
+         isCurrentGroupAllowed,
+         canAutoInviteHere,
++        canRecruitHere,
++        eligibleLobbyRecruits,
+         eligibleInviteFriends
+     } = storeToRefs(underWebStore);
+ 
++    const {
++        manifest,
++        isRefreshing,
++        networkStatus,
++        lastNetworkError,
++        notificationRules,
++        connectedAccounts,
++        activeEvent,
++        upcomingEvents,
++        latestRelease,
++        staffUserIds,
++        creatorUserIds,
++        partnerUserIds
++    } = storeToRefs(networkStore);
++
++    const {
++        enabled: oscEnabled,
++        customStatus: oscCustomStatus,
++        showWorld: oscShowWorld,
++        showEvent: oscShowEvent,
++        showHeartRate: oscShowHeartRate,
++        showNowPlaying: oscShowNowPlaying,
++        nowPlayingTitle: oscNowPlayingTitle,
++        nowPlayingArtist: oscNowPlayingArtist,
++        pulsoidToken: oscPulsoidToken,
++        heartRate: oscHeartRate,
++        heartRateState: oscHeartRateState,
++        pulseAvatarParameter: oscPulseAvatarParameter,
++        bpmAvatarParameter: oscBpmAvatarParameter,
++        preset: oscPreset,
++        chatboxPreview: oscChatboxPreview,
++        previewLength: oscPreviewLength
++    } = storeToRefs(oscLabStore);
++
++    const {
++        initOscLab,
++        setEnabled: setOscEnabled,
++        setCustomStatus: setOscCustomStatus,
++        setShowWorld: setOscShowWorld,
++        setShowEvent: setOscShowEvent,
++        setShowHeartRate: setOscShowHeartRate,
++        setShowNowPlaying: setOscShowNowPlaying,
++        setNowPlayingTitle: setOscNowPlayingTitle,
++        setNowPlayingArtist: setOscNowPlayingArtist,
++        setPulsoidToken: setOscPulsoidToken,
++        setPulseAvatarParameter: setOscPulseAvatarParameter,
++        setBpmAvatarParameter: setOscBpmAvatarParameter,
++        applyPreset: applyOscPreset,
++        sendChatbox: sendOscChatbox,
++        sendAvatarParameter: sendOscAvatarParameter
++    } = oscLabStore;
++
++    void initOscLab();
++
+     const {
+         setAutoInviteEnabled,
++        setGroupRecruitEnabled,
++        setGroupRecruitMinPresenceSeconds,
+         setInviteScope,
+-        setCooldownMinutes,
+         addAllowedGroup,
+         removeAllowedGroup,
+         toggleSelectedUser,
+         toggleExcludedUser,
+         clearActivityLog,
+-        scanAndInvite
++        scanAndInvite,
++        scanAndRecruitGroup
+     } = underWebStore;
+ 
++    const { rolesForUser, setNotificationRule, refreshNetwork } = networkStore;
++
++    const activePanel = ref('command');
++    const panelTabs = [
++        { id: 'command', label: 'Command', short: 'Live ops', icon: 'ri-dashboard-3-line' },
++        { id: 'osc', label: 'OSC Lab', short: 'Avatar + chatbox', icon: 'ri-pulse-line' },
++        { id: 'people', label: 'People', short: 'Roles + activity', icon: 'ri-team-line' },
++        { id: 'system', label: 'System', short: 'Safety + updates', icon: 'ri-settings-3-line' }
++    ];
++    const panelMeta = {
++        command: { eyebrow: 'LIVE OPERATIONS', title: 'Command Center', description: 'Lobby recruiting, instance invites, Radar, events, and connected identity.' },
++        osc: { eyebrow: 'REAL-TIME CONTROL', title: 'OSC Lab', description: 'Chatbox composition, heart rate, presets, and direct avatar parameter testing.' },
++        people: { eyebrow: 'NETWORK PEOPLE', title: 'People & Activity', description: 'Inspect roles, manage exclusions, and review what UWX did this session.' },
++        system: { eyebrow: 'LOCAL CONTROL', title: 'System & Safety', description: 'Notifications, releases, local data boundaries, and the global disarm control.' }
++    };
++    const activePanelMeta = computed(() => panelMeta[activePanel.value] || panelMeta.command);
++
+     const groupInput = ref('');
+     const friendSearch = ref('');
++    const radarFilter = ref('all');
++    const profileUserId = ref('');
++    const oscTestParameter = ref('');
++    const oscTestType = ref('bool');
++    const oscTestValue = ref('true');
++    const radarFilters = [
++        { id: 'all', label: 'All' },
++        { id: 'underweb', label: 'UnderWeb' },
++        { id: 'staff', label: 'Staff' },
++        { id: 'creators', label: 'Creators' },
++        { id: 'partners', label: 'Partners' }
++    ];
+ 
+     const allFriends = computed(() => {
+         return Array.from(friendStore.friends.values())
+@@ -382,27 +835,50 @@
+         );
+     });
+ 
+-    const onlineFriendsCount = computed(() => allFriends.value.filter((friend) => friend.state === 'online').length);
++    const onlineFriends = computed(() => allFriends.value.filter((friend) => friend.state === 'online'));
++    const onlineFriendsCount = computed(() => onlineFriends.value.length);
+     const favoriteOnlineCount = computed(() => friendStore.allFavoriteOnlineFriends.length);
+     const currentPlayerCount = computed(() => locationStore.lastLocation.playerList?.size || 0);
+     const currentFriendsHere = computed(() => locationStore.lastLocation.friendList?.size || 0);
+     const currentWorldName = computed(() => locationStore.lastLocation.name || currentParsedLocation.value.worldId || 'VRChat');
++    const networkMemberCount = computed(() => manifest.value.members.length);
++    const networkOnlineCount = computed(() => onlineFriends.value.filter((friend) => networkStore.memberByVrchatId.has(friend.id)).length);
++    const staffOnlineCount = computed(() => onlineFriends.value.filter((friend) => staffUserIds.value.has(friend.id)).length);
++    const creatorOnlineCount = computed(() => onlineFriends.value.filter((friend) => creatorUserIds.value.has(friend.id)).length);
++    const partnerOnlineCount = computed(() => onlineFriends.value.filter((friend) => partnerUserIds.value.has(friend.id)).length);
+ 
+     const inviteScopeLabel = computed(() => {
+-        if (inviteScope.value === 'favorites') return 'Favorite friends';
+-        if (inviteScope.value === 'all-online') return 'All online friends';
+-        return 'Selected friends';
++        const labels = {
++            selected: 'Selected friends',
++            favorites: 'Favorite friends',
++            'all-online': 'All online friends',
++            staff: 'UnderWeb staff',
++            creators: 'UnderWeb creators',
++            partners: 'UnderWeb partners'
++        };
++        return labels[inviteScope.value] || 'Selected friends';
+     });
+ 
+-    const lastScanText = computed(() => {
+-        if (!lastScanAt.value) return 'Not yet';
+-        return new Date(lastScanAt.value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
++    const updateAvailable = computed(() => {
++        const latest = String(latestRelease.value?.version || '').replace(/^v/i, '');
++        if (!latest) return false;
++        return latest !== UWX_VERSION;
+     });
+ 
++    const oscPreviewPercent = computed(() => Math.min(100, Math.round((oscPreviewLength.value / 144) * 100)));
++
++    function includeInRadar(friend) {
++        if (radarFilter.value === 'underweb') return networkStore.memberByVrchatId.has(friend.id);
++        if (radarFilter.value === 'staff') return staffUserIds.value.has(friend.id);+        if (radarFilter.value === 'creators') return creatorUserIds.value.has(friend.id);
++        if (radarFilter.value === 'partners') return partnerUserIds.value.has(friend.id);
++        return true;
++    }
++
+     const radarClusters = computed(() => {
+         const clusters = new Map();
+-        for (const friend of allFriends.value) {
+-            if (friend.state !== 'online' || !friend.location) continue;
++        for (const friend of onlineFriends.value) {
++            if (!includeInRadar(friend) || !friend.location) continue;
+             const parsed = parseLocation(friend.location);
+             if (!parsed.isRealInstance || !parsed.instanceId) continue;
+             const existing = clusters.get(parsed.tag) || {
+@@ -411,60 +887,86 @@
+                 instanceName: parsed.instanceName,
+                 groupId: parsed.groupId || '',
+                 count: 0,
+-                names: []
++                names: [],
++                roleCounts: { staff: 0, creators: 0, partners: 0 }
+             };
+             existing.count += 1;
+-            if (existing.names.length < 4) {
+-                existing.names.push(friend.displayName);
+-            }
++            if (existing.names.length < 4) existing.names.push(friend.displayName);
++            if (staffUserIds.value.has(friend.id)) existing.roleCounts.staff += 1;
++            if (creatorUserIds.value.has(friend.id)) existing.roleCounts.creators += 1;
++            if (partnerUserIds.value.has(friend.id)) existing.roleCounts.partners += 1;
+             clusters.set(parsed.tag, existing);
+         }
+         return [...clusters.values()]
+-            .map((cluster) => ({
+-                ...cluster,
+-                isNetworkGroup: Boolean(cluster.groupId && allowedGroupIds.value.includes(cluster.groupId)),
+-                label: `${cluster.worldId || 'World'} · ${cluster.instanceName || 'instance'}`
+-            }))
++            .map((cluster) => {
++                const roleSummary = [
++                    cluster.roleCounts.staff ? `${cluster.roleCounts.staff} staff` : '',
++                    cluster.roleCounts.creators ? `${cluster.roleCounts.creators} creators` : '',
++                    cluster.roleCounts.partners ? `${cluster.roleCounts.partners} partners` : ''
++                ]
++                    .filter(Boolean)
++                    .join(' · ');
++                return {
++                    ...cluster,
++                    roleSummary,
++                    isNetworkGroup: Boolean(cluster.groupId && allowedGroupIds.value.includes(cluster.groupId)),
++                    label: `${cluster.worldId || 'World'} · ${cluster.instanceName || 'instance'}`
++                };
++            })
+             .sort((a, b) => {
+                 if (a.isNetworkGroup !== b.isNetworkGroup) return a.isNetworkGroup ? -1 : 1;
+                 return b.count - a.count;
+             })
+-            .slice(0, 6);
++            .slice(0, 8);
+     });
+ 
++    const selectedProfileFriend = computed(() => allFriends.value.find((friend) => friend.id === profileUserId.value) || null);
++    const selectedNetworkMember = computed(() =>
++        selectedProfileFriend.value ? networkStore.memberByVrchatId.get(selectedProfileFriend.value.id) || null : null
++    );
++    const selectedProfileRoles = computed(() =>
++        selectedProfileFriend.value ? rolesForUser(selectedProfileFriend.value.id).slice(0, 10) : []
++    );
++
+     const statusText = computed(() => {
+         if (!isGroupInstance.value) return 'NOT IN GROUP INSTANCE';
+         if (!isCurrentGroupAllowed.value) return 'GROUP NOT ALLOWED';
+-        if (!autoInviteEnabled.value) return 'READY / DISARMED';
+-        return 'AUTO INVITE ARMED';
++        if (groupRecruitEnabled.value) return 'GROUP RECRUITER ARMED';
++        if (autoInviteEnabled.value) return 'INSTANCE INVITER ARMED';
++        return 'READY / DISARMED';
+     });
+ 
+     const statusClass = computed(() => ({
+-        ready: canAutoInviteHere.value && !autoInviteEnabled.value,
+-        armed: canAutoInviteHere.value && autoInviteEnabled.value,
++        ready: canAutoInviteHere.value && !autoInviteEnabled.value && !groupRecruitEnabled.value,
++        armed: canAutoInviteHere.value && (autoInviteEnabled.value || groupRecruitEnabled.value),
+         blocked: !canAutoInviteHere.value
+     }));
+ 
+     async function addCurrentGroup() {
+-        if (currentGroupId.value) {
+-            await addAllowedGroup(currentGroupId.value);
+-        }
++        if (currentGroupId.value) await addAllowedGroup(currentGroupId.value);
+     }
+ 
+     async function addGroupFromInput() {
+-        if (await addAllowedGroup(groupInput.value)) {
+-            groupInput.value = '';
+-        }
+-    }
+-
+-    function updateCooldown(event) {
+-        void setCooldownMinutes(event.target.value);
++        if (await addAllowedGroup(groupInput.value)) groupInput.value = '';
+     }
+ 
+     function inviteNow() {
+         void scanAndInvite({ source: 'manual', force: true });
+     }
+ 
++    function recruitNow() {
++        const count = eligibleLobbyRecruits.value.length;
++        if (!count) {
++            toast.info('No eligible lobby occupants to recruit right now.');
++            return;
++        }
++        const confirmed = window.confirm(
++            `Invite ${count} eligible lobby occupant${count === 1 ? '' : 's'} into the current VRChat group?\n\nExisting group members, exclusions, and unverified membership states will be skipped.`
++        );
++        if (!confirmed) return;
++        void scanAndRecruitGroup({ source: 'manual', force: true });
++    }
++
+     function openUnderWeb() {
+         openExternalLink('https://underweb.cloud');
+     }
+@@ -473,6 +975,10 @@
+         openExternalLink('https://underweb.cloud/events');
+     }
+ 
++    function openConnections() {
++        openExternalLink('https://underweb.cloud/settings/connections');
++    }
++
+     function openFriendsLocations() {
+         router.push({ name: 'friends-locations' });
+     }
+@@ -481,6 +987,55 @@
+         openExternalLink('https://vrchat.com/home/groups');
+     }
+ 
++    function openEvent(event) {
++        const suffix = event?.id ? `/${encodeURIComponent(event.id)}` : '';
++        openExternalLink(`https://underweb.cloud/events${suffix}`);
++    }
++
++    function openUnderWebProfile(member) {
++        if (!member?.underwebUserId) return;
++        openExternalLink(`https://underweb.cloud/profile/${encodeURIComponent(member.underwebUserId)}`);
++    }
++
++    async function copyText(value) {
++        try {
++            await navigator.clipboard.writeText(value);
++            toast.success('Copied to clipboard.');
++        } catch {
++            toast.error('Could not copy to clipboard.');
++        }
++    }
++
++    async function disarmUwx() {
++        await Promise.all([setAutoInviteEnabled(false), setGroupRecruitEnabled(false), setOscEnabled(false)]);
++        toast.success('UWX automation and OSC are disarmed.');
++    }
++
++    async function sendOscTestParameter() {
++        try {
++            let value = oscTestValue.value;
++            if (oscTestType.value === 'bool') value = ['true', '1', 'on', 'yes'].includes(String(value).toLowerCase());
++            if (oscTestType.value === 'int') value = Math.round(Number(value) || 0);
++            if (oscTestType.value === 'float') value = Number(value) || 0;
++            await sendOscAvatarParameter(oscTestParameter.value, oscTestType.value, value);
++            toast.success(`Sent ${oscTestParameter.value}.`);
++        } catch (error) {
++            toast.error(error?.message || 'OSC parameter send failed.');
++        }
++    }
++
++    function formatEventTime(event) {
++        if (!event?.startAt) return 'Schedule pending';
++        const start = new Date(event.startAt);
++        if (Number.isNaN(start.getTime())) return 'Schedule pending';
++        return start.toLocaleString([], {
++            month: 'short',
++            day: 'numeric',
++            hour: 'numeric',
++            minute: '2-digit'
++        });
++    }
++
+     function formatTime(timestamp) {
+         return new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+     }
+@@ -489,8 +1044,9 @@
+ <style scoped>
+     .uwx-page {
+         background:
+-            radial-gradient(circle at 12% 0%, rgb(103 255 0 / 9%), transparent 30%),
+-            linear-gradient(180deg, rgb(0 0 0 / 10%), transparent 30%),
++            radial-gradient(circle at 12% 0%, rgb(103 255 0 / 10%), transparent 30%),
++            radial-gradient(circle at 90% 18%, rgb(0 144 255 / 6%), transparent 26%),
++            linear-gradient(180deg, rgb(0 0 0 / 12%), transparent 30%),
+             var(--sidebar);
+     }
+ 
+@@ -504,11 +1060,13 @@
+         margin-bottom: 16px;
+     }
+ 
+-    .uwx-kicker {
+-        font-size: 11px;
+-        letter-spacing: 0.28em;
++    .uwx-kicker,
++    .uwx-profile-kicker,
++    .uwx-event-eyebrow {
++        font-size: 10px;
++        letter-spacing: 0.24em;
+         color: #76ff00;
+-        font-weight: 800;
++        font-weight: 900;
+     }
+ 
+     .uwx-title {
+@@ -519,30 +1077,26 @@
+         letter-spacing: -0.045em;
+     }
+ 
+-    .uwx-subtitle {
+-        margin: 10px 0 0;
+-        color: var(--muted-foreground);
+-    }
++    .uwx-subtitle { margin: 10px 0 0; color: var(--muted-foreground); }
+ 
+-    .uwx-instance-badge {
++    .uwx-instance-badge,
++    .uwx-network-state {
+         display: inline-flex;
+         align-items: center;
+         gap: 8px;
+         padding: 8px 10px;
+         border: 1px solid var(--border);
+         border-radius: 999px;
+-        font-size: 11px;
+-        font-weight: 800;
++        font-size: 10px;
++        font-weight: 900;
+         letter-spacing: 0.08em;
+         white-space: nowrap;
+     }
+ 
+-    .uwx-status-dot {
+-        width: 7px;
+-        height: 7px;
+-        border-radius: 999px;
+-        background: #6b7280;
+-    }
++    .uwx-network-state { background: transparent; cursor: pointer; color: var(--muted-foreground); }
++    .uwx-network-state:hover { border-color: rgb(118 255 0 / 35%); color: #76ff00; }
++
++    .uwx-status-dot { width: 7px; height: 7px; border-radius: 999px; background: #6b7280; }
+     .uwx-instance-badge.armed { border-color: rgb(118 255 0 / 55%); color: #76ff00; }
+     .uwx-instance-badge.armed .uwx-status-dot { background: #76ff00; box-shadow: 0 0 14px #76ff00; }
+     .uwx-instance-badge.ready .uwx-status-dot { background: #eab308; }
+@@ -563,71 +1117,112 @@
+         background: color-mix(in oklab, var(--card) 95%, #76ff00 5%);
+     }
+     .uwx-overview-tile span,
+-    .uwx-section-label {
+-        color: #76ff00;
+-        font-size: 10px;
+-        font-weight: 800;
+-        letter-spacing: 0.12em;
+-    }
++    .uwx-section-label { color: #76ff00; font-size: 10px; font-weight: 900; letter-spacing: 0.12em; }
+     .uwx-overview-tile strong,
+-    .uwx-overview-tile small {
+-        display: block;
+-        overflow: hidden;
+-        text-overflow: ellipsis;
+-        white-space: nowrap;
+-    }
++    .uwx-overview-tile small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+     .uwx-overview-tile strong { margin-top: 6px; font-size: 15px; }
+     .uwx-overview-tile small { margin-top: 2px; color: var(--muted-foreground); }
+ 
+-    .uwx-grid {
+-        display: grid;
+-        grid-template-columns: repeat(2, minmax(0, 1fr));
++    .uwx-event-banner {
++        display: flex;
++        align-items: center;
+         gap: 14px;
++        margin-bottom: 14px;
++        padding: 12px 14px;
++        border: 1px solid rgb(118 255 0 / 35%);
++        border-radius: var(--radius);
++        background: linear-gradient(90deg, rgb(118 255 0 / 10%), rgb(118 255 0 / 3%));
+     }
++    .uwx-event-live { color: #76ff00; font-size: 10px; font-weight: 900; letter-spacing: 0.16em; }
+ 
++    .uwx-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+     .uwx-card {
+-        border-color: rgb(118 255 0 / 10%);
+-        background: color-mix(in oklab, var(--card) 94%, #76ff00 6%);
++        border-color: rgb(255 255 255 / 7%);
++        background: color-mix(in oklab, var(--card) 98%, #76ff00 2%);
++        box-shadow: 0 18px 48px rgb(0 0 0 / 10%);
+     }
+-
++    .uwx-command-card { border-color: rgb(118 255 0 / 17%); }
+     .uwx-card-wide { grid-column: 1 / -1; }
+ 
+-    .uwx-stat-row {
++    .uwx-stat-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
++    .uwx-stat,
++    .uwx-list-row,
++
++    .uwx-control-block {
++        border: 1px solid rgb(118 255 0 / 12%);
++        background: rgb(0 0 0 / 16%);
++        border-radius: 10px;
++        padding: 16px;
++    }
++
++    .uwx-control-primary {
++        position: relative;
++        overflow: hidden;
++        border-color: rgb(118 255 0 / 26%);
++        background: linear-gradient(110deg, rgb(118 255 0 / 5%), rgb(0 0 0 / 16%) 34%);
++        box-shadow: inset 0 0 28px rgb(118 255 0 / 2%);
++    }
++    .uwx-control-primary::before {
++        content: '';
++        position: absolute;
++        inset: 0 auto 0 0;
++        width: 3px;
++        background: #76ff00;
++        box-shadow: 0 0 18px rgb(118 255 0 / 45%);
++    }
++
++    .uwx-control-title {
++        margin-top: 4px;
++        font-size: 16px;
++        font-weight: 850;
++    }
++
++    .uwx-scope-grid {
+         display: grid;
+-        grid-template-columns: repeat(4, minmax(0, 1fr));
+-        gap: 10px;
++        grid-template-columns: repeat(2, minmax(0, 1fr));
++        gap: 18px;
+     }
+ 
+-    .uwx-stat,
+-    .uwx-list-row,
+-    .uwx-warning {
+-        border: 1px solid var(--border);
+-        background: rgb(0 0 0 / 10%);
+-        border-radius: var(--radius);
++    .uwx-dwell-input {
++        display: flex;
++        align-items: center;
++        gap: 8px;
++        color: var(--muted-foreground);
++        font-size: 12px;
++    }
++
++    .uwx-dwell-input input {
++        width: 82px;
+     }
+ 
++    @media (max-width: 900px) {
++        .uwx-scope-grid {
++            grid-template-columns: 1fr;
++        }
++    }
++    .uwx-warning { border: 1px solid var(--border); background: rgb(0 0 0 / 10%); border-radius: var(--radius); }
+     .uwx-stat { padding: 12px; min-width: 0; }
+     .uwx-stat strong { display: block; margin-top: 5px; overflow: hidden; text-overflow: ellipsis; }
+-    .uwx-stat-label { color: #76ff00; font-size: 10px; font-weight: 800; letter-spacing: 0.12em; }
++    .uwx-stat-label { color: #76ff00; font-size: 10px; font-weight: 900; letter-spacing: 0.12em; }
+     .uwx-list-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 10px; }
+     .uwx-warning { padding: 10px 12px; color: var(--muted-foreground); font-size: 12px; border-color: rgb(234 179 8 / 25%); }
+ 
+-    .uwx-quick-grid {
+-        display: grid;
+-        grid-template-columns: repeat(2, minmax(0, 1fr));
+-        gap: 8px;
++    .uwx-filter-row { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; }
++    .uwx-filter-row button {
++        padding: 6px 9px;
++        border: 1px solid var(--border);
++        border-radius: 999px;
++        background: transparent;
++        color: var(--muted-foreground);
++        font-size: 11px;
++        font-weight: 800;
++        cursor: pointer;
+     }
++    .uwx-filter-row button.active { border-color: rgb(118 255 0 / 45%); background: rgb(118 255 0 / 10%); color: #76ff00; }
+ 
+     .uwx-radar-list,
+     .uwx-friend-list,
+-    .uwx-log-list {
+-        max-height: 360px;
+-        overflow: auto;
+-        display: flex;
+-        flex-direction: column;
+-        gap: 6px;
+-    }
+-
++    .uwx-log-list { max-height: 380px; overflow: auto; display: flex; flex-direction: column; gap: 6px; }
+     .uwx-radar-row {
+         display: flex;
+         align-items: center;
+@@ -652,45 +1247,80 @@
+         color: #76ff00;
+         font-weight: 900;
+     }
++    .uwx-role-summary { margin-top: 4px; color: #76ff00; font-size: 10px; letter-spacing: 0.05em; }
+ 
+-    .uwx-friend-row {
++    .uwx-account-row {
+         display: flex;
+-        width: 100%;
+         align-items: center;
+-        gap: 8px;
+-        padding: 4px;
++        gap: 10px;
++        padding: 10px;
+         border: 1px solid var(--border);
+         border-radius: var(--radius);
+-        background: transparent;
++        background: rgb(0 0 0 / 8%);
+     }
++    .uwx-account-icon { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; background: rgb(118 255 0 / 8%); color: #76ff00; font-size: 18px; }
++    .uwx-account-row strong,
++    .uwx-account-row span { display: block; }
++    .uwx-account-row span { color: var(--muted-foreground); font-size: 11px; overflow: hidden; text-overflow: ellipsis; }
++
++    .uwx-event-grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(280px, 0.7fr); gap: 16px; }
++    .uwx-event-primary {
++        padding: 18px;
++        border: 1px solid rgb(118 255 0 / 24%);
++        border-radius: var(--radius);
++        background: linear-gradient(135deg, rgb(118 255 0 / 9%), transparent 55%);
++    }
++    .uwx-event-primary h3 { margin: 7px 0 0; font-size: 26px; font-weight: 900; letter-spacing: -0.03em; }
++    .uwx-event-primary p { margin-top: 5px; color: var(--muted-foreground); }
++    .uwx-event-side { display: flex; flex-direction: column; gap: 7px; }
++    .uwx-event-empty { display: flex; align-items: center; gap: 12px; padding: 18px; border: 1px dashed var(--border); border-radius: var(--radius); }
++    .uwx-event-empty i { color: #76ff00; font-size: 26px; }
++    .uwx-event-empty p { margin-top: 3px; color: var(--muted-foreground); font-size: 12px; }
++    .uwx-upcoming-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
++    .uwx-upcoming-list button { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: transparent; text-align: left; cursor: pointer; }
++    .uwx-upcoming-list button:hover { border-color: rgb(118 255 0 / 28%); }
++    .uwx-upcoming-list span { color: var(--muted-foreground); font-size: 11px; }
++
++    .uwx-toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); }
++    .uwx-toggle-row:last-child { border-bottom: 0; }
++    .uwx-toggle-row strong,
++    .uwx-toggle-row span { display: block; }
++    .uwx-toggle-row span { margin-top: 2px; color: var(--muted-foreground); font-size: 11px; }
++
++    .uwx-release-card { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 14px; padding: 14px; border: 1px solid var(--border); border-radius: var(--radius); }
++    .uwx-release-card.available { border-color: rgb(118 255 0 / 40%); background: rgb(118 255 0 / 6%); }
++    .uwx-release-card > div:last-child { text-align: right; }
++
++    .uwx-quick-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
++
++    .uwx-friend-layout { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.55fr); gap: 14px; }
++    .uwx-friend-row { display: flex; width: 100%; align-items: center; gap: 6px; padding: 4px; border: 1px solid var(--border); border-radius: var(--radius); background: transparent; }
+     .uwx-friend-row:hover { background: rgb(118 255 0 / 5%); }
+-    .uwx-friend-row.selected { border-color: rgb(118 255 0 / 38%); background: rgb(118 255 0 / 7%); }
++    .uwx-friend-row.selected { border-color: rgb(118 255 0 / 38%); }
+     .uwx-friend-row.excluded { border-color: rgb(239 68 68 / 32%); }
+-    .uwx-friend-main {
+-        display: flex;
+-        flex: 1;
+-        min-width: 0;
+-        align-items: center;
+-        justify-content: space-between;
+-        gap: 12px;
+-        padding: 6px 8px;
+-        background: transparent;
+-        cursor: pointer;
+-    }
++    .uwx-friend-row.profiled { background: rgb(118 255 0 / 7%); }
++    .uwx-friend-main { display: flex; flex: 1; min-width: 0; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 8px; background: transparent; cursor: pointer; }
++    .uwx-mini-role { padding: 2px 5px; border-radius: 999px; background: rgb(118 255 0 / 8%); color: #76ff00; font-size: 9px; font-weight: 800; }
+ 
+-    .uwx-log-row {
+-        display: grid;
+-        grid-template-columns: 76px 78px minmax(0, 1fr);
+-        align-items: center;
+-        gap: 10px;
+-        padding: 8px 0;
+-        border-bottom: 1px solid var(--border);
+-        font-size: 12px;
+-    }
++    .uwx-profile-preview { min-height: 280px; padding: 16px; border: 1px solid rgb(118 255 0 / 15%); border-radius: var(--radius); background: linear-gradient(180deg, rgb(118 255 0 / 5%), transparent); }
++    .uwx-profile-preview h3 { margin-top: 6px; font-size: 24px; font-weight: 900; letter-spacing: -0.03em; }
++    .uwx-profile-preview p { color: var(--muted-foreground); font-size: 11px; word-break: break-all; }
++    .uwx-profile-status { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
++    .uwx-profile-status div { padding: 10px; border: 1px solid var(--border); border-radius: var(--radius); }
++    .uwx-profile-status span,
++    .uwx-profile-status strong { display: block; }
++    .uwx-profile-status span { color: var(--muted-foreground); font-size: 10px; }
++    .uwx-profile-status strong { margin-top: 3px; text-transform: uppercase; }
++    .uwx-profile-empty { min-height: 245px; display: grid; place-items: center; align-content: center; gap: 10px; color: var(--muted-foreground); text-align: center; }
++    .uwx-profile-empty i { color: #76ff00; font-size: 28px; }
++
++    .uwx-log-row { display: grid; grid-template-columns: 76px 78px minmax(0, 1fr); align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+     .uwx-log-time { color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+ 
+     @media (max-width: 1100px) {
+         .uwx-overview { grid-template-columns: repeat(2, minmax(0, 1fr)); }
++        .uwx-event-grid,
++        .uwx-friend-layout { grid-template-columns: 1fr; }
+     }
+ 
+     @media (max-width: 900px) {
+@@ -698,5 +1328,119 @@
+         .uwx-card-wide { grid-column: auto; }
+         .uwx-stat-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+         .uwx-hero { flex-direction: column; }
++        .uwx-hero > div:last-child { align-items: flex-start; }
++        .uwx-event-banner { align-items: flex-start; flex-direction: column; }
++        .uwx-upcoming-list { grid-template-columns: 1fr; }
+     }
++
++    .uwx-osc-card { border-color: rgb(118 255 0 / 24%); }
++    .uwx-osc-preset-row { display: flex; flex-wrap: wrap; gap: 8px; }
++    .uwx-osc-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
++    .uwx-osc-toggle-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
++    .uwx-toggle-row.compact { padding: 9px 10px; border: 1px solid var(--border); border-radius: var(--radius); }
++    .uwx-chatbox-preview { min-height: 92px; padding: 12px; border: 1px solid rgb(118 255 0 / 22%); border-radius: var(--radius); background: rgb(0 0 0 / 18%); }
++    .uwx-chatbox-preview p { margin-top: 8px; color: var(--foreground); font-size: 13px; line-height: 1.55; }
++    .uwx-bpm-display { display: flex; align-items: baseline; gap: 8px; }
++    .uwx-bpm-display strong { font-size: 34px; line-height: 1; color: #76ff00; }
++    .uwx-bpm-display span { color: var(--muted-foreground); font-size: 11px; font-weight: 900; letter-spacing: .12em; }
++    .uwx-help { color: var(--muted-foreground); font-size: 11px; line-height: 1.45; }
++    .uwx-field-label { display: block; margin-bottom: 6px; color: var(--muted-foreground); font-size: 10px; font-weight: 800; letter-spacing: .08em; }
++    .uwx-select { min-height: 36px; padding: 0 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--background); color: var(--foreground); }
++
++
++    .uwx-panel-tabs {
++        display: grid;
++        grid-template-columns: repeat(4, minmax(0, 1fr));
++        gap: 8px;
++        margin: 0 0 10px;
++        padding: 6px;
++        border: 1px solid rgb(255 255 255 / 7%);
++        border-radius: 14px;
++        background: rgb(0 0 0 / 18%);
++        box-shadow: 0 12px 36px rgb(0 0 0 / 12%);
++    }
++
++    .uwx-panel-tabs button {
++        display: grid;
++        grid-template-columns: 28px 1fr;
++        grid-template-rows: auto auto;
++        align-items: center;
++        column-gap: 8px;
++        min-width: 0;
++        padding: 10px 12px;
++        border: 1px solid transparent;
++        border-radius: 10px;
++        background: transparent;
++        color: var(--muted-foreground);
++        text-align: left;
++        cursor: pointer;
++        transition: 140ms ease;
++    }
++    .uwx-panel-tabs button i { grid-row: 1 / span 2; font-size: 18px; }
++    .uwx-panel-tabs button span { color: var(--foreground); font-size: 12px; font-weight: 900; }
++    .uwx-panel-tabs button small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
++    .uwx-panel-tabs button:hover { background: rgb(255 255 255 / 3%); }
++    .uwx-panel-tabs button.active {
++        border-color: rgb(118 255 0 / 28%);
++        background: linear-gradient(180deg, rgb(118 255 0 / 9%), rgb(118 255 0 / 3%));
++        color: #76ff00;
++        box-shadow: inset 0 -2px 0 rgb(118 255 0 / 55%);
++    }
++
++    .uwx-panel-context {
++        display: flex;
++        align-items: center;
++        justify-content: space-between;
++        gap: 20px;
++        margin: 0 0 14px;
++        padding: 9px 4px 13px;
++        border-bottom: 1px solid rgb(255 255 255 / 6%);
++    }
++    .uwx-panel-context strong { display: block; margin-top: 3px; font-size: 18px; letter-spacing: -0.02em; }
++    .uwx-panel-context p { max-width: 620px; margin: 0; color: var(--muted-foreground); font-size: 11px; text-align: right; }
++
++    .uwx-safety-strip {
++        display: grid;
++        grid-template-columns: repeat(4, minmax(0, 1fr));
++        gap: 6px;
++    }
++    .uwx-safety-strip span {
++        display: flex;
++        align-items: center;
++        gap: 6px;
++        min-width: 0;
++        padding: 7px 9px;
++        border: 1px solid rgb(118 255 0 / 13%);
++        border-radius: 8px;
++        background: rgb(118 255 0 / 4%);
++        color: var(--muted-foreground);
++        font-size: 10px;
++        white-space: nowrap;
++    }
++    .uwx-safety-strip i { color: #76ff00; }
++
++    .uwx-osc-toolbar {
++        display: flex;
++        align-items: center;
++        justify-content: space-between;
++        gap: 16px;
++        padding: 12px 14px;
++        border: 1px solid rgb(255 255 255 / 7%);
++        border-radius: 10px;
++        background: rgb(0 0 0 / 16%);
++    }
++    .uwx-osc-toolbar > div:first-child > span { display: block; margin-top: 3px; color: var(--muted-foreground); font-size: 10px; }
++    .uwx-char-count { color: var(--muted-foreground); font-size: 11px; font-variant-numeric: tabular-nums; }
++    .uwx-char-meter { height: 3px; margin-top: 8px; overflow: hidden; border-radius: 999px; background: rgb(255 255 255 / 7%); }
++    .uwx-char-meter span { display: block; height: 100%; border-radius: inherit; background: #76ff00; transition: width 140ms ease; }
++    .uwx-chatbox-preview small { display: block; margin-top: 8px; color: var(--muted-foreground); font-size: 9px; }
++
++    @media (max-width: 900px) {
++        .uwx-panel-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
++        .uwx-panel-context { align-items: flex-start; flex-direction: column; gap: 6px; }
++        .uwx-panel-context p { text-align: left; }
++        .uwx-safety-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
++        .uwx-osc-toolbar { align-items: flex-start; flex-direction: column; }
++    }
++
+ </style>
