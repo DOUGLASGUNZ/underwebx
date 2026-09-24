@@ -1,0 +1,337 @@
+eStore('UnderWeb', () => {
+             return;
+         }
+         await loadSettings();
++        await networkStore.initUnderWebNetwork();
+         initialized.value = true;
+         startScanLoop();
+ 
+@@ -406,9 +668,20 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+                     return;
+                 }
+                 addLog('info', `Instance changed: ${next || 'unknown'}.`);
++                const parsedNext = parseLocation(next || '');
++                if (
++                    networkStore.notificationRules.approvedInstance &&
++                    parsedNext.groupId &&
++                    allowedGroupIds.value.includes(parsedNext.groupId)
++                ) {
++                    toast.success('You entered an approved UnderWeb group instance.');
++                }
+                 if (autoInviteEnabled.value) {
+                     window.setTimeout(() => void scanAndInvite({ source: 'location-change' }), 2000);
+                 }
++                if (groupRecruitEnabled.value) {
++                    window.setTimeout(() => void scanAndRecruitGroup({ source: 'location-change' }), 4500);
++                }
+             }
+         );
+ 
+@@ -417,9 +690,27 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+             (loggedIn) => {
+                 if (!loggedIn) {
+                     isScanning.value = false;
+-                } else if (autoInviteEnabled.value) {
+-                    window.setTimeout(() => void scanAndInvite({ source: 'login' }), 3000);
++                    isRecruiting.value = false;
++                } else {
++                    if (autoInviteEnabled.value) window.setTimeout(() => void scanAndInvite({ source: 'login' }), 3000);
++                    if (groupRecruitEnabled.value) window.setTimeout(() => void scanAndRecruitGroup({ source: 'login' }), 5500);
++                }
++            }
++        );
++        favoriteOnlineSnapshot = new Set(friendStore.allFavoriteOnlineFriends.map((friend) => friend.id));
++        unwatchFavoriteOnline = watch(
++            () => friendStore.allFavoriteOnlineFriends.map((friend) => friend.id),
++            (nextIds) => {
++                const nextSet = new Set(nextIds);
++                if (networkStore.notificationRules.favoriteOnline) {
++                    for (const userId of nextSet) {
++                        if (!favoriteOnlineSnapshot.has(userId)) {
++                            const friend = friendStore.friends.get(userId);
++                            toast.info(`${friend?.ref?.displayName || friend?.name || 'A favorite friend'} is online.`);
++                        }
++                    }
+                 }
++                favoriteOnlineSnapshot = nextSet;
+             }
+         );
+ 
+@@ -435,6 +726,9 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+         unwatchLocation = null;
+         unwatchLogin?.();
+         unwatchLogin = null;
++        unwatchFavoriteOnline?.();
++        unwatchFavoriteOnline = null;
++        favoriteOnlineSnapshot = new Set();
+         initialized.value = false;
+     }
+ 
+@@ -452,6 +746,11 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+         rateLimitBackoffUntil,
+         activityLog,
+         sessionInvitesSent,
++        groupRecruitEnabled,
++        groupRecruitMinPresenceSeconds,
++        isRecruiting,
++        groupRecruitLastScanAt,
++        sessionGroupInvitesSent,
+         currentLocationTag,
+         currentParsedLocation,
+         currentGroupId,
+@@ -459,6 +758,9 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+         isGroupInstance,
+         isCurrentGroupAllowed,
+         canAutoInviteHere,
++        canRecruitHere,
++        lobbyPlayers,
++        eligibleLobbyRecruits,
+         selectedFriends,
+         favoriteOnlineFriends,
+         allOnlineFriends,
+@@ -470,11 +772,14 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+         setAutoInviteEnabled,
+         setInviteScope,
+         setCooldownMinutes,
++        setGroupRecruitEnabled,
++        setGroupRecruitMinPresenceSeconds,
+         addAllowedGroup,
+         removeAllowedGroup,
+         toggleSelectedUser,
+         toggleExcludedUser,
+         clearActivityLog,
+-        scanAndInvite
++        scanAndInvite,
++        scanAndRecruitGroup
+     };
+ });
+diff --git a/uwx03/VRCX-2026.09.16/src/stores/underwebNetwork.js b/src/stores/underwebNetwork.js
+new file mode 100644
+index 0000000..66e65e8
+--- /dev/null
++++ b/src/stores/underwebNetwork.js
+@@ -0,0 +1,285 @@
++import { computed, ref } from 'vue';
++import { defineStore } from 'pinia';
++import { toast } from 'vue-sonner';
++
++import configRepository from '../services/config';
++import { UWX_VERSION } from '../shared/constants/uwx';
++import { useUserStore } from './user';
++
++const MANIFEST_URL = 'https://underweb.cloud/api/uwx/manifest';
++const MANIFEST_TIMEOUT_MS = 7000;
++const CONFIG = Object.freeze({
++    cachedManifest: 'UWX_networkCachedManifest',
++    cachedAt: 'UWX_networkCachedAt',
++    notifications: 'UWX_networkNotificationRules'
++});
++
++const DEFAULT_NOTIFICATIONS = Object.freeze({
++    eventLive: true,
++    approvedInstance: true,
++    favoriteOnline: false,
++    updateAvailable: true
++});
++
++
++function compareVersions(a, b) {
++    const pa = String(a || '').replace(/^v/i, '').split('.').map((value) => Number.parseInt(value, 10) || 0);
++    const pb = String(b || '').replace(/^v/i, '').split('.').map((value) => Number.parseInt(value, 10) || 0);
++    const length = Math.max(pa.length, pb.length);
++    for (let index = 0; index < length; index += 1) {
++        const av = pa[index] || 0;
++        const bv = pb[index] || 0;
++        if (av > bv) return 1;
++        if (av < bv) return -1;
++    }
++    return 0;
++}
++
++function asArray(value) {
++    return Array.isArray(value) ? value : [];
++}
++
++function normalizeManifest(raw) {
++    const manifest = raw && typeof raw === 'object' ? raw : {};
++    const members = asArray(manifest.members)
++        .map((member) => ({
++            underwebUserId: String(member?.underwebUserId || member?.id || ''),
++            vrchatUserId: String(member?.vrchatUserId || member?.vrchat?.id || ''),
++            displayName: String(member?.displayName || member?.name || ''),
++            roles: asArray(member?.roles).map((role) => String(role)),
++            creatorTypes: asArray(member?.creatorTypes).map((role) => String(role)),
++            badges: asArray(member?.badges).map((role) => String(role)),
++            partner: Boolean(member?.partner),
++            staff: Boolean(member?.staff)
++        }))
++        .filter((member) => member.vrchatUserId.startsWith('usr_'));
++
++    const events = asArray(manifest.events)
++        .map((event) => ({
++            id: String(event?.id || ''),
++            title: String(event?.title || 'UnderWeb Event'),
++            status: String(event?.status || 'upcoming').toLowerCase(),
++            startAt: event?.startAt || null,
++            endAt: event?.endAt || null,
++            worldId: String(event?.worldId || ''),
++            groupId: String(event?.groupId || ''),
++            instanceTag: String(event?.instanceTag || ''),
++            host: String(event?.host || ''),
++            posterUrl: String(event?.posterUrl || ''),
++            staff: asArray(event?.staff).map((value) => String(value)),
++            performers: asArray(event?.performers).map((value) => String(value))
++        }))
++        .filter((event) => event.id || event.title);
++
++    return {
++        schemaVersion: String(manifest.schemaVersion || manifest.version || '1'),
++        generatedAt: manifest.generatedAt || null,
++        self: manifest.self && typeof manifest.self === 'object' ? manifest.self : null,
++        members,
++        events,
++        release: manifest.release && typeof manifest.release === 'object' ? manifest.release : null
++    };
++}
++
++export const useUnderWebNetworkStore = defineStore('UnderWebNetwork', () => {
++    const userStore = useUserStore();
++
++    const manifest = ref(normalizeManifest({}));
++    const initialized = ref(false);
++    const isRefreshing = ref(false);
++    const networkStatus = ref('offline');
++    const lastRefreshAt = ref(0);
++    const lastNetworkError = ref('');
++    const notificationRules = ref({ ...DEFAULT_NOTIFICATIONS });
++
++    const memberByVrchatId = computed(() => {
++        const map = new Map();
++        for (const member of manifest.value.members) {
++            map.set(member.vrchatUserId, member);
++        }
++        return map;
++    });
++
++    const currentVrchatUserId = computed(() => userStore.currentUser?.id || '');
++    const currentNetworkMember = computed(() => memberByVrchatId.value.get(currentVrchatUserId.value) || null);
++
++    const connectedAccounts = computed(() => {
++        const self = manifest.value.self || {};
++        const vrchatId = String(self?.vrchatUserId || self?.vrchat?.id || currentVrchatUserId.value || '');
++        const discordId = String(self?.discordUserId || self?.discord?.id || '');
++        const discordName = String(self?.discordUsername || self?.discord?.username || '');
++        const underwebId = String(self?.underwebUserId || self?.id || '');
++        return {
++            underweb: {
++                connected: Boolean(underwebId),
++                id: underwebId,
++                label: String(self?.displayName || currentNetworkMember.value?.displayName || 'UnderWeb account')
++            },
++            vrchat: {
++                connected: Boolean(vrchatId),
++                verified: Boolean(underwebId && vrchatId && vrchatId === currentVrchatUserId.value),
++                id: vrchatId,
++                label: userStore.currentUser?.displayName || currentNetworkMember.value?.displayName || 'VRChat'
++            },
++            discord: {
++                connected: Boolean(discordId),
++                id: discordId,
++                label: discordName || 'Discord'
++            }
++        };
++    });
++
++    const activeEvent = computed(() => manifest.value.events.find((event) => event.status === 'live') || null);
++    const upcomingEvents = computed(() =>
++        manifest.value.events
++            .filter((event) => event.status !== 'live' && event.status !== 'ended' && event.status !== 'cancelled')
++            .sort((a, b) => new Date(a.startAt || 0).getTime() - new Date(b.startAt || 0).getTime())
++    );
++
++    const latestRelease = computed(() => manifest.value.release || null);
++
++    function rolesForUser(userId) {
++        const member = memberByVrchatId.value.get(userId);
++        if (!member) return [];
++        return [...new Set([...member.roles, ...member.creatorTypes, ...member.badges])];
++    }
++
++    function hasAnyRole(member, needles) {
++        if (!member) return false;
++        const values = [...member.roles, ...member.creatorTypes, ...member.badges].map((value) => value.toLowerCase());
++        return needles.some((needle) => values.some((value) => value.includes(needle)));
++    }
++
++    const staffUserIds = computed(() =>
++        new Set(
++            manifest.value.members
++                .filter((member) => member.staff || hasAnyRole(member, ['owner', 'director', 'admin', 'moderator', 'staff', 'security', 'event lead']))
++                .map((member) => member.vrchatUserId)
++        )
++    );
++
++    const creatorUserIds = computed(() =>
++        new Set(
++            manifest.value.members
++                .filter(
++                    (member) =>
++                        member.creatorTypes.length > 0 ||
++                        hasAnyRole(member, ['creator', 'dj', 'artist', 'photographer', 'videographer', 'musician', 'performer', 'producer', 'unity', 'blender', 'world', 'avatar'])
++                )
++                .map((member) => member.vrchatUserId)
++        )
++    );
++
++    const partnerUserIds = computed(() =>
++        new Set(
++            manifest.value.members
++                .filter((member) => member.partner || hasAnyRole(member, ['partner']))
++                .map((member) => member.vrchatUserId)
++        )
++    );
++
++    async function saveNotificationRules() {
++        await configRepository.setObject(CONFIG.notifications, notificationRules.value);
++    }
++
++    async function setNotificationRule(key, value) {
++        if (!(key in DEFAULT_NOTIFICATIONS)) return;
++        notificationRules.value = { ...notificationRules.value, [key]: Boolean(value) };
++        await saveNotificationRules();
++    }
++
++    async function loadCachedNetwork() {
++        const [cached, cachedAt, rules] = await Promise.all([
++            configRepository.getObject(CONFIG.cachedManifest, null),
++            configRepository.getInt(CONFIG.cachedAt, 0),
++            configRepository.getObject(CONFIG.notifications, DEFAULT_NOTIFICATIONS)
++        ]);
++        if (cached) {
++            manifest.value = normalizeManifest(cached);
++            networkStatus.value = 'cached';
++            lastRefreshAt.value = Number(cachedAt) || 0;
++        }
++        notificationRules.value = { ...DEFAULT_NOTIFICATIONS, ...(rules || {}) };
++    }
++
++    async function refreshNetwork({ quiet = false } = {}) {
++        if (isRefreshing.value) return false;
++        isRefreshing.value = true;
++        lastNetworkError.value = '';
++        const previousLiveId = activeEvent.value?.id || '';
++        const controller = new AbortController();
++        const timeout = window.setTimeout(() => controller.abort(), MANIFEST_TIMEOUT_MS);
++        try {
++            const response = await fetch(MANIFEST_URL, {
++                method: 'GET',
++                headers: { Accept: 'application/json' },
++                cache: 'no-store',
++                signal: controller.signal
++            });
++            if (!response.ok) {
++                throw new Error(`UnderWeb network returned HTTP ${response.status}`);
++            }
++            const payload = normalizeManifest(await response.json());
++            manifest.value = payload;
++            networkStatu
