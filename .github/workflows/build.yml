@@ -158,7 +158,41 @@ jobs:
           Write-Host "OSC upgrade applied: UWX $version"
           Pop-Location
 
-      - name: Verify RC2 UI is present
+      - name: Apply UWX chatbox signature upgrade
+        shell: pwsh
+        run: |
+          $patchFile = Join-Path $env:GITHUB_WORKSPACE "osc-upgrade\rc3-signature.patch"
+          if (-not (Test-Path $patchFile)) {
+            throw "UWX signature patch not found."
+          }
+
+          $patchText = [System.IO.File]::ReadAllText($patchFile).Replace("`r`n", "`n")
+          [System.IO.File]::WriteAllText(
+            $patchFile,
+            $patchText,
+            (New-Object System.Text.UTF8Encoding($false))
+          )
+
+          Push-Location $env:UWX_SOURCE
+          git apply --check --verbose $patchFile
+          if ($LASTEXITCODE -ne 0) {
+            Pop-Location
+            throw "UWX signature patch check failed."
+          }
+          git apply --whitespace=nowarn $patchFile
+          if ($LASTEXITCODE -ne 0) {
+            Pop-Location
+            throw "UWX signature patch failed."
+          }
+          $version = (Get-Content .\UWX_VERSION -Raw).Trim()
+          if ($version -ne "0.4.3-rc3") {
+            Pop-Location
+            throw "Signature upgrade did not produce UWX 0.4.3-rc3; got '$version'."
+          }
+          Write-Host "UWX signature upgrade applied: UWX $version"
+          Pop-Location
+
+      - name: Verify RC3 UI is present
         shell: pwsh
         run: |
           $view = Join-Path $env:UWX_SOURCE "src\views\UnderWeb\UnderWeb.vue"
@@ -171,14 +205,16 @@ jobs:
             "Event Mode",
             "People here",
             "Keep visible",
-            "Auto-detect Windows media"
+            "Auto-detect Windows media",
+            "UWX signature",
+            "UNDERWEB X"
           )
           foreach ($needle in $required) {
             if (-not $text.Contains($needle)) {
-              throw "RC2 UI verification failed: missing '$needle'."
+              throw "RC3 UI verification failed: missing '$needle'."
             }
           }
-          Write-Host "RC2 UI verification passed."
+          Write-Host "RC3 UI verification passed."
 
       - name: Verify build tools
         shell: pwsh
