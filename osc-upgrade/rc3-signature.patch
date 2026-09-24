@@ -1,0 +1,170 @@
+diff --git a/CHANGELOG_UWX.md b/CHANGELOG_UWX.md
+--- a/CHANGELOG_UWX.md
++++ b/CHANGELOG_UWX.md
+@@ -1,5 +1,11 @@
+ # UnderWeb X changelog
+ 
++## 0.4.3-rc3 — UWX chatbox signature
++
++- Added an optional UWX branding block to OSC Chatbox Composer.
++- Added Off, Short (🕷 UWX), and Full (UNDERWEB X) signature styles.
++- Default signature style is Short so UWX is visible without wasting the 144-character budget.
++
+ ## 0.4.2-rc2 — OSC live status upgrade
+ 
+ - Added continuous chatbox keep-alive output while OSC is armed.
+diff --git a/UWX_VERSION b/UWX_VERSION
+--- a/UWX_VERSION
++++ b/UWX_VERSION
+@@ -1 +1 @@
+-0.4.2-rc2
++0.4.3-rc3
+diff --git a/src/shared/constants/uwx.js b/src/shared/constants/uwx.js
+--- a/src/shared/constants/uwx.js
++++ b/src/shared/constants/uwx.js
+@@ -1,2 +1,2 @@
+-export const UWX_VERSION = '0.4.2-rc2';
++export const UWX_VERSION = '0.4.3-rc3';
+ export const UWX_MANIFEST_URL = 'https://underweb.cloud/api/uwx/manifest';
+diff --git a/src/stores/oscLab.js b/src/stores/oscLab.js
+--- a/src/stores/oscLab.js
++++ b/src/stores/oscLab.js
+@@ -14,6 +14,7 @@ const CONFIG = Object.freeze({
+     showPopulation: 'UWX_oscShowPopulation',
+     autoBroadcast: 'UWX_oscAutoBroadcast',
+     autoMedia: 'UWX_oscAutoMedia',
++    signatureMode: 'UWX_oscSignatureMode',
+     nowPlayingTitle: 'UWX_oscNowPlayingTitle',
+     nowPlayingArtist: 'UWX_oscNowPlayingArtist',
+     pulsoidToken: 'UWX_pulsoidToken',
+@@ -45,6 +46,7 @@ export const useOscLabStore = defineStore('OscLab', () => {
+     const showPopulation = ref(true);
+     const autoBroadcast = ref(true);
+     const autoMedia = ref(true);
++    const signatureMode = ref('short');
+     const nowPlayingTitle = ref('');
+     const nowPlayingArtist = ref('');
+     const pulsoidToken = ref('');
+@@ -65,6 +67,9 @@ export const useOscLabStore = defineStore('OscLab', () => {
+ 
+     const chatboxParts = computed(() => {
+         const parts = [];
++        const signature = signatureMode.value === 'full' ? 'UNDERWEB X' : signatureMode.value === 'short' ? '🕷 UWX' : '';
++        if (signature) parts.push(signature);
+         if (customStatus.value.trim()) parts.push(customStatus.value.trim());
+         if (showEvent.value && activeEvent.value?.title) parts.push(`🕷 ${activeEvent.value.title}`);
+         if (showNowPlaying.value && nowPlayingTitle.value.trim()) {
+@@ -105,6 +110,7 @@ export const useOscLabStore = defineStore('OscLab', () => {
+             storedPopulation,
+             storedAutoBroadcast,
+             storedAutoMedia,
++            storedSignatureMode,
+             storedTitle,
+             storedArtist,
+             storedToken,
+@@ -120,6 +126,7 @@ export const useOscLabStore = defineStore('OscLab', () => {
+             configRepository.getBool(CONFIG.showPopulation, true),
+             configRepository.getBool(CONFIG.autoBroadcast, true),
+             configRepository.getBool(CONFIG.autoMedia, true),
++            configRepository.getString(CONFIG.signatureMode, 'short'),
+             configRepository.getString(CONFIG.nowPlayingTitle, ''),
+             configRepository.getString(CONFIG.nowPlayingArtist, ''),
+             configRepository.getString(CONFIG.pulsoidToken, ''),
+@@ -136,6 +143,7 @@ export const useOscLabStore = defineStore('OscLab', () => {
+         showPopulation.value = Boolean(storedPopulation);
+         autoBroadcast.value = Boolean(storedAutoBroadcast);
+         autoMedia.value = Boolean(storedAutoMedia);
++        signatureMode.value = ['off', 'short', 'full'].includes(storedSignatureMode) ? storedSignatureMode : 'short';
+         nowPlayingTitle.value = storedTitle || '';
+         nowPlayingArtist.value = storedArtist || '';
+         pulsoidToken.value = storedToken || '';
+@@ -211,6 +219,12 @@ export const useOscLabStore = defineStore('OscLab', () => {
+         else stopMediaPolling();
+     }
+ 
++    async function setSignatureMode(value) {
++        signatureMode.value = ['off', 'short', 'full'].includes(value) ? value : 'short';
++        await configRepository.setString(CONFIG.signatureMode, signatureMode.value);
++    }
++
+     async function setNowPlayingTitle(value) {
+         nowPlayingTitle.value = String(value || '').slice(0, 80);
+         await configRepository.setString(CONFIG.nowPlayingTitle, nowPlayingTitle.value);
+@@ -417,6 +431,7 @@ export const useOscLabStore = defineStore('OscLab', () => {
+         showPopulation,
+         autoBroadcast,
+         autoMedia,
++        signatureMode,
+         playerCount,
+         nowPlayingTitle,
+         nowPlayingArtist,
+@@ -442,6 +457,7 @@ export const useOscLabStore = defineStore('OscLab', () => {
+         setShowPopulation,
+         setAutoBroadcast,
+         setAutoMedia,
++        setSignatureMode,
+         setNowPlayingTitle,
+         setNowPlayingArtist,
+         setPulsoidToken,
+diff --git a/src/views/UnderWeb/UnderWeb.vue b/src/views/UnderWeb/UnderWeb.vue
+--- a/src/views/UnderWeb/UnderWeb.vue
++++ b/src/views/UnderWeb/UnderWeb.vue
+@@ -403,6 +403,17 @@
+                                 <label class="uwx-toggle-row compact"><div><strong>Now playing</strong><span>Windows / Spotify media</span></div><Switch :model-value="oscShowNowPlaying" @update:modelValue="setOscShowNowPlaying" /></label>
+                                 <label class="uwx-toggle-row compact"><div><strong>Keep visible</strong><span>Refresh chatbox every 4 seconds</span></div><Switch :model-value="oscAutoBroadcast" @update:modelValue="setOscAutoBroadcast" /></label>
+                             </div>
++                            <div class="uwx-signature-control mt-3">
++                                <div>
++                                    <strong>UWX signature</strong>
++                                    <span>Optional branding at the front of your chatbox status.</span>
++                                </div>
++                                <div class="flex gap-2">
++                                    <Button size="sm" :variant="oscSignatureMode === 'off' ? 'default' : 'outline'" @click="setOscSignatureMode('off')">Off</Button>
++                                    <Button size="sm" :variant="oscSignatureMode === 'short' ? 'default' : 'outline'" @click="setOscSignatureMode('short')">🕷 UWX</Button>
++                                    <Button size="sm" :variant="oscSignatureMode === 'full' ? 'default' : 'outline'" @click="setOscSignatureMode('full')">UNDERWEB X</Button>
++                                </div>
++                            </div>
+                             <div class="uwx-chatbox-preview mt-4">
+                                 <div class="flex items-center justify-between gap-3">
+                                     <span class="uwx-section-label">LIVE PREVIEW</span>
+@@ -747,6 +758,7 @@
+         showPopulation: oscShowPopulation,
+         autoBroadcast: oscAutoBroadcast,
+         autoMedia: oscAutoMedia,
++        signatureMode: oscSignatureMode,
+         playerCount: oscPlayerCount,
+         nowPlayingTitle: oscNowPlayingTitle,
+         nowPlayingArtist: oscNowPlayingArtist,
+@@ -773,6 +785,7 @@
+         setShowPopulation: setOscShowPopulation,
+         setAutoBroadcast: setOscAutoBroadcast,
+         setAutoMedia: setOscAutoMedia,
++        setSignatureMode: setOscSignatureMode,
+         setNowPlayingTitle: setOscNowPlayingTitle,
+         setNowPlayingArtist: setOscNowPlayingArtist,
+         setPulsoidToken: setOscPulsoidToken,
+@@ -1370,6 +1383,25 @@
+     .uwx-char-meter span { display: block; height: 100%; border-radius: inherit; background: #76ff00; transition: width 140ms ease; }
+     .uwx-chatbox-preview small { display: block; margin-top: 8px; color: var(--muted-foreground); font-size: 9px; }
+ 
++    .uwx-signature-control {
++        display: flex;
++        align-items: center;
++        justify-content: space-between;
++        gap: 12px;
++        padding: 10px 12px;
++        border: 1px solid rgb(118 255 0 / 14%);
++        border-radius: 10px;
++        background: rgb(118 255 0 / 3%);
++    }
++    .uwx-signature-control strong,
++    .uwx-signature-control span { display: block; }
++    .uwx-signature-control span {
++        margin-top: 2px;
++        color: var(--muted-foreground);
++        font-size: 10px;
++    }
++
+     @media (max-width: 900px) {
+         .uwx-panel-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+         .uwx-panel-context { align-items: flex-start; flex-direction: column; gap: 6px; }
