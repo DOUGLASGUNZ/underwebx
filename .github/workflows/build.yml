@@ -174,12 +174,14 @@ jobs:
           )
 
           Push-Location $env:UWX_SOURCE
-          git apply --check --verbose $patchFile
+          $sigDiag = Join-Path $env:GITHUB_WORKSPACE "signature-patch-diagnostics.txt"
+          "VERSION_BEFORE=$((Get-Content .\UWX_VERSION -Raw).Trim())" | Out-File $sigDiag -Encoding utf8
+          git apply --check --verbose $patchFile 2>&1 | Tee-Object -FilePath $sigDiag -Append
           if ($LASTEXITCODE -ne 0) {
             Pop-Location
             throw "UWX signature patch check failed."
           }
-          git apply --whitespace=nowarn $patchFile
+          git apply --whitespace=nowarn $patchFile 2>&1 | Tee-Object -FilePath $sigDiag -Append
           if ($LASTEXITCODE -ne 0) {
             Pop-Location
             throw "UWX signature patch failed."
@@ -241,6 +243,7 @@ jobs:
           path: |
             patch-diagnostics.txt
             osc-patch-diagnostics.txt
+            signature-patch-diagnostics.txt
           if-no-files-found: ignore
           retention-days: 2
 
