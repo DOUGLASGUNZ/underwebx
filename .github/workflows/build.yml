@@ -194,7 +194,43 @@ jobs:
           Write-Host "UWX signature upgrade applied: UWX $version"
           Pop-Location
 
-      - name: Verify RC3 UI is present
+      - name: Apply live media timeline upgrade
+        shell: pwsh
+        run: |
+          $patchFile = Join-Path $env:GITHUB_WORKSPACE "osc-upgrade\rc4-timeline.patch"
+          if (-not (Test-Path $patchFile)) {
+            throw "RC4 media timeline patch not found."
+          }
+
+          $patchText = [System.IO.File]::ReadAllText($patchFile).Replace("`r`n", "`n")
+          [System.IO.File]::WriteAllText(
+            $patchFile,
+            $patchText,
+            (New-Object System.Text.UTF8Encoding($false))
+          )
+
+          Push-Location $env:UWX_SOURCE
+          $timelineDiag = Join-Path $env:GITHUB_WORKSPACE "timeline-patch-diagnostics.txt"
+          "VERSION_BEFORE=$((Get-Content .\UWX_VERSION -Raw).Trim())" | Out-File $timelineDiag -Encoding utf8
+          git apply --check --verbose $patchFile 2>&1 | Tee-Object -FilePath $timelineDiag -Append
+          if ($LASTEXITCODE -ne 0) {
+            Pop-Location
+            throw "RC4 media timeline patch check failed."
+          }
+          git apply --whitespace=nowarn $patchFile 2>&1 | Tee-Object -FilePath $timelineDiag -Append
+          if ($LASTEXITCODE -ne 0) {
+            Pop-Location
+            throw "RC4 media timeline patch failed."
+          }
+          $version = (Get-Content .\UWX_VERSION -Raw).Trim()
+          if ($version -ne "0.4.4-rc4") {
+            Pop-Location
+            throw "Timeline upgrade did not produce UWX 0.4.4-rc4; got '$version'."
+          }
+          Write-Host "Live media timeline upgrade applied: UWX $version"
+          Pop-Location
+
+      - name: Verify RC4 UI is present
         shell: pwsh
         run: |
           $view = Join-Path $env:UWX_SOURCE "src\views\UnderWeb\UnderWeb.vue"
@@ -209,14 +245,15 @@ jobs:
             "Keep visible",
             "Auto-detect Windows media",
             "UWX signature",
-            "UNDERWEB X"
+            "UNDERWEB X",
+            "Track progress is read from Windows media"
           )
           foreach ($needle in $required) {
             if (-not $text.Contains($needle)) {
-              throw "RC3 UI verification failed: missing '$needle'."
+              throw "RC4 UI verification failed: missing '$needle'."
             }
           }
-          Write-Host "RC3 UI verification passed."
+          Write-Host "RC4 UI verification passed."
 
       - name: Verify build tools
         shell: pwsh
@@ -244,6 +281,7 @@ jobs:
             patch-diagnostics.txt
             osc-patch-diagnostics.txt
             signature-patch-diagnostics.txt
+            timeline-patch-diagnostics.txt
           if-no-files-found: ignore
           retention-days: 2
 
