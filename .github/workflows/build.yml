@@ -8,6 +8,7 @@ on:
     paths:
       - "UnderWebX*-source.zip"
       - "full-patch/**"
+      - "osc-upgrade/**"
       - ".github/workflows/build.yml"
 
 permissions:
@@ -121,7 +122,41 @@ jobs:
           Write-Host "Validated full patch applied: UWX $version"
           Pop-Location
 
-      - name: Verify RC1 UI is present
+      - name: Apply OSC live status upgrade
+        shell: pwsh
+        run: |
+          $patchFile = Join-Path $env:GITHUB_WORKSPACE "osc-upgrade\rc2.patch"
+          if (-not (Test-Path $patchFile)) {
+            throw "OSC upgrade patch not found."
+          }
+
+          $patchText = [System.IO.File]::ReadAllText($patchFile).Replace("`r`n", "`n")
+          [System.IO.File]::WriteAllText(
+            $patchFile,
+            $patchText,
+            (New-Object System.Text.UTF8Encoding($false))
+          )
+
+          Push-Location $env:UWX_SOURCE
+          git apply --check --verbose $patchFile
+          if ($LASTEXITCODE -ne 0) {
+            Pop-Location
+            throw "OSC upgrade patch check failed."
+          }
+          git apply --whitespace=nowarn $patchFile
+          if ($LASTEXITCODE -ne 0) {
+            Pop-Location
+            throw "OSC upgrade patch failed."
+          }
+          $version = (Get-Content .\UWX_VERSION -Raw).Trim()
+          if ($version -ne "0.4.2-rc2") {
+            Pop-Location
+            throw "OSC upgrade did not produce UWX 0.4.2-rc2; got '$version'."
+          }
+          Write-Host "OSC upgrade applied: UWX $version"
+          Pop-Location
+
+      - name: Verify RC2 UI is present
         shell: pwsh
         run: |
           $view = Join-Path $env:UWX_SOURCE "src\views\UnderWeb\UnderWeb.vue"
@@ -131,14 +166,17 @@ jobs:
             "GROUP RECRUITER",
             "OSC Lab",
             "Connected Accounts",
-            "Event Mode"
+            "Event Mode",
+            "People here",
+            "Keep visible",
+            "Auto-detect Windows media"
           )
           foreach ($needle in $required) {
             if (-not $text.Contains($needle)) {
-              throw "RC1 UI verification failed: missing '$needle'."
+              throw "RC2 UI verification failed: missing '$needle'."
             }
           }
-          Write-Host "RC1 UI verification passed."
+          Write-Host "RC2 UI verification passed."
 
       - name: Verify build tools
         shell: pwsh
