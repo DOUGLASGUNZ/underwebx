@@ -1,0 +1,262 @@
+s.value = 'online';
++            lastRefreshAt.value = Date.now();
++            await Promise.all([
++                configRepository.setObject(CONFIG.cachedManifest, payload),
++                configRepository.setInt(CONFIG.cachedAt, lastRefreshAt.value)
++            ]);
++
++            const nextLive = payload.events.find((event) => event.status === 'live');
++            if (notificationRules.value.eventLive && nextLive?.id && nextLive.id !== previousLiveId) {
++                toast.success(`${nextLive.title} is live on UnderWeb.`);
++            }
++            const latestVersion = payload.release?.version;
++            if (
++                notificationRules.value.updateAvailable &&
++                latestVersion &&
++                compareVersions(latestVersion, UWX_VERSION) > 0
++            ) {
++                toast.info(`UnderWeb X ${latestVersion} is available.`);
++            }
++            return true;
++        } catch (error) {
++            lastNetworkError.value = error?.name === 'AbortError' ? 'UnderWeb network request timed out.' : error?.message || 'Network unavailable.';
++            networkStatus.value = manifest.value.members.length || manifest.value.events.length ? 'cached' : 'offline';
++            if (!quiet) toast.error(lastNetworkError.value);
++            return false;
++        } finally {
++            window.clearTimeout(timeout);
++            isRefreshing.value = false;
++        }
++    }
++
++    async function initUnderWebNetwork() {
++        if (initialized.value) return;
++        await loadCachedNetwork();
++        initialized.value = true;
++        void refreshNetwork({ quiet: true });
++    }
++
++    return {
++        manifest,
++        initialized,
++        isRefreshing,
++        networkStatus,
++        lastRefreshAt,
++        lastNetworkError,
++        notificationRules,
++        memberByVrchatId,
++        currentVrchatUserId,
++        currentNetworkMember,
++        connectedAccounts,
++        activeEvent,
++        upcomingEvents,
++        latestRelease,
++        staffUserIds,
++        creatorUserIds,
++        partnerUserIds,
++        rolesForUser,
++        setNotificationRule,
++        refreshNetwork,
++        initUnderWebNetwork
++    };
++});
+diff --git a/src/views/UnderWeb/UnderWeb.vue b/src/views/UnderWeb/UnderWeb.vue
+index 1cac442..7aef229 100644
+--- a/src/views/UnderWeb/UnderWeb.vue
++++ b/src/views/UnderWeb/UnderWeb.vue
+@@ -2,13 +2,22 @@
+     <div class="x-container uwx-page">
+         <div class="uwx-hero">
+             <div>
+-                <div class="uwx-kicker">UNDERWEB // NETWORK</div>
+-                <h1 class="uwx-title">UnderWeb X</h1>
+-                <p class="uwx-subtitle">VRChat network control, group-instance tools, and live friend radar.</p>
++                <div class="uwx-kicker">UNDERWEB // COMMAND CENTER</div>
++                <div class="flex flex-wrap items-end gap-3">
++                    <h1 class="uwx-title">UnderWeb X</h1>
++                    <Badge variant="outline">v{{ UWX_VERSION }}</Badge>
++                </div>
++                <p class="uwx-subtitle">VRChat network control, event operations, connected identity, and live network radar.</p>
+             </div>
+-            <div class="uwx-instance-badge" :class="statusClass">
+-                <span class="uwx-status-dot"></span>
+-                <span>{{ statusText }}</span>
++            <div class="flex flex-col items-end gap-2">
++                <div class="uwx-instance-badge" :class="statusClass">
++                    <span class="uwx-status-dot"></span>
++                    <span>{{ statusText }}</span>
++                </div>
++                <button class="uwx-network-state" type="button" @click="refreshNetwork({ quiet: false })">
++                    <i :class="isRefreshing ? 'ri-loader-4-line animate-spin' : 'ri-radar-line'" />
++                    NETWORK {{ networkStatus.toUpperCase() }}
++                </button>
+             </div>
+         </div>
+ 
+@@ -24,17 +33,33 @@
+                 <small>{{ currentFriendsHere }} friend{{ currentFriendsHere === 1 ? '' : 's' }} here</small>
+             </div>
+             <div class="uwx-overview-tile">
+-                <span>FRIENDS ONLINE</span>
+-                <strong>{{ onlineFriendsCount }}</strong>
+-                <small>{{ favoriteOnlineCount }} favorite{{ favoriteOnlineCount === 1 ? '' : 's' }}</small>
++                <span>NETWORK ONLINE</span>
++                <strong>{{ networkOnlineCount }}</strong>
++                <small>{{ staffOnlineCount }} staff · {{ creatorOnlineCount }} creators</small>
+             </div>
+             <div class="uwx-overview-tile">
+                 <span>UWX SESSION</span>
+-                <strong>{{ sessionInvitesSent }} invite{{ sessionInvitesSent === 1 ? '' : 's' }}</strong>
++                <strong>{{ sessionGroupInvitesSent }} group · {{ sessionInvitesSent }} instance</strong>
+                 <small>{{ allowedGroupIds.length }} approved group{{ allowedGroupIds.length === 1 ? '' : 's' }}</small>
+             </div>
+         </div>
+ 
++        <div v-if="activeEvent" class="uwx-event-banner">
++            <div class="uwx-event-live">LIVE EVENT</div>
++            <div class="min-w-0 flex-1">
++                <strong class="block truncate">{{ activeEvent.title }}</strong>
++                <span class="text-sm text-muted-foreground">
++                    {{ activeEvent.host || 'UnderWeb' }}
++                    <template v-if="activeEvent.worldId"> · {{ activeEvent.worldId }}</template>
++                </span>
++            </div>
++            <div class="flex flex-wrap items-center gap-2">
++                <Badge variant="outline">{{ activeEvent.staff.length }} staff</Badge>
++                <Badge variant="outline">{{ activeEvent.performers.length }} performers</Badge>
++                <Button size="sm" @click="openEvent(activeEvent)">Open event</Button>
++            </div>
++        </div>
++
+         <div class="uwx-grid">
+             <Card class="uwx-card uwx-card-wide">
+                 <CardHeader>
+@@ -42,78 +67,121 @@
+                         <div>
+                             <CardTitle>Group Instance Control</CardTitle>
+                             <CardDescription>
+-                                Auto Invite only arms inside explicitly approved group instances. Choose the audience, keep
+-                                exclusions local, and kill the queue instantly by disarming it.
++                                Recruit people already inside your approved group lobby, or separately invite friends into the instance.
+                             </CardDescription>
+                         </div>
+-                        <Switch :model-value="autoInviteEnabled" @update:modelValue="setAutoInviteEnabled" />
++                        <Badge variant="outline">{{ currentGroupId || 'NO GROUP INSTANCE' }}</Badge>
+                     </div>
+                 </CardHeader>
+-                <CardContent class="space-y-5">
+-                    <div class="uwx-stat-row">
+-                        <div class="uwx-stat">
+-                            <span class="uwx-stat-label">CURRENT GROUP</span>
+-                            <strong>{{ currentGroupId || 'Not in a group instance' }}</strong>
+-                        </div>
+-                        <div class="uwx-stat">
+-                            <span class="uwx-stat-label">SCOPE</span>
+-                            <strong>{{ inviteScopeLabel }}</strong>
+-                        </div>
+-                        <div class="uwx-stat">
+-                            <span class="uwx-stat-label">ELIGIBLE NOW</span>
+-                            <strong>{{ eligibleInviteFriends.length }}</strong>
++                <CardContent class="space-y-6">
++                    <section class="uwx-control-block uwx-control-primary">
++                        <div class="flex items-start justify-between gap-4">
++                            <div>
++                                <div class="uwx-section-label">GROUP RECRUITER</div>
++                                <h3 class="uwx-control-title">Invite lobby occupants into the VRChat group</h3>
++                                <p class="text-sm text-muted-foreground mt-1">
++                                    Watches the live player list, waits for the dwell timer, and sends group invitations to eligible non-excluded users.
++                                </p>
++                            </div>
++                            <Switch :model-value="groupRecruitEnabled" @update:modelValue="setGroupRecruitEnabled" />
+                         </div>
+-                        <div class="uwx-stat">
+-                            <span class="uwx-stat-label">COOLDOWN</span>
+-                            <strong>{{ cooldownMinutes }}m</strong>
++
++                        <div class="uwx-stat-row mt-4">
++                            <div class="uwx-stat">
++                                <span class="uwx-stat-label">LOBBY</span>
++                                <strong>{{ currentPlayerCount }} players</strong>
++                            </div>
++                            <div class="uwx-stat">
++                                <span class="uwx-stat-label">ELIGIBLE</span>
++                                <strong>{{ eligibleLobbyRecruits.length }}</strong>
++                            </div>
++                            <div class="uwx-stat">
++                                <span class="uwx-stat-label">DWELL</span>
++                                <strong>{{ groupRecruitMinPresenceSeconds }}s</strong>
++                            </div>
++                            <div class="uwx-stat">
++                                <span class="uwx-stat-label">SENT</span>
++                                <strong>{{ sessionGroupInvitesSent }}</strong>
++                            </div>
+                         </div>
+-                    </div>
+ 
+-                    <div>
+-                        <div class="uwx-section-label">INVITE AUDIENCE</div>
+-                        <div class="flex flex-wrap gap-2 mt-2">
++                        <div class="flex flex-wrap items-center gap-2 mt-4">
+                             <Button
+-                                :variant="inviteScope === 'selected' ? 'default' : 'outline'"
+-                                @click="setInviteScope('selected')">
+-                                Selected ({{ selectedUserIds.length }})
++                                v-if="currentGroupId && !isCurrentGroupAllowed"
++                                variant="default"
++                                @click="addCurrentGroup">
++                                Allow current group
+                             </Button>
+                             <Button
+-                                :variant="inviteScope === 'favorites' ? 'default' : 'outline'"
+-                                @click="setInviteScope('favorites')">
+-                                Favorites ({{ favoriteOnlineCount }})
++                                v-if="currentGroupId && isCurrentGroupAllowed"
++                                variant="outline"
++                                @click="removeAllowedGroup(currentGroupId)">
++                                Remove current group
+                             </Button>
+-                            <Button
+-                                :variant="inviteScope === 'all-online' ? 'default' : 'outline'"
+-                                @click="setInviteScope('all-online')">
+-                                All Online ({{ onlineFriendsCount }})
++                            <Button :disabled="isRecruiting || !canRecruitHere" variant="default" @click="recruitNow">
++                                <i :class="isRecruiting ? 'ri-loader-4-line animate-spin' : 'ri-user-add-line'" />
++                                Invite lobby to group now
+                             </Button>
++                            <label class="uwx-dwell-input">
++                                <span>Dwell seconds</span>
++                                <Input
++                                    type="number"
++                                    min="0"
++                                    max="600"
++                                    :model-value="String(groupRecruitMinPresenceSeconds)"
++                                    @change="setGroupRecruitMinPresenceSeconds($event.target.value)" />
++                            </label>
+                         </div>
+-                    </div>
+ 
+-                    <div class="flex flex-wrap gap-2">
+-                        <Button
+-                            v-if="currentGroupId && !isCurrentGroupAllowed"
+-                            variant="default"
+-                            @click="addCurrentGroup">
+-                            Allow current group
+-                        </Button>
+-                        <Button
+-                            v-if="currentGroupId && isCurrentGroupAllowed"
+-                            variant="outline"
+-                            @click="removeAllowedGroup(currentGroupId)">
+-                            Remove current group
+-                        </Button>
+-                        <Button :disabled="isScanning || !canAutoInviteHere" variant="secondary" @click="inviteNow">
++                        <div class="uwx-warning mt-4">
++                            <strong>Recruiter guardrails:</strong> approved current <code>grp_</code> lobby only · skips you, current group members, and the do-not-invite list ·
++                            one attempt per user/group for 24h · paced queue · 403 disarms · 429 pauses · queue dies if the lobby changes.
++                        </div>
++                    </section>
++
++                    <section class="uwx-control-block">
++                        <div class="flex items-start justify-between gap-4">
++                            <div>
++                                <div class="uwx-section-label">INSTANCE INVITER</div>
++                                <h3
