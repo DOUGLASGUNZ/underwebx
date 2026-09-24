@@ -997,7 +997,8 @@ index 1cac442..ec27edd 100644
 +
 +    function includeInRadar(friend) {
 +        if (radarFilter.value === 'underweb') return networkStore.memberByVrchatId.has(friend.id);
-+        if (radarFilter.value === 'staff') return staffUserIds.value.has(friend.id);+        if (radarFilter.value === 'creators') return creatorUserIds.value.has(friend.id);
++        if (radarFilter.value === 'staff') return staffUserIds.value.has(friend.id);
++        if (radarFilter.value === 'creators') return creatorUserIds.value.has(friend.id);
 +        if (radarFilter.value === 'partners') return partnerUserIds.value.has(friend.id);
 +        return true;
 +    }
