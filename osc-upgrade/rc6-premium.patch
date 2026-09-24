@@ -1,0 +1,604 @@
+diff --git a/CHANGELOG_UWX.md b/CHANGELOG_UWX.md
+index 8f837f3..f5e6383 100644
+--- a/CHANGELOG_UWX.md
++++ b/CHANGELOG_UWX.md
+@@ -1,5 +1,15 @@
+ # UnderWeb X changelog
+ 
++## 0.4.6-rc6 — OSC Lab premium redesign
++
++- Rebuilt OSC Lab around a polished live-status dashboard inspired by a dedicated desktop companion.
++- Added top-level connection health for OSC, media, world sync, Pulsoid, and chatbox broadcasting.
++- Added a premium Now Playing card with live elapsed/total time and progress.
++- Added reorderable live-status blocks with persistent priority order.
++- Replaced avatar-parameter controls with a connection-health workspace.
++- Added preset cards, a stronger live preview, character budget feedback, and a recent output log.
++- Kept low-level avatar OSC sender support available internally without exposing it in the main UI.
++
+ ## 0.4.4-rc4 — Live media timeline
+ 
+ - Added real Windows media-session position and duration to Now Playing.
+diff --git a/UWX_VERSION b/UWX_VERSION
+index a5b8944..bd2910e 100644
+--- a/UWX_VERSION
++++ b/UWX_VERSION
+@@ -1 +1 @@
+-0.4.4-rc4
++0.4.6-rc6
+diff --git a/src/stores/oscLab.js b/src/stores/oscLab.js
+index 6ea808f..cddaf15 100644
+--- a/src/stores/oscLab.js
++++ b/src/stores/oscLab.js
+@@ -17,6 +17,7 @@ const CONFIG = Object.freeze({
+     autoBroadcast: 'UWX_oscAutoBroadcast',
+     autoMedia: 'UWX_oscAutoMedia',
+     signatureMode: 'UWX_oscSignatureMode',
++    blockOrder: 'UWX_oscBlockOrder',
+     nowPlayingTitle: 'UWX_oscNowPlayingTitle',
+     nowPlayingArtist: 'UWX_oscNowPlayingArtist',
+     pulsoidToken: 'UWX_pulsoidToken',
+@@ -32,6 +33,8 @@ const PRESETS = Object.freeze({
+     afk: { customStatus: 'AFK', showWorld: true, showEvent: false, showHeartRate: false, showNowPlaying: false, showPopulation: true }
+ });
+ 
++const DEFAULT_BLOCK_ORDER = Object.freeze(['signature', 'music', 'world', 'population', 'heart', 'event', 'status']);
++
+ const clampChatbox = (text) => Array.from(String(text || '')).slice(0, 144).join('');
+ 
+ export const useOscLabStore = defineStore('OscLab', () => {
+@@ -49,6 +52,7 @@ export const useOscLabStore = defineStore('OscLab', () => {
+     const autoBroadcast = ref(true);
+     const autoMedia = ref(true);
+     const signatureMode = ref('short');
++    const blockOrder = ref([...DEFAULT_BLOCK_ORDER]);
+     const nowPlayingTitle = ref('');
+     const nowPlayingArtist = ref('');
+     const pulsoidToken = ref('');
+@@ -63,6 +67,7 @@ export const useOscLabStore = defineStore('OscLab', () => {
+     const mediaSource = ref('');
+     const mediaPositionSeconds = ref(0);
+     const mediaDurationSeconds = ref(0);
++    const outputLog = ref([]);
+ 
+     let pulsoidSocket = null;
+     let reconnectTimer = null;
+@@ -83,22 +88,24 @@ export const useOscLabStore = defineStore('OscLab', () => {
+     }
+ 
+     const chatboxParts = computed(() => {
+-        const parts = [];
+         const signature = signatureMode.value === 'full' ? 'UNDERWEB X' : signatureMode.value === 'short' ? '🕷 UWX' : '';
+-        if (signature) parts.push(signature);
+-        if (customStatus.value.trim()) parts.push(customStatus.value.trim());
+-        if (showEvent.value && activeEvent.value?.title) parts.push(`🕷 ${activeEvent.value.title}`);
+-        if (showNowPlaying.value && nowPlayingTitle.value.trim()) {
+-            const timeline =
+-                mediaDurationSeconds.value > 0
+-                    ? ` ${formatMediaTime(mediaPositionSeconds.value)}/${formatMediaTime(mediaDurationSeconds.value)}`
+-                    : '';
+-            parts.push(`🎵 ${nowPlayingTitle.value.trim()}${nowPlayingArtist.value.trim() ? ` — ${nowPlayingArtist.value.trim()}` : ''}${timeline}`);
+-        }
+-        if (showHeartRate.value && heartRate.value > 0) parts.push(`♥ ${heartRate.value} BPM`);
+-        if (showWorld.value && worldName.value) parts.push(`🌎 ${worldName.value}`);
+-        if (showPopulation.value && playerCount.value > 0) parts.push(`👥 ${playerCount.value} here`);
+-        return parts;
++        const timeline =
++            mediaDurationSeconds.value > 0
++                ? ` ${formatMediaTime(mediaPositionSeconds.value)}/${formatMediaTime(mediaDurationSeconds.value)}`
++                : '';
++        const blocks = {
++            signature,
++            music:
++                showNowPlaying.value && nowPlayingTitle.value.trim()
++                    ? `🎵 ${nowPlayingTitle.value.trim()}${nowPlayingArtist.value.trim() ? ` — ${nowPlayingArtist.value.trim()}` : ''}${timeline}`
++                    : '',
++            world: showWorld.value && worldName.value ? `🌎 ${worldName.value}` : '',
++            population: showPopulation.value && playerCount.value > 0 ? `👥 ${playerCount.value} here` : '',
++            heart: showHeartRate.value && heartRate.value > 0 ? `♥ ${heartRate.value} BPM` : '',
++            event: showEvent.value && activeEvent.value?.title ? `🕷 ${activeEvent.value.title}` : '',
++            status: customStatus.value.trim()
++        };
++        return blockOrder.value.map((key) => blocks[key]).filter(Boolean);
+     });
+ 
+     const chatboxPreview = computed(() => {
+@@ -111,6 +118,14 @@ export const useOscLabStore = defineStore('OscLab', () => {
+     });
+ 
+     const previewLength = computed(() => Array.from(chatboxPreview.value).length);
++    const mediaProgressPercent = computed(() =>
++        mediaDurationSeconds.value > 0 ? Math.min(100, Math.max(0, (mediaPositionSeconds.value / mediaDurationSeconds.value) * 100)) : 0
++    );
++    const mediaTimeLabel = computed(() =>
++        mediaDurationSeconds.value > 0
++            ? `${formatMediaTime(mediaPositionSeconds.value)}/${formatMediaTime(mediaDurationSeconds.value)}`
++            : '0:00/0:00'
++    );
+ 
+     async function loadSettings() {
+         const [
+@@ -124,6 +139,7 @@ export const useOscLabStore = defineStore('OscLab', () => {
+             storedAutoBroadcast,
+             storedAutoMedia,
+             storedSignatureMode,
++            storedBlockOrder,
+             storedTitle,
+             storedArtist,
+             storedToken,
+@@ -141,6 +157,7 @@ export const useOscLabStore = defineStore('OscLab', () => {
+             configRepository.getBool(CONFIG.autoBroadcast, true),
+             configRepository.getBool(CONFIG.autoMedia, true),
+             configRepository.getString(CONFIG.signatureMode, 'short'),
++            configRepository.getString(CONFIG.blockOrder, JSON.stringify(DEFAULT_BLOCK_ORDER)),
+             configRepository.getString(CONFIG.nowPlayingTitle, ''),
+             configRepository.getString(CONFIG.nowPlayingArtist, ''),
+             configRepository.getString(CONFIG.pulsoidToken, ''),
+@@ -158,6 +175,14 @@ export const useOscLabStore = defineStore('OscLab', () => {
+         autoBroadcast.value = Boolean(storedAutoBroadcast);
+         autoMedia.value = Boolean(storedAutoMedia);
+         signatureMode.value = ['off', 'short', 'full'].includes(storedSignatureMode) ? storedSignatureMode : 'short';
++        try {
++            const parsedOrder = JSON.parse(storedBlockOrder || '[]');
++            const valid = parsedOrder.filter((key) => DEFAULT_BLOCK_ORDER.includes(key));
++            const missing = DEFAULT_BLOCK_ORDER.filter((key) => !valid.includes(key));
++            blockOrder.value = [...valid, ...missing];
++        } catch {
++            blockOrder.value = [...DEFAULT_BLOCK_ORDER];
++        }
+         nowPlayingTitle.value = storedTitle || '';
+         nowPlayingArtist.value = storedArtist || '';
+         pulsoidToken.value = storedToken || '';
+@@ -237,6 +262,17 @@ export const useOscLabStore = defineStore('OscLab', () => {
+         await configRepository.setString(CONFIG.signatureMode, signatureMode.value);
+     }
+ 
++    async function moveBlock(key, direction) {
++        const current = [...blockOrder.value];
++        const index = current.indexOf(key);
++        const target = index + Number(direction || 0);
++        if (index < 0 || target < 0 || target >= current.length) return;
++        const [item] = current.splice(index, 1);
++        current.splice(target, 0, item);
++        blockOrder.value = current;
++        await configRepository.setString(CONFIG.blockOrder, JSON.stringify(current));
++    }
++
+     async function setNowPlayingTitle(value) {
+         nowPlayingTitle.value = String(value || '').slice(0, 80);
+         await configRepository.setString(CONFIG.nowPlayingTitle, nowPlayingTitle.value);
+@@ -297,6 +333,7 @@ export const useOscLabStore = defineStore('OscLab', () => {
+             await AppApi.SendOscChatbox(message, true, false);
+             lastSentAt.value = Date.now();
+             lastError.value = '';
++            outputLog.value = [{ at: Date.now(), text: message }, ...outputLog.value].slice(0, 20);
+             return true;
+         } catch (error) {
+             lastError.value = error?.message || 'OSC send failed.';
+@@ -305,6 +342,10 @@ export const useOscLabStore = defineStore('OscLab', () => {
+         }
+     }
+ 
++    function clearOutputLog() {
++        outputLog.value = [];
++    }
++
+     function stopAutoBroadcast() {
+         if (broadcastTimer) window.clearInterval(broadcastTimer);
+         broadcastTimer = null;
+@@ -447,6 +488,7 @@ export const useOscLabStore = defineStore('OscLab', () => {
+         autoBroadcast,
+         autoMedia,
+         signatureMode,
++        blockOrder,
+         playerCount,
+         nowPlayingTitle,
+         nowPlayingArtist,
+@@ -462,6 +504,9 @@ export const useOscLabStore = defineStore('OscLab', () => {
+         mediaSource,
+         mediaPositionSeconds,
+         mediaDurationSeconds,
++        mediaProgressPercent,
++        mediaTimeLabel,
++        outputLog,
+         chatboxPreview,
+         previewLength,
+         initOscLab,
+@@ -475,6 +520,7 @@ export const useOscLabStore = defineStore('OscLab', () => {
+         setAutoBroadcast,
+         setAutoMedia,
+         setSignatureMode,
++        moveBlock,
+         setNowPlayingTitle,
+         setNowPlayingArtist,
+         setPulsoidToken,
+@@ -482,6 +528,7 @@ export const useOscLabStore = defineStore('OscLab', () => {
+         applyPreset,
+         sendChatbox,
++        clearOutputLog,
+         refreshSystemMedia,
+         sendAvatarParameter,
+         connectPulsoid,
+diff --git a/src/views/UnderWeb/UnderWeb.vue b/src/views/UnderWeb/UnderWeb.vue
+index 6236a9f..59ff2c7 100644
+--- a/src/views/UnderWeb/UnderWeb.vue
++++ b/src/views/UnderWeb/UnderWeb.vue
+@@ -363,109 +363,127 @@
+                 </CardContent>
+             </Card>
+ 
+-            <Card v-show="activePanel === 'osc'" class="uwx-card uwx-card-wide uwx-osc-card">
++            <Card v-show="activePanel === 'osc'" class="uwx-card uwx-card-wide uwx-osc-card uwx-osc-premium">
+                 <CardHeader>
+-                    <div class="flex items-start justify-between gap-4">
++                    <div class="uwx-osc-head">
+                         <div>
++                            <div class="uwx-section-label">REAL-TIME STATUS</div>
+                             <CardTitle>OSC Lab</CardTitle>
+-                            <CardDescription>A focused workspace for VRChat chatbox output, Pulsoid, presets, and avatar parameter testing.</CardDescription>
++                            <CardDescription>Broadcast a polished live status to VRChat with music, world, population, Pulsoid, and UWX.</CardDescription>
+                         </div>
+-                        <div class="flex items-center gap-2">
+-                            <Badge :variant="oscEnabled ? 'default' : 'outline'">{{ oscEnabled ? 'OSC ARMED' : 'OSC OFF' }}</Badge>
+-                            <Switch :model-value="oscEnabled" @update:modelValue="setOscEnabled" />
+-                        </div>
++                        <Badge :variant="oscEnabled ? 'default' : 'outline'">{{ oscEnabled ? 'OSC LIVE' : 'OSC STANDBY' }}</Badge>
+                     </div>
+                 </CardHeader>
+-                <CardContent class="space-y-5">
+-                    <div class="uwx-osc-toolbar">
+-                        <div>
+-                            <div class="uwx-section-label">ACTIVE PRESET</div>
+-                            <span>Switch the whole chatbox layout without rebuilding it.</span>
+-                        </div>
+-                        <div class="uwx-osc-preset-row">
+-                        <Button v-for="name in ['normal', 'music', 'event', 'afk']" :key="name" size="sm"
+-                            :variant="oscPreset === name ? 'default' : 'outline'" @click="applyOscPreset(name)">
+-                            {{ name.toUpperCase() }}
+-                        </Button>
+-                        </div>
++                <CardContent class="space-y-4">
++                    <div class="uwx-health-strip">
++                        <div class="uwx-health-card"><i class="ri-radar-line" /><div><span>VRChat OSC</span><strong :class="{ online: oscEnabled }">{{ oscEnabled ? 'Connected' : 'Off' }}</strong></div></div>
++                        <div class="uwx-health-card"><i class="ri-spotify-fill" /><div><span>Spotify / Media</span><strong :class="{ online: oscAutoMedia && oscMediaState !== 'unavailable' }">{{ oscAutoMedia ? oscMediaState : 'Manual' }}</strong></div></div>
++                        <div class="uwx-health-card"><i class="ri-global-line" /><div><span>World Sync</span><strong class="online">{{ currentWorldName ? 'Active' : 'Idle' }}</strong></div></div>
++                        <div class="uwx-health-card"><i class="ri-heart-pulse-line" /><div><span>Pulsoid</span><strong :class="{ online: oscHeartRateState === 'online' }">{{ oscHeartRateState }}</strong></div></div>
++                        <div class="uwx-health-card"><i class="ri-message-3-line" /><div><span>Chatbox</span><strong :class="{ online: oscEnabled && oscAutoBroadcast }">{{ oscEnabled && oscAutoBroadcast ? 'Broadcasting' : 'Manual' }}</strong></div></div>
+                     </div>
+ 
+-                    <div class="uwx-osc-grid">
+-                        <section class="uwx-control-block">
+-                            <div class="uwx-section-label">CHATBOX COMPOSER</div>
+-                            <Input :model-value="oscCustomStatus" class="mt-2" placeholder="Custom status..."
+-                                @change="setOscCustomStatus($event.target.value)" />
+-                            <div class="uwx-osc-toggle-grid mt-3">
+-                                <label class="uwx-toggle-row compact"><div><strong>World</strong><span>Current world name</span></div><Switch :model-value="oscShowWorld" @update:modelValue="setOscShowWorld" /></label>
+-                                <label class="uwx-toggle-row compact"><div><strong>People here</strong><span>{{ oscPlayerCount }} in current instance</span></div><Switch :model-value="oscShowPopulation" @update:modelValue="setOscShowPopulation" /></label>
+-                                <label class="uwx-toggle-row compact"><div><strong>Event</strong><span>Live UnderWeb event</span></div><Switch :model-value="oscShowEvent" @update:modelValue="setOscShowEvent" /></label>
+-                                <label class="uwx-toggle-row compact"><div><strong>Heart rate</strong><span>Live Pulsoid BPM</span></div><Switch :model-value="oscShowHeartRate" @update:modelValue="setOscShowHeartRate" /></label>
+-                                <label class="uwx-toggle-row compact"><div><strong>Now playing</strong><span>Windows / Spotify media</span></div><Switch :model-value="oscShowNowPlaying" @update:modelValue="setOscShowNowPlaying" /></label>
+-                                <label class="uwx-toggle-row compact"><div><strong>Keep visible</strong><span>Refresh chatbox every 4 seconds</span></div><Switch :model-value="oscAutoBroadcast" @update:modelValue="setOscAutoBroadcast" /></label>
++                    <div class="uwx-osc-premium-grid">
++                        <section class="uwx-premium-panel uwx-broadcast-panel">
++                            <div class="uwx-panel-title"><div><i class="ri-broadcast-line" /><div><strong>Broadcast Control</strong><span>Enable or disable live OSC chatbox output.</span></div></div></div>
++                            <label class="uwx-osc-live-box">
++                                <div><i class="ri-radar-line" /><div><strong>OSC {{ oscEnabled ? 'LIVE' : 'STANDBY' }}</strong><span>{{ oscEnabled ? 'Sending updates to VRChat' : 'Ready when you are' }}</span></div></div>
++                                <Switch :model-value="oscEnabled" @update:modelValue="setOscEnabled" />
++                            </label>
++                            <div class="uwx-broadcast-options">
++                                <label><Switch :model-value="oscAutoBroadcast" @update:modelValue="setOscAutoBroadcast" /><div><strong>Keep visible</strong><span>Re-send automatically while armed</span></div></label>
++                                <div class="uwx-refresh-pill"><span>Refresh</span><strong>4 sec</strong></div>
+                             </div>
+-                            <div class="uwx-signature-control mt-3">
+-                                <div>
+-                                    <strong>UWX signature</strong>
+-                                    <span>Optional branding at the front of your chatbox status.</span>
+-                                </div>
+-                                <div class="flex gap-2">
+-                                    <Button size="sm" :variant="oscSignatureMode === 'off' ? 'default' : 'outline'" @click="setOscSignatureMode('off')">Off</Button>
+-                                    <Button size="sm" :variant="oscSignatureMode === 'short' ? 'default' : 'outline'" @click="setOscSignatureMode('short')">🕷 UWX</Button>
+-                                    <Button size="sm" :variant="oscSignatureMode === 'full' ? 'default' : 'outline'" @click="setOscSignatureMode('full')">UNDERWEB X</Button>
++                            <Button class="w-full mt-3" :disabled="!oscEnabled || !oscChatboxPreview" @click="sendOscChatbox()"><i class="ri-send-plane-fill mr-2" />Send test message</Button>
++                        </section>
++
++                        <section class="uwx-premium-panel uwx-now-playing-panel">
++                            <div class="uwx-panel-title"><div><i class="ri-music-2-fill" /><div><strong>Now Playing</strong><span>Live track info from your active Windows media session.</span></div></div><Badge variant="outline">{{ oscAutoMedia ? 'Auto' : 'Manual' }}</Badge></div>
++                            <div class="uwx-media-card">
++                                <div class="uwx-media-art"><i class="ri-music-2-fill" /></div>
++                                <div class="uwx-media-copy">
++                                    <div class="flex items-start justify-between gap-3"><div class="min-w-0"><strong class="uwx-track-title">{{ oscNowPlayingTitle || 'Nothing playing' }}</strong><span class="uwx-track-artist">{{ oscNowPlayingArtist || 'Waiting for media' }}</span></div><Badge variant="outline">{{ oscMediaState }}</Badge></div>
++                                    <div class="uwx-media-time"><i class="ri-time-line" />{{ oscMediaTimeLabel }}</div>
++                                    <div class="uwx-media-progress"><span :style="{ width: `${oscMediaProgressPercent}%` }" /></div>
+                                 </div>
+                             </div>
+-                            <div class="uwx-chatbox-preview mt-4">
+-                                <div class="flex items-center justify-between gap-3">
+-                                    <div class="uwx-section-label">LIVE PREVIEW</div>
+-                                    <strong class="uwx-char-count">{{ oscPreviewLength }}/144</strong>
++                            <label class="uwx-toggle-row compact mt-3"><div><strong>Auto-detect Windows media</strong><span>Prefers Spotify when available</span></div><Switch :model-value="oscAutoMedia" @update:modelValue="setOscAutoMedia" /></label>
++                            <div class="flex items-center gap-2 mt-3">
++                                <Button size="sm" variant="outline" :disabled="!oscAutoMedia" @click="refreshOscSystemMedia">Refresh media</Button>
++                                <span v-if="oscMediaSource" class="uwx-help truncate">{{ oscMediaSource }}</span>
++                            </div>
++                        </section>
++
++                        <section class="uwx-premium-panel uwx-builder-panel">
++                            <div class="uwx-panel-title"><div><i class="ri-stack-line" /><div><strong>Live Status Builder</strong><span>Top items have higher priority when space is limited.</span></div></div><Badge variant="outline">SMART FIT</Badge></div>
++                            <div class="uwx-builder-list">
++                                <div v-for="(key, index) in oscBlockOrder" :key="key" class="uwx-builder-item">
++                                    <span class="uwx-builder-handle">{{ index + 1 }}</span>
++                                    <div class="uwx-builder-main"><i :class="oscBlockIcons[key] || 'ri-checkbox-blank-circle-line'" /><strong>{{ oscBlockLabels[key] || key }}</strong></div>
++                                    <div class="uwx-builder-actions"><Button size="sm" variant="ghost" :disabled="index === 0" @click="moveOscBlock(key, -1)">↑</Button><Button size="sm" variant="ghost" :disabled="index === oscBlockOrder.length - 1" @click="moveOscBlock(key, 1)">↓</Button></div>
+                                 </div>
+-                                <div class="uwx-char-meter"><span :style="{ width: `${oscPreviewPercent}%` }" /></div>
+-                                <p>{{ oscChatboxPreview || 'Nothing enabled yet.' }}</p>
+-                                <small>When space runs out, lower-priority blocks are dropped before text is trimmed.</small>
+                             </div>
+-                            <div class="flex gap-2 mt-3">
+-                                <Button size="sm" :disabled="!oscEnabled || !oscChatboxPreview" @click="sendOscChatbox()">Send now</Button>
++                            <div class="uwx-builder-controls mt-3">
++                                <Input :model-value="oscCustomStatus" placeholder="Custom text..." @change="setOscCustomStatus($event.target.value)" />
++                                <div class="uwx-osc-toggle-grid">
++                                    <label class="uwx-toggle-row compact"><div><strong>World</strong><span>Current world</span></div><Switch :model-value="oscShowWorld" @update:modelValue="setOscShowWorld" /></label>
++                                    <label class="uwx-toggle-row compact"><div><strong>Player count</strong><span>{{ oscPlayerCount }} here</span></div><Switch :model-value="oscShowPopulation" @update:modelValue="setOscShowPopulation" /></label>
++                                    <label class="uwx-toggle-row compact"><div><strong>Now playing</strong><span>Track + time</span></div><Switch :model-value="oscShowNowPlaying" @update:modelValue="setOscShowNowPlaying" /></label>
++                                    <label class="uwx-toggle-row compact"><div><strong>Heart rate</strong><span>{{ oscHeartRate || '--' }} BPM</span></div><Switch :model-value="oscShowHeartRate" @update:modelValue="setOscShowHeartRate" /></label>
++                                    <label class="uwx-toggle-row compact"><div><strong>Event</strong><span>UnderWeb event</span></div><Switch :model-value="oscShowEvent" @update:modelValue="setOscShowEvent" /></label>
++                                </div>
+                             </div>
++                            <div class="uwx-signature-control mt-3"><div><strong>UWX signature</strong><span>Brand the front of your status.</span></div><div class="flex gap-2"><Button size="sm" :variant="oscSignatureMode === 'off' ? 'default' : 'outline'" @click="setOscSignatureMode('off')">Off</Button><Button size="sm" :variant="oscSignatureMode === 'short' ? 'default' : 'outline'" @click="setOscSignatureMode('short')">🕷 UWX</Button><Button size="sm" :variant="oscSignatureMode === 'full' ? 'default' : 'outline'" @click="setOscSignatureMode('full')">UNDERWEB X</Button></div></div>
+                         </section>
+ 
+-                        <section class="uwx-control-block">
+-                            <div class="uwx-section-label">PULSOID HEART RATE</div>
+-                            <div class="uwx-bpm-display mt-2">
+-                                <strong>{{ oscHeartRate || '--' }}</strong><span>BPM</span><Badge variant="outline">{{ oscHeartRateState }}</Badge>
+-                            </div>
+-                            <Input :model-value="oscPulsoidToken" type="password" class="mt-3" placeholder="Pulsoid access token"
+-                                @change="setOscPulsoidToken($event.target.value)" />
+-                            <p class="uwx-help mt-2">Token stays in local UWX config and is never included in the UnderWeb network manifest.</p>
+-                            <div class="grid grid-cols-2 gap-2 mt-3">
+-                                <label><span class="uwx-field-label">BPM parameter</span><Input :model-value="oscBpmAvatarParameter" @change="setOscBpmAvatarParameter($event.target.value)" /></label>
+-                                <label><span class="uwx-field-label">Beat parameter</span><Input :model-value="oscPulseAvatarParameter" @change="setOscPulseAvatarParameter($event.target.value)" /></label>
+-                            </div>
++                        <section class="uwx-premium-panel uwx-preview-panel">
++                            <div class="uwx-panel-title"><div><i class="ri-eye-line" /><div><strong>Live Preview</strong><span>This is what will be sent to VRChat.</span></div></div><strong class="uwx-char-count">{{ oscPreviewLength }}/144</strong></div>
++                            <div class="uwx-live-preview"><p>{{ oscChatboxPreview || 'Nothing enabled yet.' }}</p></div>
++                            <div class="uwx-char-meter"><span :style="{ width: `${oscPreviewPercent}%` }" /></div>
++                            <small class="uwx-help">Lower-priority blocks drop first when the chatbox budget gets tight.</small>
+                         </section>
+ 
+-                        <section class="uwx-control-block">
+-                            <div class="flex items-center justify-between gap-3">
+-                                <div class="uwx-section-label">NOW PLAYING</div>
+-                                <Badge variant="outline">{{ oscMediaState }}</Badge>
++                        <section class="uwx-premium-panel uwx-presets-panel">
++                            <div class="uwx-panel-title"><div><i class="ri-bookmark-3-line" /><div><strong>Presets</strong><span>Quick setup templates for different situations.</span></div></div></div>
++                            <div class="uwx-preset-cards">
++                                <button v-for="presetCard in oscPresetCards" :key="presetCard.id" type="button" :class="{ active: oscPreset === presetCard.id }" @click="applyOscPreset(presetCard.id)"><i :class="presetCard.icon" /><strong>{{ presetCard.label }}</strong><span>{{ presetCard.description }}</span></button>
+                             </div>
+-                            <label class="uwx-toggle-row compact mt-2"><div><strong>Auto-detect Windows media</strong><span>Prefers Spotify when available</span></div><Switch :model-value="oscAutoMedia" @update:modelValue="setOscAutoMedia" /></label>
+-                            <Input :model-value="oscNowPlayingTitle" class="mt-3" placeholder="Track title" @change="setOscNowPlayingTitle($event.target.value)" />
+-                            <Input :model-value="oscNowPlayingArtist" class="mt-2" placeholder="Artist" @change="setOscNowPlayingArtist($event.target.value)" />
+-                            <div class="flex items-center gap-2 mt-3">
+-                                <Button size="sm" variant="outline" :disabled="!oscAutoMedia" @click="refreshOscSystemMedia">Refresh media</Button>
+-                                <span v-if="oscMediaSource" class="uwx-help truncate">{{ oscMediaSource }}</span>
+-                            </div>
+-                            <p class="uwx-help mt-2">Track progress is read from Windows media and shown as elapsed/total time when available.</p>
+-                            <p class="uwx-help mt-2">Uses Windows' media session, so Spotify desktop can populate title and artist without a separate Spotify login.</p>
+                         </section>
+ 
+-                        <section class="uwx-control-block">
+-                            <div class="uwx-section-label">AVATAR PARAMETER TEST</div>
+-                            <Input v-model="oscTestParameter" class="mt-2" placeholder="Parameter name" />
+-                            <div class="grid grid-cols-[110px_1fr] gap-2 mt-2">
+-                                <select v-model="oscTestType" class="uwx-select"><option value="bool">Bool</option><option value="int">Int</option><option value="float">Float</option></select>
+-                                <Input v-model="oscTestValue" placeholder="Value" />
++                        <section class="uwx-premium-panel uwx-pulsoid-panel">
++                            <div class="uwx-panel-title"><div><i class="ri-heart-pulse-line" /><div><strong>Pulsoid</strong><span>Optional heart-rate status source.</span></div></div><Badge variant="outline">{{ oscHeartRateState }}</Badge></div>
++                            <div class="uwx-bpm-display"><strong>{{ oscHeartRate || '--' }}</strong><span>BPM</span></div>
++                            <Input :model-value="oscPulsoidToken" type="password" class="mt-3" placeholder="Pulsoid access token" @change="setOscPulsoidToken($event.target.value)" />
++                            <p class="uwx-help mt-2">Your token stays in local UWX config.</p>
++                        </section>
++
++                        <section class="uwx-premium-panel uwx-log-panel">
++                            <div class="uwx-panel-title"><div><i class="ri-file-list-3-line" /><div><strong>Output Log</strong><span>Recent OSC chatbox messages sent by UWX.</span></div></div><Button size="sm" variant="outline" :disabled="!oscOutputLog.length" @click="clearOscOutputLog">Clear log</Button></div>
++                            <div v-if="oscOutputLog.length" class="uwx-output-log">
++                                <div v-for="entry in oscOutputLog" :key="`${entry.at}-${entry.text}`"><time>{{ formatOscLogTime(entry.at) }}</time><span>[SEND]</span><p>{{ entry.text }}</p></div>
+                             </div>
+-                            <Button size="sm" variant="outline" class="mt-3" :disabled="!oscEnabled || !oscTestParameter" @click="sendOscTestParameter">Send parameter</Button>
+-                            <p class="uwx-help mt-2">Sends directly to <code>/avatar/parameters/&lt;name&gt;</code> on VRChat's local OSC port.</p>
++                            <div v-else class="uwx-log-empty">No messages sent this session yet.</div>
+                         </section>
+                     </div>
+                 </CardContent>
+@@ -741,12 +759,14 @@
+         autoBroadcast: oscAutoBroadcast,
+         autoMedia: oscAutoMedia,
+         signatureMode: oscSignatureMode,
++        blockOrder: oscBlockOrder,
+         playerCount: oscPlayerCount,
+         nowPlayingTitle: oscNowPlayingTitle,
+         nowPlayingArtist: oscNowPlayingArtist,
+         pulsoidToken: oscPulsoidToken,
+         heartRate: oscHeartRate,
+         heartRateState: oscHeartRateState,
+         mediaState: oscMediaState,
+         mediaSource: oscMediaSource,
++        mediaProgressPercent: oscMediaProgressPercent,
++        mediaTimeLabel: oscMediaTimeLabel,
++        outputLog: oscOutputLog,
+         pulseAvatarParameter: oscPulseAvatarParameter,
+         bpmAvatarParameter: oscBpmAvatarParameter,
+         preset: oscPreset,
+@@ -771,12 +791,14 @@
+         setAutoBroadcast: setOscAutoBroadcast,
+         setAutoMedia: setOscAutoMedia,
+         setSignatureMode: setOscSignatureMode,
++        moveBlock: moveOscBlock,
+         setNowPlayingTitle: setOscNowPlayingTitle,
+         setNowPlayingArtist: setOscNowPlayingArtist,
+         setPulsoidToken: setOscPulsoidToken,
+         setPulseAvatarParameter: setOscPulseAvatarParameter,
+         setBpmAvatarParameter: setOscBpmAvatarParameter,
+         applyPreset: applyOscPreset,
+         sendChatbox: sendOscChatbox,
++        clearOutputLog: clearOscOutputLog,
+         refreshSystemMedia: refreshOscSystemMedia,
+         sendAvatarParameter: sendOscAvatarParameter
+     } = oscLabStore;
+@@ -784,6 +806,34 @@
+ 
+     void initOscLab();
+ 
++    const oscBlockLabels = {
++        signature: 'UWX Signature',
++        music: 'Now Playing',
++        world: 'World Name',
++        population: 'Player Count',
++        heart: 'Heart Rate',
++        event: 'UnderWeb Event',
++        status: 'Custom Text'
++    };
++    const oscBlockIcons = {
++        signature: 'ri-links-line',
++        music: 'ri-music-2-fill',
++        world: 'ri-global-line',
++        population: 'ri-group-line',
++        heart: 'ri-heart-pulse-fill',
++        event: 'ri-calendar-event-line',
++        status: 'ri-text'
++    };
++    const oscPresetCards = [
++        { id: 'normal', label: 'Normal', description: 'Balanced info', icon: 'ri-user-smile-line' },
++        { id: 'music', label: 'Music', description: 'Focus on music', icon: 'ri-music-2-fill' },
++        { id: 'event', label: 'Event', description: 'World + players', icon: 'ri-calendar-event-line' },
++        { id: 'afk', label: 'AFK', description: 'Minimal info', icon: 'ri-moon-line' }
++    ];
++
++    function formatOscLogTime(timestamp) {
++        const date = new Date(Number(timestamp) || Date.now());
++        return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
++    }
++
+     const {
+         setAutoInviteEnabled,
+         setGroupRecruitEnabled,
+@@ -812,9 +862,6 @@
+     const friendSearch = ref('');
+     const radarFilter = ref('all');
+     const profileUserId = ref('');
+-    const oscTestParameter = ref('');
+-    const oscTestType = ref('bool');
+-    const oscTestValue = ref('true');
+     const radarFilters = [
+         { id: 'all', label: 'All' },
+         { id: 'underweb', label: 'UnderWeb' },
+@@ -1266,16 +1313,6 @@
+         }
+     }
+ 
+-    async function sendOscTestParameter() {
+-        try {
+-            let value = oscTestValue.value;
+-            if (oscTestType.value === 'bool') value = String(value).toLowerCase() === 'true' || String(value) === '1';
+-            else value = Number(value);
+-            await sendOscAvatarParameter(oscTestParameter.value, oscTestType.value, value);
+-            toast.success(`Sent OSC parameter ${oscTestParameter.value}.`);
+-        } catch (error) {
+-            toast.error(error?.message || 'OSC parameter send failed.');
+-        }
+-    }
+-
+     function formatEventTime(event) {
+         if (!event?.startAt) return 'Schedule pending';
+         const date = new Date(event.startAt);
+@@ -1351,13 +1388,73 @@
+     .uwx-log-row { display: grid; grid-template-columns: 76px 78px minmax(0, 1fr); align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+     .uwx-log-time { color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+ 
++    .uwx-osc-premium { border-color: rgb(123 92 255 / 28%); background: radial-gradient(circle at 78% 8%, rgb(123 92 255 / 8%), transparent 26%), var(--card); }
++    .uwx-osc-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
++    .uwx-health-strip { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
++    .uwx-health-card { display: flex; align-items: center; gap: 9px; min-width: 0; padding: 10px 12px; border: 1px solid rgb(255 255 255 / 7%); border-radius: 11px; background: rgb(0 0 0 / 18%); }
++    .uwx-health-card > i { display: grid; place-items: center; width: 32px; height: 32px; flex: 0 0 32px; border-radius: 10px; background: rgb(123 92 255 / 12%); color: #9b7cff; font-size: 18px; }
++    .uwx-health-card span, .uwx-health-card strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
++    .uwx-health-card span { color: var(--muted-foreground); font-size: 9px; }
++    .uwx-health-card strong { margin-top: 2px; font-size: 10px; text-transform: capitalize; }
++    .uwx-health-card strong.online { color: #35e77d; }
++    .uwx-osc-premium-grid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, .8fr); gap: 12px; align-items: start; }
++    .uwx-premium-panel { min-width: 0; padding: 14px; border: 1px solid rgb(255 255 255 / 7%); border-radius: 12px; background: rgb(0 0 0 / 15%); }
++    .uwx-panel-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
++    .uwx-panel-title > div:first-child { display: flex; align-items: center; gap: 9px; min-width: 0; }
++    .uwx-panel-title > div:first-child > i { color: #9b7cff; font-size: 18px; }
++    .uwx-panel-title strong, .uwx-panel-title span { display: block; }
++    .uwx-panel-title strong { font-size: 12px; }
++    .uwx-panel-title span { margin-top: 2px; color: var(--muted-foreground); font-size: 9px; }
++    .uwx-osc-live-box { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 15px; border: 1px solid rgb(123 92 255 / 55%); border-radius: 12px; background: linear-gradient(135deg, rgb(123 92 255 / 20%), rgb(90 58 210 / 7%)); box-shadow: inset 0 0 30px rgb(123 92 255 / 6%); }
++    .uwx-osc-live-box > div { display: flex; align-items: center; gap: 12px; min-width: 0; }
++    .uwx-osc-live-box i { color: #9b7cff; font-size: 28px; }
++    .uwx-osc-live-box strong, .uwx-osc-live-box span { display: block; }
++    .uwx-osc-live-box strong { font-size: 15px; }
++    .uwx-osc-live-box span { margin-top: 2px; color: var(--muted-foreground); font-size: 10px; }
++    .uwx-broadcast-options { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; }
++    .uwx-broadcast-options > label { display: flex; align-items: center; gap: 9px; }
++    .uwx-broadcast-options strong, .uwx-broadcast-options span { display: block; }
++    .uwx-broadcast-options strong { font-size: 10px; } .uwx-broadcast-options span { color: var(--muted-foreground); font-size: 9px; }
++    .uwx-refresh-pill { padding: 7px 10px; border-left: 1px solid rgb(255 255 255 / 8%); }
++    .uwx-refresh-pill span, .uwx-refresh-pill strong { display: block; text-align: right; } .uwx-refresh-pill span { color: var(--muted-foreground); font-size: 8px; } .uwx-refresh-pill strong { font-size: 10px; }
++    .uwx-media-card { display: grid; grid-template-columns: 82px minmax(0, 1fr); gap: 12px; }
++    .uwx-media-art { display: grid; place-items: center; min-height: 82px; border-radius: 10px; background: radial-gradient(circle, rgb(123 92 255 / 30%), rgb(18 20 32 / 90%)); color: #b69cff; font-size: 30px; }
++    .uwx-media-copy { min-width: 0; } .uwx-track-title, .uwx-track-artist { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .uwx-track-title { font-size: 15px; } .uwx-track-artist { margin-top: 3px; color: var(--muted-foreground); font-size: 11px; }
++    .uwx-media-time { display: flex; align-items: center; gap: 5px; margin-top: 10px; color: var(--muted-foreground); font-size: 10px; font-variant-numeric: tabular-nums; }
++    .uwx-media-progress { height: 6px; margin-top: 8px; overflow: hidden; border-radius: 999px; background: rgb(255 255 255 / 8%); } .uwx-media-progress span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #774dff, #a76cff); transition: width 180ms linear; }
++    .uwx-builder-panel { grid-row: span 2; }
++    .uwx-builder-list { display: grid; gap: 6px; }
++    .uwx-builder-item { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 7px 8px; border: 1px solid rgb(255 255 255 / 7%); border-radius: 9px; background: rgb(255 255 255 / 2%); }
++    .uwx-builder-handle { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 7px; background: rgb(123 92 255 / 13%); color: #b69cff; font-size: 9px; font-weight: 900; }
++    .uwx-builder-main { display: flex; align-items: center; gap: 8px; min-width: 0; } .uwx-builder-main i { color: #9b7cff; } .uwx-builder-main strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
++    .uwx-builder-actions { display: flex; gap: 2px; } .uwx-builder-actions button { min-width: 28px; padding-inline: 6px; }
++    .uwx-builder-controls { padding-top: 10px; border-top: 1px solid rgb(255 255 255 / 6%); }
++    .uwx-preview-panel { background: linear-gradient(180deg, rgb(123 92 255 / 5%), rgb(0 0 0 / 15%)); }
++    .uwx-live-preview { padding: 14px; border: 1px solid rgb(123 92 255 / 45%); border-radius: 12px; background: linear-gradient(90deg, rgb(123 92 255 / 16%), rgb(104 68 230 / 8%)); box-shadow: inset 0 0 24px rgb(123 92 255 / 8%); }
++    .uwx-live-preview p { margin: 0; font-size: 12px; line-height: 1.6; }
++    .uwx-preset-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
++    .uwx-preset-cards button { display: grid; grid-template-columns: 22px 1fr; grid-template-rows: auto auto; align-items: center; column-gap: 7px; padding: 10px; border: 1px solid rgb(255 255 255 / 8%); border-radius: 10px; background: rgb(255 255 255 / 2%); color: var(--foreground); text-align: left; }
++    .uwx-preset-cards button i { grid-row: 1 / span 2; color: #9b7cff; font-size: 18px; } .uwx-preset-cards button strong { font-size: 10px; } .uwx-preset-cards button span { color: var(--muted-foreground); font-size: 8px; } .uwx-preset-cards button.active { border-color: rgb(123 92 255 / 65%); background: rgb(123 92 255 / 10%); box-shadow: inset 0 0 22px rgb(123 92 255 / 6%); }
++    .uwx-log-panel { grid-column: 1 / -1; }
++    .uwx-output-log { max-height: 190px; overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
++    .uwx-output-log > div { display: grid; grid-template-columns: 76px 46px minmax(0, 1fr); gap: 8px; padding: 6px 0; border-bottom: 1px solid rgb(255 255 255 / 5%); font-size: 9px; }
++    .uwx-output-log time { color: var(--muted-foreground); font-variant-numeric: tabular-nums; } .uwx-output-log span { color: #35e77d; font-weight: 800; } .uwx-output-log p { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
++    .uwx-log-empty { padding: 18px; border: 1px dashed rgb(255 255 255 / 8%); border-radius: 10px; color: var(--muted-foreground); font-size: 10px; text-align: center; }
+     @media (max-width: 1100px) {
++        .uwx-health-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
++        .uwx-osc-premium-grid { grid-template-columns: 1fr; }
++        .uwx-builder-panel { grid-row: auto; }
++        .uwx-log-panel { grid-column: auto; }
+         .uwx-overview { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+         .uwx-event-grid,
+         .uwx-friend-layout { grid-template-columns: 1fr; }
+     }
+ 
+     @media (max-width: 900px) {
++        .uwx-health-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
++        .uwx-preset-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
++        .uwx-osc-head { flex-direction: column; }
+         .uwx-grid { grid-template-columns: 1fr; }
+         .uwx-card-wide { grid-column: auto; }
+         .uwx-stat-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@@ -1489,6 +1564,9 @@
+     }
+ 
+     @media (max-width: 900px) {
++        .uwx-health-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
++        .uwx-preset-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
++        .uwx-osc-head { flex-direction: column; }
+         .uwx-panel-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+         .uwx-panel-context { align-items: flex-start; flex-direction: column; gap: 6px; }
+         .uwx-panel-context p { text-align: left; }
+diff --git a/src/shared/constants/uwx.js b/src/shared/constants/uwx.js
+--- a/src/shared/constants/uwx.js
++++ b/src/shared/constants/uwx.js
+@@ -1,2 +1,2 @@
+-export const UWX_VERSION = '0.4.4-rc4';
++export const UWX_VERSION = '0.4.6-rc6';
+ export const UWX_MANIFEST_URL = 'https://underweb.cloud/api/uwx/manifest';
