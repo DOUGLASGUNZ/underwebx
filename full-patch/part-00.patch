@@ -1,1 +1,1500 @@
-The requested file reference is not currently visible. Use files.search or files.list to rediscover the file, then retry with a returned ref_id or file_id.
+diff --git a/CHANGELOG_UWX.md b/CHANGELOG_UWX.md
+index 02069d2..7fe8125 100644
+--- a/CHANGELOG_UWX.md
++++ b/CHANGELOG_UWX.md
+@@ -1,5 +1,27 @@
+ # UnderWeb X changelog
+ 
++## 0.4.1-rc1 — Launch polish
++
++- Split the UnderWeb workspace into Command, OSC Lab, People, and System panels.
++- Reduced visual noise and made live lobby operations the primary hierarchy.
++- Added clear Group Recruiter safety-state chips and safer manual confirmation.
++- Manual group recruitment now shows the eligible count before sending.
++- Refined OSC Lab presets and added a 144-character live usage meter.
++- Clarified launch-safe copy, privacy boundaries, and approved-group automation wording.
++
++## 0.3.0
++
++- Added UnderWeb network-manifest integration with cached/offline fallback.
++- Added Connected Accounts status for UnderWeb, VRChat, and Discord identities.
++- Added UnderWeb role badges and role-aware friend/profile quick-view.
++- Added Auto Invite role presets for Staff, Creators, and Partners.
++- Added filtered Network Radar views for UnderWeb members, staff, creators, and partners.
++- Added Event Mode with live-event operations, upcoming events, staff/talent counts, and instance copying.
++- Added persistent notification rules for live events, approved instances, favorite-friend presence, and UWX updates.
++- Added live-event, approved-instance, favorite-online, and release-availability notifications.
++- Added release-channel status and update-check UI backed by the UnderWeb manifest.
++- Added direct Connected Accounts, event, and UnderWeb profile links.
++
+ ## 0.2.0
+ 
+ - Expanded the UnderWeb dashboard with live world, instance, friend, favorite, and session stats.
+@@ -23,3 +45,18 @@
+ - Added `uwx://` protocol identity.
+ - Disabled upstream updater.
+ - Added UnderWeb X login/nav branding while preserving the VRCX MIT license and upstream attribution.
++
++## v0.3 recruiter correction
++- Added **Group Recruiter**: invites eligible occupants already inside the current approved VRChat group instance into that VRChat group.
++- Renamed the previous friend-to-instance automation to **Instance Inviter** so the two behaviors are distinct.
++- Group Recruiter is opt-in, dwell-gated, paced, deduped per user/group for 24 hours, stops on instance changes, disarms on permission errors, and backs off on rate limits.
++
++## 0.4.0 - Launch feature freeze candidate
++
++- Added native OSC Lab with VRChat chatbox output and avatar parameter testing.
++- Added Pulsoid real-time heart-rate connection with HR/isHRBeat avatar parameter output.
++- Added chatbox composer presets, priority trimming, event/world/music/heart-rate blocks.
++- Added privacy/safety controls and one-click disarm for recruiter, instance inviter, and OSC.
++- Kept Group Recruiter safeguards, including mandatory current-group membership verification before inviting.
++- Retained Connected Accounts, role-aware Radar, Event Mode, notifications, update checking, and activity log.
++- Renamed old Auto Invite references to Instance Inviter where visible.
+\ No newline at end of file
+diff --git a/Dotnet/AppApi/Common/AppApiCommon.cs b/Dotnet/AppApi/Common/AppApiCommon.cs
+index cc4543f..0a6d590 100644
+--- a/Dotnet/AppApi/Common/AppApiCommon.cs
++++ b/Dotnet/AppApi/Common/AppApiCommon.cs
+@@ -3,6 +3,8 @@ using System.Collections.Generic;
+ using System.Diagnostics;
+ using System.Globalization;
+ using System.IO;
++using System.Net;
++using System.Net.Sockets;
+ using System.Security.Cryptography;
+ using System.Text;
+ using System.Threading.Tasks;
+@@ -99,6 +101,93 @@ namespace VRCX
+             });
+         }
+ 
++
++        private static byte[] OscPaddedString(string value)
++        {
++            var raw = Encoding.UTF8.GetBytes(value ?? string.Empty);
++            var length = raw.Length + 1;
++            var padded = (length + 3) & ~3;
++            var output = new byte[padded];
++            Buffer.BlockCopy(raw, 0, output, 0, raw.Length);
++            return output;
++        }
++
++        private static byte[] OscInt32(int value)
++        {
++            var bytes = BitConverter.GetBytes(value);
++            if (BitConverter.IsLittleEndian) Array.Reverse(bytes);
++            return bytes;
++        }
++
++        private static byte[] OscFloat32(float value)
++        {
++            var bytes = BitConverter.GetBytes(value);
++            if (BitConverter.IsLittleEndian) Array.Reverse(bytes);
++            return bytes;
++        }
++
++        private static void SendOscPacket(string address, string typeTags, params byte[][] payloadParts)
++        {
++            if (string.IsNullOrWhiteSpace(address) || !address.StartsWith('/'))
++                throw new ArgumentException("Invalid OSC address", nameof(address));
++
++            var parts = new List<byte[]>
++            {
++                OscPaddedString(address),
++                OscPaddedString("," + typeTags)
++            };
++            parts.AddRange(payloadParts ?? Array.Empty<byte[]>());
++            var size = 0;
++            foreach (var part in parts) size += part.Length;
++            var packet = new byte[size];
++            var offset = 0;
++            foreach (var part in parts)
++            {
++                Buffer.BlockCopy(part, 0, packet, offset, part.Length);
++                offset += part.Length;
++            }
++
++            using var udp = new UdpClient();
++            udp.Send(packet, packet.Length, new IPEndPoint(IPAddress.Loopback, 9000));
++        }
++
++        public void SendOscChatbox(string text, bool sendImmediately, bool playNotification)
++        {
++            var safe = text ?? string.Empty;
++            if (safe.Length > 512) safe = safe[..512];
++            SendOscPacket(
++                "/chatbox/input",
++                "s" + (sendImmediately ? "T" : "F") + (playNotification ? "T" : "F"),
++                OscPaddedString(safe)
++            );
++        }
++
++        private static string NormalizeOscParameter(string parameter)
++        {
++            var value = (parameter ?? string.Empty).Trim();
++            if (string.IsNullOrWhiteSpace(value) || value.Contains("..") || value.Contains('\\'))
++                throw new ArgumentException("Invalid OSC avatar parameter", nameof(parameter));
++            return value.Trim('/');
++        }
++
++        public void SendOscAvatarBool(string parameter, bool value)
++        {
++            var name = NormalizeOscParameter(parameter);
++            SendOscPacket($"/avatar/parameters/{name}", value ? "T" : "F");
++        }
++
++        public void SendOscAvatarInt(string parameter, int value)
++        {
++            var name = NormalizeOscParameter(parameter);
++            SendOscPacket($"/avatar/parameters/{name}", "i", OscInt32(value));
++        }
++
++        public void SendOscAvatarFloat(string parameter, double value)
++        {
++            var name = NormalizeOscParameter(parameter);
++            SendOscPacket($"/avatar/parameters/{name}", "f", OscFloat32((float)value));
++        }
++
+         public string CustomCss()
+         {
+             var filePath = Path.Join(Program.AppDataDirectory, "custom.css");
+diff --git a/UNDERWEB_X.md b/UNDERWEB_X.md
+index 4f0157a..c26c1dd 100644
+--- a/UNDERWEB_X.md
++++ b/UNDERWEB_X.md
+@@ -16,6 +16,19 @@ UnderWeb X (UWX) is an UnderWeb-focused fork of VRCX. The upstream VRCX project
+ - Electron app data is isolated under `UnderWebX` so stock VRCX can remain installed separately.
+ - Stock VRCX updater is disabled with `.no-updater` until UWX has its own update channel.
+ 
++## v0.3 network command center
++
++- Optional UnderWeb network manifest at `https://underweb.cloud/api/uwx/manifest`, with local cached fallback when the website feed is unavailable.
++- Connected Accounts panel for the existing UnderWeb account, verified VRChat identity, and Discord link.
++- Role-aware network directory for Staff, Creators, Partners, creator types, and badges.
++- Auto Invite role presets for UnderWeb Staff, Creators, and Partners in addition to v0.2 friend audiences.
++- Event Mode for live/upcoming UnderWeb events, instance metadata, staff/talent counts, and event links.
++- Network Radar filters and role summaries.
++- Friend profile quick-view with UnderWeb roles and direct public-profile access when linked.
++- Persistent notification rules and release-channel/update status.
++
++The network integration is deliberately tolerant of the website endpoint not existing yet: UWX remains usable as a VRCX-derived client, displays the network as offline/cached, and automatically activates the connected features once the manifest endpoint is deployed.
++
+ ## Important internal compatibility note
+ 
+ The native .NET assembly, namespaces, database filenames, IPC class names, and many internal `VRCX_*` config keys intentionally remain unchanged in this milestone. They are implementation details relied on by the Electron/.NET bridge. User-facing branding can change independently without destabilizing that bridge.
+@@ -30,3 +43,8 @@ The engine reuses VRCX's existing authenticated API client rather than browser a
+ 
+ Base: VRCX 2026.09.16
+ https://github.com/vrcx-team/VRCX
++
++## v0.3 recruiter correction
++- Added **Group Recruiter**: invites eligible occupants already inside the current approved VRChat group instance into that VRChat group.
++- Renamed the previous friend-to-instance automation to **Instance Inviter** so the two behaviors are distinct.
++- Group Recruiter is opt-in, dwell-gated, paced, deduped per user/group for 24 hours, stops on instance changes, disarms on permission errors, and backs off on rate limits.
+diff --git a/UWX_MANIFEST_CONTRACT.md b/UWX_MANIFEST_CONTRACT.md
+new file mode 100644
+index 0000000..eedf3ec
+--- /dev/null
++++ b/UWX_MANIFEST_CONTRACT.md
+@@ -0,0 +1,56 @@
++# UnderWeb X network manifest contract
++
++UWX v0.3 reads an optional JSON feed from:
++
++`GET https://underweb.cloud/api/uwx/manifest`
++
++The client must continue working when this endpoint is missing or offline. UWX caches the last successful payload in its local SQLite config store.
++
++## Example payload
++
++```json
++{
++  "schemaVersion": "1",
++  "generatedAt": "2026-09-23T22:00:00Z",
++  "self": {
++    "underwebUserId": "profile-id",
++    "displayName": "Darko",
++    "vrchat": { "id": "usr_..." },
++    "discord": { "id": "123456", "username": "darko" }
++  },
++  "members": [
++    {
++      "underwebUserId": "profile-id",
++      "vrchatUserId": "usr_...",
++      "displayName": "Darko",
++      "roles": ["Owner"],
++      "creatorTypes": ["World Creator"],
++      "badges": ["Verified"],
++      "staff": true,
++      "partner": false
++    }
++  ],
++  "events": [
++    {
++      "id": "event-id",
++      "title": "UnderWeb Night",
++      "status": "live",
++      "startAt": "2026-09-24T02:00:00Z",
++      "endAt": "2026-09-24T06:00:00Z",
++      "worldId": "wrld_...",
++      "groupId": "grp_...",
++      "instanceTag": "wrld_...:123~group(grp_...)",
++      "host": "UnderWeb",
++      "posterUrl": "https://...",
++      "staff": ["usr_..."],
++      "performers": ["usr_..."]
++    }
++  ],
++  "release": {
++    "version": "0.3.0",
++    "downloadUrl": "https://..."
++  }
++}
++```
++
++Unknown fields are ignored. Missing arrays are treated as empty. Role matching is case-insensitive and deliberately tolerant of role names such as Owner, Director, Admin, Moderator, Staff, Security, Event Lead, DJ, Photographer, Avatar Creator, World Creator, Artist, Partner, and similar creator roles.
+diff --git a/UWX_VERSION b/UWX_VERSION
+index 0ea3a94..20e5763 100644
+--- a/UWX_VERSION
++++ b/UWX_VERSION
+@@ -1 +1 @@
+-0.2.0
++0.4.1-rc1
+diff --git a/src/shared/constants/uwx.js b/src/shared/constants/uwx.js
+new file mode 100644
+index 0000000..4a003a0
+--- /dev/null
++++ b/src/shared/constants/uwx.js
+@@ -0,0 +1,2 @@
++export const UWX_VERSION = '0.4.1-rc1';
++export const UWX_MANIFEST_URL = 'https://underweb.cloud/api/uwx/manifest';
+diff --git a/src/stores/index.js b/src/stores/index.js
+index daa794d..cc49f08 100644
+--- a/src/stores/index.js
++++ b/src/stores/index.js
+@@ -34,6 +34,8 @@ import { useSharedFeedStore } from './sharedFeed';
+ import { useUiStore } from './ui';
+ import { useToolsStore } from './tools';
+ import { useUnderWebStore } from './underweb';
++import { useUnderWebNetworkStore } from './underwebNetwork';
++import { useOscLabStore } from './oscLab';
+ import { useUpdateLoopStore } from './updateLoop';
+ import { useUserStore } from './user';
+ import { useVRCXUpdaterStore } from './vrcxUpdater';
+@@ -148,6 +150,8 @@ export function createGlobalStores() {
+         ui: useUiStore(),
+         tools: useToolsStore(),
+         underWeb: useUnderWebStore(),
++        underWebNetwork: useUnderWebNetworkStore(),
++        oscLab: useOscLabStore(),
+         gameLog: useGameLogStore(),
+         search: useSearchStore(),
+         game: useGameStore(),
+@@ -196,6 +200,8 @@ export {
+     useWristOverlaySettingsStore,
+     useToolsStore,
+     useUnderWebStore,
++    useUnderWebNetworkStore,
++    useOscLabStore,
+     useUiStore,
+     useUserStore,
+     useVrStore,
+diff --git a/src/stores/oscLab.js b/src/stores/oscLab.js
+new file mode 100644
+index 0000000..eef7a39
+--- /dev/null
++++ b/src/stores/oscLab.js
+@@ -0,0 +1,356 @@
++import { computed, ref } from 'vue';
++import { defineStore } from 'pinia';
++import { toast } from 'vue-sonner';
++
++import configRepository from '../services/config';
++import { useUnderWebNetworkStore } from './underwebNetwork';
++import { useLocationStore } from './location';
++
++const CONFIG = Object.freeze({
++    enabled: 'UWX_oscEnabled',
++    customStatus: 'UWX_oscCustomStatus',
++    showWorld: 'UWX_oscShowWorld',
++    showEvent: 'UWX_oscShowEvent',
++    showHeartRate: 'UWX_oscShowHeartRate',
++    showNowPlaying: 'UWX_oscShowNowPlaying',
++    nowPlayingTitle: 'UWX_oscNowPlayingTitle',
++    nowPlayingArtist: 'UWX_oscNowPlayingArtist',
++    pulsoidToken: 'UWX_pulsoidToken',
++    pulseAvatarParameter: 'UWX_pulseAvatarParameter',
++    bpmAvatarParameter: 'UWX_bpmAvatarParameter',
++    preset: 'UWX_oscPreset'
++});
++
++const PRESETS = Object.freeze({
++    normal: { customStatus: '', showWorld: true, showEvent: false, showHeartRate: false, showNowPlaying: false },
++    music: { customStatus: '', showWorld: false, showEvent: false, showHeartRate: false, showNowPlaying: true },
++    event: { customStatus: 'UNDERWEB // EVENT LIVE', showWorld: true, showEvent: true, showHeartRate: true, showNowPlaying: true },
++    afk: { customStatus: 'AFK', showWorld: false, showEvent: false, showHeartRate: false, showNowPlaying: false }
++});
++
++const clampChatbox = (text) => Array.from(String(text || '')).slice(0, 144).join('');
++
++export const useOscLabStore = defineStore('OscLab', () => {
++    const networkStore = useUnderWebNetworkStore();
++    const locationStore = useLocationStore();
++
++    const initialized = ref(false);
++    const enabled = ref(false);
++    const customStatus = ref('');
++    const showWorld = ref(true);
++    const showEvent = ref(true);
++    const showHeartRate = ref(false);
++    const showNowPlaying = ref(false);
++    const nowPlayingTitle = ref('');
++    const nowPlayingArtist = ref('');
++    const pulsoidToken = ref('');
++    const heartRate = ref(0);
++    const heartRateState = ref('offline');
++    const pulseAvatarParameter = ref('isHRBeat');
++    const bpmAvatarParameter = ref('HR');
++    const preset = ref('normal');
++    const lastSentAt = ref(0);
++    const lastError = ref('');
++
++    let pulsoidSocket = null;
++    let reconnectTimer = null;
++
++    const worldName = computed(() => locationStore.lastLocation.name || 'VRChat');
++    const activeEvent = computed(() => networkStore.activeEvent);
++
++    const chatboxParts = computed(() => {
++        const parts = [];
++        if (customStatus.value.trim()) parts.push(customStatus.value.trim());
++        if (showEvent.value && activeEvent.value?.title) parts.push(`🕷 ${activeEvent.value.title}`);
++        if (showNowPlaying.value && nowPlayingTitle.value.trim()) {
++            parts.push(`🎵 ${nowPlayingTitle.value.trim()}${nowPlayingArtist.value.trim() ? ` — ${nowPlayingArtist.value.trim()}` : ''}`);
++        }
++        if (showHeartRate.value && heartRate.value > 0) parts.push(`♥ ${heartRate.value} BPM`);
++        if (showWorld.value && worldName.value) parts.push(`🌎 ${worldName.value}`);
++        return parts;
++    });
++
++    const chatboxPreview = computed(() => {
++        const preferred = chatboxParts.value.join(' · ');
++        if (preferred.length <= 144) return preferred;
++        // Drop lower-priority trailing blocks before hard truncation.
++        const priority = [...chatboxParts.value];
++        while (priority.length > 1 && priority.join(' · ').length > 144) priority.pop();
++        return clampChatbox(priority.join(' · '));
++    });
++
++    const previewLength = computed(() => Array.from(chatboxPreview.value).length);
++
++    async function loadSettings() {
++        const [
++            storedEnabled,
++            storedStatus,
++            storedWorld,
++            storedEvent,
++            storedHeartRate,
++            storedNowPlaying,
++            storedTitle,
++            storedArtist,
++            storedToken,
++            storedPulseParam,
++            storedBpmParam,
++            storedPreset
++        ] = await Promise.all([
++            configRepository.getBool(CONFIG.enabled, false),
++            configRepository.getString(CONFIG.customStatus, ''),
++            configRepository.getBool(CONFIG.showWorld, true),
++            configRepository.getBool(CONFIG.showEvent, true),
++            configRepository.getBool(CONFIG.showHeartRate, false),
++            configRepository.getBool(CONFIG.showNowPlaying, false),
++            configRepository.getString(CONFIG.nowPlayingTitle, ''),
++            configRepository.getString(CONFIG.nowPlayingArtist, ''),
++            configRepository.getString(CONFIG.pulsoidToken, ''),
++            configRepository.getString(CONFIG.pulseAvatarParameter, 'isHRBeat'),
++            configRepository.getString(CONFIG.bpmAvatarParameter, 'HR'),
++            configRepository.getString(CONFIG.preset, 'normal')
++        ]);
++        enabled.value = Boolean(storedEnabled);
++        customStatus.value = storedStatus || '';
++        showWorld.value = Boolean(storedWorld);
++        showEvent.value = Boolean(storedEvent);
++        showHeartRate.value = Boolean(storedHeartRate);
++        showNowPlaying.value = Boolean(storedNowPlaying);
++        nowPlayingTitle.value = storedTitle || '';
++        nowPlayingArtist.value = storedArtist || '';
++        pulsoidToken.value = storedToken || '';
++        pulseAvatarParameter.value = storedPulseParam || 'isHRBeat';
++        bpmAvatarParameter.value = storedBpmParam || 'HR';
++        preset.value = PRESETS[storedPreset] ? storedPreset : 'normal';
++    }
++
++    async function initOscLab() {
++        if (initialized.value) return;
++        await loadSettings();
++        initialized.value = true;
++        if (showHeartRate.value && pulsoidToken.value) connectPulsoid();
++    }
++
++    async function persistBool(key, value) {
++        await configRepository.setBool(key, Boolean(value));
++    }
++
++    async function setEnabled(value) {
++        enabled.value = Boolean(value);
++        await persistBool(CONFIG.enabled, enabled.value);
++    }
++
++    async function setCustomStatus(value) {
++        customStatus.value = String(value || '').slice(0, 144);
++        await configRepository.setString(CONFIG.customStatus, customStatus.value);
++    }
++
++    async function setShowWorld(value) {
++        showWorld.value = Boolean(value);
++        await persistBool(CONFIG.showWorld, showWorld.value);
++    }
++
++    async function setShowEvent(value) {
++        showEvent.value = Boolean(value);
++        await persistBool(CONFIG.showEvent, showEvent.value);
++    }
++
++    async function setShowHeartRate(value) {
++        showHeartRate.value = Boolean(value);
++        await persistBool(CONFIG.showHeartRate, showHeartRate.value);
++        if (showHeartRate.value && pulsoidToken.value) connectPulsoid();
++        if (!showHeartRate.value) disconnectPulsoid();
++    }
++
++    async function setShowNowPlaying(value) {
++        showNowPlaying.value = Boolean(value);
++        await persistBool(CONFIG.showNowPlaying, showNowPlaying.value);
++    }
++
++    async function setNowPlayingTitle(value) {
++        nowPlayingTitle.value = String(value || '').slice(0, 80);
++        await configRepository.setString(CONFIG.nowPlayingTitle, nowPlayingTitle.value);
++    }
++
++    async function setNowPlayingArtist(value) {
++        nowPlayingArtist.value = String(value || '').slice(0, 80);
++        await configRepository.setString(CONFIG.nowPlayingArtist, nowPlayingArtist.value);
++    }
++
++    async function setPulsoidToken(value) {
++        pulsoidToken.value = String(value || '').trim();
++        await configRepository.setString(CONFIG.pulsoidToken, pulsoidToken.value);
++        if (showHeartRate.value && pulsoidToken.value) connectPulsoid();
++        else disconnectPulsoid();
++    }
++
++    async function setPulseAvatarParameter(value) {
++        pulseAvatarParameter.value = String(value || '').trim() || 'isHRBeat';
++        await configRepository.setString(CONFIG.pulseAvatarParameter, pulseAvatarParameter.value);
++    }
++
++    async function setBpmAvatarParameter(value) {
++        bpmAvatarParameter.value = String(value || '').trim() || 'HR';
++        await configRepository.setString(CONFIG.bpmAvatarParameter, bpmAvatarParameter.value);
++    }
++
++    async function applyPreset(name) {
++        const next = PRESETS[name] || PRESETS.normal;
++        preset.value = PRESETS[name] ? name : 'normal';
++        customStatus.value = next.customStatus;
++        showWorld.value = next.showWorld;
++        showEvent.value = next.showEvent;
++        showHeartRate.value = next.showHeartRate;
++        showNowPlaying.value = next.showNowPlaying;
++        await Promise.all([
++            configRepository.setString(CONFIG.preset, preset.value),
++            configRepository.setString(CONFIG.customStatus, customStatus.value),
++            persistBool(CONFIG.showWorld, showWorld.value),
++            persistBool(CONFIG.showEvent, showEvent.value),
++            persistBool(CONFIG.showHeartRate, showHeartRate.value),
++            persistBool(CONFIG.showNowPlaying, showNowPlaying.value)
++        ]);
++        if (showHeartRate.value && pulsoidToken.value) connectPulsoid();
++        else disconnectPulsoid();
++    }
++
++    async function sendChatbox(text = chatboxPreview.value) {
++        if (!enabled.value) {
++            toast.error('Enable OSC Lab before sending to VRChat.');
++            return false;
++        }
++        const message = clampChatbox(text);
++        if (!message) return false;
++        try {
++            await AppApi.SendOscChatbox(message, true, false);
++            lastSentAt.value = Date.now();
++            lastError.value = '';
++            return true;
++        } catch (error) {
++            lastError.value = error?.message || 'OSC send failed.';
++            toast.error(lastError.value);
++            return false;
++        }
++    }
++
++    async function sendAvatarParameter(name, type, value) {
++        if (!enabled.value) throw new Error('OSC Lab is disabled.');
++        const parameter = String(name || '').trim();
++        if (!parameter) throw new Error('Avatar parameter name is required.');
++        if (type === 'bool') return AppApi.SendOscAvatarBool(parameter, Boolean(value));
++        if (type === 'int') return AppApi.SendOscAvatarInt(parameter, Math.round(Number(value) || 0));
++        return AppApi.SendOscAvatarFloat(parameter, Number(value) || 0);
++    }
++
++    async function pushHeartRateToAvatar() {
++        if (!enabled.value || heartRate.value <= 0) return;
++        try {
++            await Promise.all([
++                sendAvatarParameter(bpmAvatarParameter.value, 'int', heartRate.value),
++                sendAvatarParameter(pulseAvatarParameter.value, 'bool', true)
++            ]);
++            window.setTimeout(() => {
++                if (enabled.value) void sendAvatarParameter(pulseAvatarParameter.value, 'bool', false);
++            }, 150);
++        } catch {
++            // Do not turn a transient OSC issue into a noisy toast every heartbeat.
++        }
++    }
++
++    function disconnectPulsoid() {
++        if (reconnectTimer) window.clearTimeout(reconnectTimer);
++        reconnectTimer = null;
++        if (pulsoidSocket) {
++            pulsoidSocket.onclose = null;
++            pulsoidSocket.close();
++        }
++        pulsoidSocket = null;
++        heartRateState.value = 'offline';
++    }
++
++    function scheduleReconnect() {
++        if (!showHeartRate.value || !pulsoidToken.value || reconnectTimer) return;
++        reconnectTimer = window.setTimeout(() => {
++            reconnectTimer = null;
++            connectPulsoid();
++        }, 5000);
++    }
++
++    function connectPulsoid() {
++        disconnectPulsoid();
++        if (!showHeartRate.value || !pulsoidToken.value) return;
++        try {
++            heartRateState.value = 'connecting';
++            const url = `wss://dev.pulsoid.net/api/v1/data/real_time?access_token=${encodeURIComponent(pulsoidToken.value)}`;
++            pulsoidSocket = new WebSocket(url);
++            pulsoidSocket.onopen = () => {
++                heartRateState.value = 'online';
++                lastError.value = '';
++            };
++            pulsoidSocket.onmessage = (event) => {
++                try {
++                    const payload = JSON.parse(event.data);
++                    const bpm = Number(payload?.data?.heart_rate || 0);
++                    if (bpm > 0) {
++                        heartRate.value = Math.round(bpm);
++                        heartRateState.value = 'online';
++                        void pushHeartRateToAvatar();
++                    }
++                } catch {
++                    const bpm = Number(event.data);
++                    if (bpm > 0) heartRate.value = Math.round(bpm);
++                }
++            };
++            pulsoidSocket.onerror = () => {
++                heartRateState.value = 'error';
++            };
++            pulsoidSocket.onclose = () => {
++                pulsoidSocket = null;
++                heartRateState.value = 'offline';
++                scheduleReconnect();
++            };
++        } catch (error) {
++            lastError.value = error?.message || 'Pulsoid connection failed.';
++            heartRateState.value = 'error';
++            scheduleReconnect();
++        }
++    }
++
++    return {
++        initialized,
++        enabled,
++        customStatus,
++        showWorld,
++        showEvent,
++        showHeartRate,
++        showNowPlaying,
++        nowPlayingTitle,
++        nowPlayingArtist,
++        pulsoidToken,
++        heartRate,
++        heartRateState,
++        pulseAvatarParameter,
++        bpmAvatarParameter,
++        preset,
++        lastSentAt,
++        lastError,
++        chatboxPreview,
++        previewLength,
++        initOscLab,
++        setEnabled,
++        setCustomStatus,
++        setShowWorld,
++        setShowEvent,
++        setShowHeartRate,
++        setShowNowPlaying,
++        setNowPlayingTitle,
++        setNowPlayingArtist,
++        setPulsoidToken,
++        setPulseAvatarParameter,
++        setBpmAvatarParameter,
++        applyPreset,
++        sendChatbox,
++        sendAvatarParameter,
++        connectPulsoid,
++        disconnectPulsoid
++    };
++});
+diff --git a/src/stores/underweb.js b/src/stores/underweb.js
+index 42992d2..a44ddaf 100644
+--- a/src/stores/underweb.js
++++ b/src/stores/underweb.js
+@@ -2,12 +2,14 @@ import { computed, reactive, ref, watch } from 'vue';
+ import { defineStore } from 'pinia';
+ import { toast } from 'vue-sonner';
+ 
+-import { notificationRequest, queryRequest } from '../api';
++import { groupRequest, notificationRequest, queryRequest } from '../api';
+ import configRepository from '../services/config';
+ import { parseLocation } from '../shared/utils';
+ import { watchState } from '../services/watchState';
+ import { useFriendStore } from './friend';
+ import { useLocationStore } from './location';
++import { useUserStore } from './user';
++import { useUnderWebNetworkStore } from './underwebNetwork';
+ 
+ const CONFIG = Object.freeze({
+     enabled: 'UWX_autoInviteEnabled',
+@@ -16,12 +18,18 @@ const CONFIG = Object.freeze({
+     excludedUsers: 'UWX_autoInviteExcludedUserIds',
+     scope: 'UWX_autoInviteScope',
+     cooldown: 'UWX_autoInviteCooldownMinutes',
+-    recent: 'UWX_autoInviteRecent'
++    recent: 'UWX_autoInviteRecent',
++    groupRecruitEnabled: 'UWX_groupRecruitEnabled',
++    groupRecruitMinPresenceSeconds: 'UWX_groupRecruitMinPresenceSeconds',
++    groupRecruitRecent: 'UWX_groupRecruitRecent'
+ });
+ 
+-const INVITE_SCOPES = Object.freeze(['selected', 'favorites', 'all-online']);
++const INVITE_SCOPES = Object.freeze(['selected', 'favorites', 'all-online', 'staff', 'creators', 'partners']);
+ const SCAN_INTERVAL_MS = 15000;
+ const SEND_DELAY_MS = 2500;
++const GROUP_RECRUIT_SEND_DELAY_MS = 3000;
++const GROUP_RECRUIT_COOLDOWN_MS = 24 * 60 * 60 * 1000;
++const GROUP_RECRUIT_MAX_PER_SCAN = 6;
+ const MAX_LOG_ENTRIES = 100;
+ 
+ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+@@ -29,6 +37,8 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+ export const useUnderWebStore = defineStore('UnderWeb', () => {
+     const friendStore = useFriendStore();
+     const locationStore = useLocationStore();
++    const userStore = useUserStore();
++    const networkStore = useUnderWebNetworkStore();
+ 
+     const initialized = ref(false);
+     const autoInviteEnabled = ref(false);
+@@ -45,9 +55,19 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+     const sessionInvitesSent = ref(0);
+     const recentInvites = reactive(new Map());
+ 
++    const groupRecruitEnabled = ref(false);
++    const groupRecruitMinPresenceSeconds = ref(60);
++    const isRecruiting = ref(false);
++    const groupRecruitLastScanAt = ref(0);
++    const groupRecruitBackoffUntil = ref(0);
++    const sessionGroupInvitesSent = ref(0);
++    const recentGroupRecruits = reactive(new Map());
++
+     let intervalHandle = null;
+     let unwatchLocation = null;
+     let unwatchLogin = null;
++    let unwatchFavoriteOnline = null;
++    let favoriteOnlineSnapshot = new Set();
+ 
+     const currentLocationTag = computed(() => {
+         const location = locationStore.lastLocation.location;
+@@ -66,6 +86,37 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+     );
+     const canAutoInviteHere = computed(() => isGroupInstance.value && isCurrentGroupAllowed.value);
+ 
++    const canRecruitHere = computed(() => canAutoInviteHere.value);
++
++    const lobbyPlayers = computed(() => {
++        return Array.from(locationStore.lastLocation.playerList?.values?.() || [])
++            .map((player) => ({
++                userId: String(player?.userId || ''),
++                displayName: player?.displayName || player?.userId || 'Unknown user',
++                joinTime: Number(player?.joinTime || Date.now())
++            }))
++            .filter((player) => player.userId.startsWith('usr_'));
++    });
++
++    const eligibleLobbyRecruits = computed(() => {
++        if (!canRecruitHere.value) return [];
++        const now = Date.now();
++        const minPresenceMs = Math.max(0, groupRecruitMinPresenceSeconds.value) * 1000;
++        return lobbyPlayers.value.filter((player) => {
++            if (player.userId === userStore.currentUser.id) return false;
++            if (excludedUserIds.value.includes(player.userId)) return false;
++            if (now - player.joinTime < minPresenceMs) return false;
++            const recent = recentGroupRecruits.get(player.userId);
++            if (
++                recent?.groupId === currentGroupId.value &&
++                now - Number(recent.at || 0) < GROUP_RECRUIT_COOLDOWN_MS
++            ) {
++                return false;
++            }
++            return true;
++        });
++    });
++
+     function normalizeFriend(ctx) {
+         if (!ctx) {
+             return null;
+@@ -104,6 +155,15 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+         if (inviteScope.value === 'all-online') {
+             return allOnlineFriends.value;
+         }
++        if (inviteScope.value === 'staff') {
++            return allOnlineFriends.value.filter((friend) => networkStore.staffUserIds.has(friend.id));
++        }
++        if (inviteScope.value === 'creators') {
++            return allOnlineFriends.value.filter((friend) => networkStore.creatorUserIds.has(friend.id));
++        }
++        if (inviteScope.value === 'partners') {
++            return allOnlineFriends.value.filter((friend) => networkStore.partnerUserIds.has(friend.id));
++        }
+         return selectedFriends.value;
+     });
+ 
+@@ -161,15 +221,38 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+         await configRepository.setObject(CONFIG.recent, serializable);
+     }
+ 
++
++    async function persistRecentGroupRecruits() {
++        const serializable = {};
++        for (const [userId, entry] of recentGroupRecruits.entries()) {
++            serializable[userId] = entry;
++        }
++        await configRepository.setObject(CONFIG.groupRecruitRecent, serializable);
++    }
++
+     async function loadSettings() {
+-        const [enabled, groups, users, excludedUsers, scope, cooldown, recent] = await Promise.all([
++        const [
++            enabled,
++            groups,
++            users,
++            excludedUsers,
++            scope,
++            cooldown,
++            recent,
++            recruitEnabled,
++            recruitMinPresence,
++            recruitRecent
++        ] = await Promise.all([
+             configRepository.getBool(CONFIG.enabled, false),
+             configRepository.getArray(CONFIG.groups, []),
+             configRepository.getArray(CONFIG.users, []),
+             configRepository.getArray(CONFIG.excludedUsers, []),
+             configRepository.getString(CONFIG.scope, 'selected'),
+             configRepository.getInt(CONFIG.cooldown, 30),
+-            configRepository.getObject(CONFIG.recent, {})
++            configRepository.getObject(CONFIG.recent, {}),
++            configRepository.getBool(CONFIG.groupRecruitEnabled, false),
++            configRepository.getInt(CONFIG.groupRecruitMinPresenceSeconds, 60),
++            configRepository.getObject(CONFIG.groupRecruitRecent, {})
+         ]);
+         autoInviteEnabled.value = Boolean(enabled);
+         allowedGroupIds.value = Array.isArray(groups) ? groups.filter((id) => String(id).startsWith('grp_')) : [];
+@@ -187,12 +270,22 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+                 }
+             });
+         }
++        groupRecruitEnabled.value = Boolean(recruitEnabled);
++        groupRecruitMinPresenceSeconds.value = Math.min(600, Math.max(0, Number(recruitMinPresence) || 60));
++        recentGroupRecruits.clear();
++        if (recruitRecent && typeof recruitRecent === 'object') {
++            Object.entries(recruitRecent).forEach(([userId, entry]) => {
++                if (entry && typeof entry.at === 'number' && typeof entry.groupId === 'string') {
++                    recentGroupRecruits.set(userId, entry);
++                }
++            });
++        }
+     }
+ 
+     async function setAutoInviteEnabled(value) {
+         autoInviteEnabled.value = Boolean(value);
+         await configRepository.setBool(CONFIG.enabled, autoInviteEnabled.value);
+-        addLog('info', autoInviteEnabled.value ? 'Auto Invite armed.' : 'Auto Invite disarmed.');
++        addLog('info', autoInviteEnabled.value ? 'Instance Inviter armed.' : 'Instance Inviter disarmed.');
+         if (autoInviteEnabled.value) {
+             void scanAndInvite({ source: 'toggle' });
+         }
+@@ -205,7 +298,10 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+         const labels = {
+             selected: 'Selected friends',
+             favorites: 'Favorite friends',
+-            'all-online': 'All online friends'
++            'all-online': 'All online friends',
++            staff: 'UnderWeb staff',
++            creators: 'UnderWeb creators',
++            partners: 'UnderWeb partners'
+         };
+         addLog('info', `Invite scope changed to ${labels[normalized]}.`);
+     }
+@@ -215,6 +311,21 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+         await configRepository.setInt(CONFIG.cooldown, cooldownMinutes.value);
+     }
+ 
++
++    async function setGroupRecruitEnabled(value) {
++        groupRecruitEnabled.value = Boolean(value);
++        await configRepository.setBool(CONFIG.groupRecruitEnabled, groupRecruitEnabled.value);
++        addLog('info', groupRecruitEnabled.value ? 'Group Recruiter armed.' : 'Group Recruiter disarmed.');
++        if (groupRecruitEnabled.value) {
++            void scanAndRecruitGroup({ source: 'toggle' });
++        }
++    }
++
++    async function setGroupRecruitMinPresenceSeconds(value) {
++        groupRecruitMinPresenceSeconds.value = Math.min(600, Math.max(0, Number(value) || 60));
++        await configRepository.setInt(CONFIG.groupRecruitMinPresenceSeconds, groupRecruitMinPresenceSeconds.value);
++    }
++
+     async function addAllowedGroup(groupId) {
+         const normalized = String(groupId || '').trim();
+         if (!normalized.startsWith('grp_') || allowedGroupIds.value.includes(normalized)) {
+@@ -229,10 +340,13 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+     async function removeAllowedGroup(groupId) {
+         allowedGroupIds.value = allowedGroupIds.value.filter((id) => id !== groupId);
+         await configRepository.setArray(CONFIG.groups, allowedGroupIds.value);
+-        addLog('info', `Removed group ${groupId} from Auto Invite.`, { groupId });
++        addLog('info', `Removed group ${groupId} from UWX invite automation.`, { groupId });
+         if (currentGroupId.value === groupId && autoInviteEnabled.value) {
+             await setAutoInviteEnabled(false);
+         }
++        if (currentGroupId.value === groupId && groupRecruitEnabled.value) {
++            await setGroupRecruitEnabled(false);
++        }
+     }
+ 
+     async function toggleSelectedUser(userId) {
+@@ -302,6 +416,150 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+         addLog('success', `Invited ${friend.displayName}.`, { userId: friend.id });
+     }
+ 
++
++    async function isCurrentGroupMember(userId, groupId) {
++        try {
++            const args = await groupRequest.getGroupMember({ groupId, userId });
++            return Boolean(args?.json);
++        } catch (error) {
++            if (error?.status === 404) return false;
++            throw error;
++        }
++    }
++
++    async function markGroupRecruitSkipped(player, groupId, location, result) {
++        recentGroupRecruits.set(player.userId, {
++            groupId,
++            location,
++            at: Date.now(),
++            result
++        });
++        await persistRecentGroupRecruits();
++    }
++
++    async function sendGroupRecruitInvite(player) {
++        const groupId = currentGroupId.value;
++        const location = currentLocationTag.value;
++        if (!groupId || !canRecruitHere.value) {
++            throw new Error('Group instance changed before group invitation could be sent.');
++        }
++        await groupRequest.sendGroupInvite({ groupId, userId: player.userId });
++        recentGroupRecruits.set(player.userId, {
++            groupId,
++            location,
++            at: Date.now(),
++            result: 'sent'
++        });
++        sessionGroupInvitesSent.value += 1;
++        await persistRecentGroupRecruits();
++        addLog('success', `Invited ${player.displayName} to the VRChat group.`, {
++            userId: player.userId,
++            groupId
++        });
++    }
++
++    async function scanAndRecruitGroup({ source = 'automatic', force = false } = {}) {
++        if (isRecruiting.value) return { sent: 0, skipped: 'busy' };
++        if (Date.now() < groupRecruitBackoffUntil.value) return { sent: 0, skipped: 'rate-limit-backoff' };
++        if (!watchState.isLoggedIn) return { sent: 0, skipped: 'logged-out' };
++        if (!force && !groupRecruitEnabled.value) return { sent: 0, skipped: 'disabled' };
++        if (!canRecruitHere.value) {
++            if (source === 'manual') toast.error('Group Recruiter only runs in an approved group instance.');
++            return { sent: 0, skipped: 'not-allowed-instance' };
++        }
++
++        const scanLocationTag = currentLocationTag.value;
++        const scanGroupId = currentGroupId.value;
++        const candidates = [...eligibleLobbyRecruits.value].slice(0, GROUP_RECRUIT_MAX_PER_SCAN);
++        groupRecruitLastScanAt.value = Date.now();
++        if (!candidates.length) {
++            if (source === 'manual') toast.info('Nobody in this lobby is currently eligible for a group invite.');
++            return { sent: 0, skipped: 'no-candidates' };
++        }
++
++        isRecruiting.value = true;
++        let sent = 0;
++        try {
++            addLog('info', `Group Recruiter found ${candidates.length} eligible lobby occupant(s).`);
++            for (const player of candidates) {
++                if (
++                    (!force && !groupRecruitEnabled.value) ||
++                    !canRecruitHere.value ||
++                    currentLocationTag.value !== scanLocationTag ||
++                    currentGroupId.value !== scanGroupId
++                ) {
++                    addLog('warning', 'Group Recruiter queue stopped because it was disarmed or the active instance changed.');
++                    break;
++                }
++                if (excludedUserIds.value.includes(player.userId)) continue;
++
++                // Always verify current group membership immediately before inviting.
++                // Fail closed: if membership cannot be verified, do not send a group invite.
++                try {
++                    const alreadyMember = await isCurrentGroupMember(player.userId, scanGroupId);
++                    if (alreadyMember) {
++                        await markGroupRecruitSkipped(player, scanGroupId, scanLocationTag, 'already-member');
++                        addLog('info', `Skipped ${player.displayName}: already a member of this VRChat group.`, {
++                            userId: player.userId,
++                            groupId: scanGroupId
++                        });
++                        continue;
++                    }
++                } catch (error) {
++                    const status = error?.status || error?.statusCode || error?.response?.status;
++                    await markGroupRecruitSkipped(player, scanGroupId, scanLocationTag, 'membership-check-failed');
++                    addLog(
++                        'warning',
++                        `Skipped ${player.displayName}: group membership could not be verified, so no invite was sent.`,
++                        { userId: player.userId, groupId: scanGroupId, status }+                    );
++                    if (status === 429) {
++                        groupRecruitBackoffUntil.value = Date.now() + 60000;
++                        addLog('warning', 'VRChat rate limit reached during membership verification. Group Recruiter paused for 60 seconds.');
++                        break;
++                    }
++                    continue;
++                }
++
++                try {
++                    await sendGroupRecruitInvite(player);
++                    sent += 1;
++                } catch (error) {
++                    const message = error?.error?.message || error?.message || 'Unknown group invite error';
++                    const status = error?.status || error?.statusCode || error?.response?.status;
++                    // Mark the user as attempted for this group so members/pending invites are not hammered repeatedly.
++                    recentGroupRecruits.set(player.userId, {
++                        groupId: scanGroupId,
++                        location: scanLocationTag,
++                        at: Date.now(),
++                        result: status === 403 ? 'permission-denied' : 'skipped'
++                    });
++                    await persistRecentGroupRecruits();
++                    if (status === 403) {
++                        lastError.value = 'Your VRChat account does not have permission to invite users to this group.';
++                        addLog('error', lastError.value, { groupId: scanGroupId });
++                        if (groupRecruitEnabled.value) await setGroupRecruitEnabled(false);
++                        if (source === 'manual') toast.error(lastError.value);
++                        break;
++                    }
++                    if (status === 429) {
++                        groupRecruitBackoffUntil.value = Date.now() + 60000;
++                        addLog('warning', 'VRChat rate limit reached. Group Recruiter paused for 60 seconds.');
++                        break;
++                    }
++                    addLog('info', `Skipped ${player.displayName}: ${message}`, { userId: player.userId });
++                }
++                if (sent < candidates.length) await sleep(GROUP_RECRUIT_SEND_DELAY_MS);
++            }
++            if (source === 'manual' && sent) {
++                toast.success(`Sent ${sent} VRChat group invite${sent === 1 ? '' : 's'}.`);
++            }
++            return { sent };
++        } finally {
++            isRecruiting.value = false;
++        }
++    }
++
+     async function scanAndInvite({ source = 'automatic', force = false } = {}) {
+         if (isScanning.value) {
+             return { sent: 0, skipped: 'busy' };
+@@ -317,7 +575,7 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+         }
+         if (!canAutoInviteHere.value) {
+             if (source === 'manual') {
+-                toast.error('UWX Auto Invite only runs in an allowed group instance.');
++                toast.error('UWX Instance Inviter only runs in an allowed group instance.');
+             }
+             return { sent: 0, skipped: 'not-allowed-instance' };
+         }
+@@ -344,7 +602,7 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+                     !canAutoInviteHere.value ||
+                     currentLocationTag.value !== scanLocationTag
+                 ) {
+-                    addLog('warning', 'Invite queue stopped because Auto Invite was disarmed or the active instance changed.');
++                    addLog('warning', 'Instance Inviter queue stopped because it was disarmed or the active instance changed.');
+                     break;
+                 }
+                 if (excludedUserIds.value.includes(friend.id)) {
+@@ -363,7 +621,7 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+                     const status = error?.status || error?.statusCode || error?.response?.status;
+                     if (status === 429) {
+                         rateLimitBackoffUntil.value = Date.now() + 60000;
+-                        addLog('warning', 'VRChat rate limit reached. UWX paused Auto Invite for 60 seconds.');
++                        addLog('warning', 'VRChat rate limit reached. UWX paused Instance Inviter for 60 seconds.');
+                         break;
+                     }
+                 }
+@@ -388,6 +646,9 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+             if (autoInviteEnabled.value) {
+                 void scanAndInvite({ source: 'automatic' });
+             }
++            if (groupRecruitEnabled.value) {
++                void scanAndRecruitGroup({ source: 'automatic' });
++            }
+         }, SCAN_INTERVAL_MS);
+     }
+ 
+@@ -396,6 +657,7 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+             return;
+         }
+         await loadSettings();
++        await networkStore.initUnderWebNetwork();
+         initialized.value = true;
+         startScanLoop();
+ 
+@@ -406,9 +668,20 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+                     return;
+                 }
+                 addLog('info', `Instance changed: ${next || 'unknown'}.`);
++                const parsedNext = parseLocation(next || '');
++                if (
++                    networkStore.notificationRules.approvedInstance &&
++                    parsedNext.groupId &&
++                    allowedGroupIds.value.includes(parsedNext.groupId)
++                ) {
++                    toast.success('You entered an approved UnderWeb group instance.');
++                }
+                 if (autoInviteEnabled.value) {
+                     window.setTimeout(() => void scanAndInvite({ source: 'location-change' }), 2000);
+                 }
++                if (groupRecruitEnabled.value) {
++                    window.setTimeout(() => void scanAndRecruitGroup({ source: 'location-change' }), 4500);
++                }
+             }
+         );
+ 
+@@ -417,9 +690,27 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+             (loggedIn) => {
+                 if (!loggedIn) {
+                     isScanning.value = false;
+-                } else if (autoInviteEnabled.value) {
+-                    window.setTimeout(() => void scanAndInvite({ source: 'login' }), 3000);
++                    isRecruiting.value = false;
++                } else {
++                    if (autoInviteEnabled.value) window.setTimeout(() => void scanAndInvite({ source: 'login' }), 3000);
++                    if (groupRecruitEnabled.value) window.setTimeout(() => void scanAndRecruitGroup({ source: 'login' }), 5500);
++                }
++            }
++        );
++        favoriteOnlineSnapshot = new Set(friendStore.allFavoriteOnlineFriends.map((friend) => friend.id));
++        unwatchFavoriteOnline = watch(
++            () => friendStore.allFavoriteOnlineFriends.map((friend) => friend.id),
++            (nextIds) => {
++                const nextSet = new Set(nextIds);
++                if (networkStore.notificationRules.favoriteOnline) {
++                    for (const userId of nextSet) {
++                        if (!favoriteOnlineSnapshot.has(userId)) {
++                            const friend = friendStore.friends.get(userId);
++                            toast.info(`${friend?.ref?.displayName || friend?.name || 'A favorite friend'} is online.`);
++                        }
++                    }
+                 }
++                favoriteOnlineSnapshot = nextSet;
+             }
+         );
+ 
+@@ -435,6 +726,9 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+         unwatchLocation = null;
+         unwatchLogin?.();
+         unwatchLogin = null;
++        unwatchFavoriteOnline?.();
++        unwatchFavoriteOnline = null;
++        favoriteOnlineSnapshot = new Set();
+         initialized.value = false;
+     }
+ 
+@@ -452,6 +746,11 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+         rateLimitBackoffUntil,
+         activityLog,
+         sessionInvitesSent,
++        groupRecruitEnabled,
++        groupRecruitMinPresenceSeconds,
++        isRecruiting,
++        groupRecruitLastScanAt,
++        sessionGroupInvitesSent,
+         currentLocationTag,
+         currentParsedLocation,
+         currentGroupId,
+@@ -459,6 +758,9 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+         isGroupInstance,
+         isCurrentGroupAllowed,
+         canAutoInviteHere,
++        canRecruitHere,
++        lobbyPlayers,
++        eligibleLobbyRecruits,
+         selectedFriends,
+         favoriteOnlineFriends,
+         allOnlineFriends,
+@@ -470,11 +772,14 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+         setAutoInviteEnabled,
+         setInviteScope,
+         setCooldownMinutes,
++        setGroupRecruitEnabled,
++        setGroupRecruitMinPresenceSeconds,
+         addAllowedGroup,
+         removeAllowedGroup,
+         toggleSelectedUser,
+         toggleExcludedUser,
+         clearActivityLog,
+-        scanAndInvite
++        scanAndInvite,
++        scanAndRecruitGroup
+     };
+ });
+diff --git a/src/stores/underwebNetwork.js b/src/stores/underwebNetwork.js
+new file mode 100644
+index 0000000..66e65e8
+--- /dev/null
++++ b/src/stores/underwebNetwork.js
+@@ -0,0 +1,285 @@
++import { computed, ref } from 'vue';
++import { defineStore } from 'pinia';
++import { toast } from 'vue-sonner';
++
++import configRepository from '../services/config';
++import { UWX_VERSION } from '../shared/constants/uwx';
++import { useUserStore } from './user';
++
++const MANIFEST_URL = 'https://underweb.cloud/api/uwx/manifest';
++const MANIFEST_TIMEOUT_MS = 7000;
++const CONFIG = Object.freeze({
++    cachedManifest: 'UWX_networkCachedManifest',
++    cachedAt: 'UWX_networkCachedAt',
++    notifications: 'UWX_networkNotificationRules'
++});
++
++const DEFAULT_NOTIFICATIONS = Object.freeze({
++    eventLive: true,
++    approvedInstance: true,
++    favoriteOnline: false,
++    updateAvailable: true
++});
++
++
++function compareVersions(a, b) {
++    const pa = String(a || '').replace(/^v/i, '').split('.').map((value) => Number.parseInt(value, 10) || 0);
++    const pb = String(b || '').replace(/^v/i, '').split('.').map((value) => Number.parseInt(value, 10) || 0);
++    const length = Math.max(pa.length, pb.length);
++    for (let index = 0; index < length; index += 1) {
++        const av = pa[index] || 0;
++        const bv = pb[index] || 0;
++        if (av > bv) return 1;
++        if (av < bv) return -1;
++    }
++    return 0;
++}
++
++function asArray(value) {
++    return Array.isArray(value) ? value : [];
++}
++
++function normalizeManifest(raw) {
++    const manifest = raw && typeof raw === 'object' ? raw : {};
++    const members = asArray(manifest.members)
++        .map((member) => ({
++            underwebUserId: String(member?.underwebUserId || member?.id || ''),
++            vrchatUserId: String(member?.vrchatUserId || member?.vrchat?.id || ''),
++            displayName: String(member?.displayName || member?.name || ''),
++            roles: asArray(member?.roles).map((role) => String(role)),
++            creatorTypes: asArray(member?.creatorTypes).map((role) => String(role)),
++            badges: asArray(member?.badges).map((role) => String(role)),
++            partner: Boolean(member?.partner),
++            staff: Boolean(member?.staff)
++        }))
++        .filter((member) => member.vrchatUserId.startsWith('usr_'));
++
++    const events = asArray(manifest.events)
++        .map((event) => ({
++            id: String(event?.id || ''),
++            title: String(event?.title || 'UnderWeb Event'),
++            status: String(event?.status || 'upcoming').toLowerCase(),
++            startAt: event?.startAt || null,
++            endAt: event?.endAt || null,
++            worldId: String(event?.worldId || ''),
++            groupId: String(event?.groupId || ''),
++            instanceTag: String(event?.instanceTag || ''),
++            host: String(event?.host || ''),
++            posterUrl: String(event?.posterUrl || ''),
++            staff: asArray(event?.staff).map((value) => String(value)),
++            performers: asArray(event?.performers).map((value) => String(value))
++        }))
++        .filter((event) => event.id || event.title);
++
++    return {
++        schemaVersion: String(manifest.schemaVersion || manifest.version || '1'),
++        generatedAt: manifest.generatedAt || null,
++        self: manifest.self && typeof manifest.self === 'object' ? manifest.self : null,
++        members,
++        events,
++        release: manifest.release && typeof manifest.release === 'object' ? manifest.release : null
++    };
++}
++
++export const useUnderWebNetworkStore = defineStore('UnderWebNetwork', () => {
++    const userStore = useUserStore();
++
++    const manifest = ref(normalizeManifest({}));
++    const initialized = ref(false);
++    const isRefreshing = ref(false);
++    const networkStatus = ref('offline');
++    const lastRefreshAt = ref(0);
++    const lastNetworkError = ref('');
++    const notificationRules = ref({ ...DEFAULT_NOTIFICATIONS });
++
++    const memberByVrchatId = computed(() => {
++        const map = new Map();
++        for (const member of manifest.value.members) {
++            map.set(member.vrchatUserId, member);
++        }
++        return map;
++    });
++
++    const currentVrchatUserId = computed(() => userStore.currentUser?.id || '');
++    const currentNetworkMember = computed(() => memberByVrchatId.value.get(currentVrchatUserId.value) || null);
++
++    const connectedAccounts = computed(() => {
++        const self = manifest.value.self || {};
++        const vrchatId = String(self?.vrchatUserId || self?.vrchat?.id || currentVrchatUserId.value || '');
++        const discordId = String(self?.discordUserId || self?.discord?.id || '');
++        const discordName = String(self?.discordUsername || self?.discord?.username || '');
++        const underwebId = String(self?.underwebUserId || self?.id || '');
++        return {
++            underweb: {
++                connected: Boolean(underwebId),
++                id: underwebId,
++                label: String(self?.displayName || currentNetworkMember.value?.displayName || 'UnderWeb account')
++            },
++            vrchat: {
++                connected: Boolean(vrchatId),
++                verified: Boolean(underwebId && vrchatId && vrchatId === currentVrchatUserId.value),
++                id: vrchatId,
++                label: userStore.currentUser?.displayName || currentNetworkMember.value?.displayName || 'VRChat'
++            },
++            discord: {
++                connected: Boolean(discordId),
++                id: discordId,
++                label: discordName || 'Discord'
++            }
++        };
++    });
++
++    const activeEvent = computed(() => manifest.value.events.find((event) => event.status === 'live') || null);
++    const upcomingEvents = computed(() =>
++        manifest.value.events
++            .filter((event) => event.status !== 'live' && event.status !== 'ended' && event.status !== 'cancelled')
++            .sort((a, b) => new Date(a.startAt || 0).getTime() - new Date(b.startAt || 0).getTime())
++    );
++
++    const latestRelease = computed(() => manifest.value.release || null);
++
++    function rolesForUser(userId) {
++        const member = memberByVrchatId.value.get(userId);
++        if (!member) return [];
++        return [...new Set([...member.roles, ...member.creatorTypes, ...member.badges])];
++    }
++
++    function hasAnyRole(member, needles) {
++        if (!member) return false;
++        const values = [...member.roles, ...member.creatorTypes, ...member.badges].map((value) => value.toLowerCase());
++        return needles.some((needle) => values.some((value) => value.includes(needle)));
++    }
++
++    const staffUserIds = computed(() =>
++        new Set(
++            manifest.value.members
++                .filter((member) => member.staff || hasAnyRole(member, ['owner', 'director', 'admin', 'moderator', 'staff', 'security', 'event lead']))
++                .map((member) => member.vrchatUserId)
++        )
++    );
++
++    const creatorUserIds = computed(() =>
++        new Set(
++            manifest.value.members
++                .filter(
++                    (member) =>
++                        member.creatorTypes.length > 0 ||
++                        hasAnyRole(member, ['creator', 'dj', 'artist', 'photographer', 'videographer', 'musician', 'performer', 'producer', 'unity', 'blender', 'world', 'avatar'])
++                )
++                .map((member) => member.vrchatUserId)
++        )
++    );
++
++    const partnerUserIds = computed(() =>
++        new Set(
++            manifest.value.members
++                .filter((member) => member.partner || hasAnyRole(member, ['partner']))
++                .map((member) => member.vrchatUserId)
++        )
++    );
++
++    async function saveNotificationRules() {
++        await configRepository.setObject(CONFIG.notifications, notificationRules.value);
++    }
++
++    async function setNotificationRule(key, value) {
++        if (!(key in DEFAULT_NOTIFICATIONS)) return;
++        notificationRules.value = { ...notificationRules.value, [key]: Boolean(value) };
++        await saveNotificationRules();
++    }
++
++    async function loadCachedNetwork() {
++        const [cached, cachedAt, rules] = await Promise.all([
++            configRepository.getObject(CONFIG.cachedManifest, null),
++            configRepository.getInt(CONFIG.cachedAt, 0),
++            configRepository.getObject(CONFIG.notifications, DEFAULT_NOTIFICATIONS)
++        ]);
++        if (cached) {
++            manifest.value = normalizeManifest(cached);
++            networkStatus.value = 'cached';
++            lastRefreshAt.value = Number(cachedAt) || 0;
++        }
++        notificationRules.value = { ...DEFAULT_NOTIFICATIONS, ...(rules || {}) };
++    }
++
++    async function refreshNetwork({ quiet = false } = {}) {
++        if (isRefreshing.value) return false;
++        isRefreshing.value = true;
++        lastNetworkError.value = '';
++        const previousLiveId = activeEvent.value?.id || '';
++        const controller = new AbortController();
++        const timeout = window.setTimeout(() => controller.abort(), MANIFEST_TIMEOUT_MS);
++        try {
++            const response = await fetch(MANIFEST_URL, {
++                method: 'GET',
++                headers: { Accept: 'application/json' },
++                cache: 'no-store',
++                signal: controller.signal
++            });
++            if (!response.ok) {
++                throw new Error(`UnderWeb network returned HTTP ${response.status}`);
++            }
++            const payload = normalizeManifest(await response.json());
++            manifest.value = payload;
++            networkStatus.value = 'online';
++            lastRefreshAt.value = Date.now();
++            await Promise.all([
++                configRepository.setObject(CONFIG.cachedManifest, payload),
++                configRepository.setInt(CONFIG.cachedAt, lastRefreshAt.value)
++            ]);
++
++            const nextLive = payload.events.find((event) => event.status === 'live');
++            if (notificationRules.value.eventLive && nextLive?.id && nextLive.id !== previousLiveId) {
++                toast.success(`${nextLive.title} is live on UnderWeb.`);
++            }
++            const latestVersion = payload.release?.version;
++            if (
++                notificationRules.value.updateAvailable &&
++                latestVersion &&
++                compareVersions(latestVersion, UWX_VERSION) > 0
++            ) {
++                toast.info(`UnderWeb X ${latestVersion} is available.`);
++            }
++            return true;
++        } catch (error) {
++            lastNetworkError.value = error?.name === 'AbortError' ? 'UnderWeb network request timed out.' : error?.message || 'Network unavailable.';
++            networkStatus.value = manifest.value.members.length || manifest.value.events.length ? 'cached' : 'offline';
++            if (!quiet) toast.error(lastNetworkError.value);
++            return false;
++        } finally {
++            window.clearTimeout(timeout);
++            isRefreshing.value = false;
++        }
++    }
++
++    async function initUnderWebNetwork() {
++        if (initialized.value) return;
++        await loadCachedNetwork();
++        initialized.value = true;
++        void refreshNetwork({ quiet: true });
++    }
++
++    return {
++        manifest,
++        initialized,
++        isRefreshing,
++        networkStatus,
++        lastRefreshAt,
++        lastNetworkError,
++        notificationRules,
++        memberByVrchatId,
++        currentVrchatUserId,
++        currentNetworkMember,
++        connectedAccounts,
++        activeEvent,
++        upcomingEvents,
++        latestRelease,
++        staffUserIds,
++        creatorUserIds,
++        partnerUserIds,
++        rolesForUser,
++        setNotificationRule,
++        refreshNetwork,
++        initUnderWebNetwork
++    };
++});
+diff --git a/src/types/globals.d.ts b/src/types/globals.d.ts
+index e1382cd..6ece095 100644
+--- a/src/types/globals.d.ts
++++ b/src/types/globals.d.ts
+@@ -175,6 +175,10 @@ declare global {
+         GetLaunchCommand(): Promise<string>;
+         IPCAnnounceStart(): Promise<void>;
+         SendIpc(type: string, data: string): Promise<void>;
++        SendOscChatbox(text: string, sendImmediately: boolean, playNotification: boolean): Promise<void>;
++        SendOscAvatarBool(parameter: string, value: boolean): Promise<void>;
++        SendOscAvatarInt(parameter: string, value: number): Promise<void>;
++        SendOscAvatarFloat(parameter: string, value: number): Promise<void>;
+         CustomCss(): Promise<string>;
+         CustomScript(): Promise<string>;
+         CurrentCulture(): Promise<string>;
