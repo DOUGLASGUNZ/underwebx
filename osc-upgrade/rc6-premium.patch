@@ -211,7 +211,7 @@ index 6ea808f..cddaf15 100644
          setNowPlayingTitle,
          setNowPlayingArtist,
          setPulsoidToken,
-@@ -482,6 +528,7 @@ export const useOscLabStore = defineStore('OscLab', () => {
+@@ -482,5 +528,6 @@ export const useOscLabStore = defineStore('OscLab', () => {
          applyPreset,
          sendChatbox,
 +        clearOutputLog,
@@ -222,7 +222,7 @@ diff --git a/src/views/UnderWeb/UnderWeb.vue b/src/views/UnderWeb/UnderWeb.vue
 index 6236a9f..59ff2c7 100644
 --- a/src/views/UnderWeb/UnderWeb.vue
 +++ b/src/views/UnderWeb/UnderWeb.vue
-@@ -363,109 +363,127 @@
+@@ -363,110 +363,106 @@
                  </CardContent>
              </Card>
  
@@ -411,7 +411,7 @@ index 6236a9f..59ff2c7 100644
                          </section>
                      </div>
                  </CardContent>
-@@ -741,12 +759,14 @@
+@@ -741,14 +759,18 @@
          autoBroadcast: oscAutoBroadcast,
          autoMedia: oscAutoMedia,
          signatureMode: oscSignatureMode,
@@ -430,7 +430,7 @@ index 6236a9f..59ff2c7 100644
          pulseAvatarParameter: oscPulseAvatarParameter,
          bpmAvatarParameter: oscBpmAvatarParameter,
          preset: oscPreset,
-@@ -771,12 +791,14 @@
+@@ -771,13 +791,15 @@
          setAutoBroadcast: setOscAutoBroadcast,
          setAutoMedia: setOscAutoMedia,
          setSignatureMode: setOscSignatureMode,
@@ -446,7 +446,7 @@ index 6236a9f..59ff2c7 100644
          refreshSystemMedia: refreshOscSystemMedia,
          sendAvatarParameter: sendOscAvatarParameter
      } = oscLabStore;
-@@ -784,6 +806,34 @@
+@@ -784,6 +806,36 @@
  
      void initOscLab();
  
@@ -493,7 +493,7 @@ index 6236a9f..59ff2c7 100644
      const radarFilters = [
          { id: 'all', label: 'All' },
          { id: 'underweb', label: 'UnderWeb' },
-@@ -1266,16 +1313,6 @@
+@@ -1266,18 +1313,6 @@
          }
      }
  
@@ -512,7 +512,7 @@ index 6236a9f..59ff2c7 100644
      function formatEventTime(event) {
          if (!event?.startAt) return 'Schedule pending';
          const date = new Date(event.startAt);
-@@ -1351,13 +1388,73 @@
+@@ -1351,13 +1388,72 @@
      .uwx-log-row { display: grid; grid-template-columns: 76px 78px minmax(0, 1fr); align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
      .uwx-log-time { color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
  
