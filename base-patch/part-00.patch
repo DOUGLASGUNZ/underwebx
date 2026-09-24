@@ -1,0 +1,322 @@
+diff --git a/CHANGELOG_UWX.md b/CHANGELOG_UWX.md
+index 02069d2..ee68675 100644
+--- a/CHANGELOG_UWX.md
++++ b/CHANGELOG_UWX.md
+@@ -1,5 +1,18 @@
+ # UnderWeb X changelog
+ 
++## 0.3.0
++
++- Added UnderWeb network-manifest integration with cached/offline fallback.
++- Added Connected Accounts status for UnderWeb, VRChat, and Discord identities.
++- Added UnderWeb role badges and role-aware friend/profile quick-view.
++- Added Auto Invite role presets for Staff, Creators, and Partners.
++- Added filtered Network Radar views for UnderWeb members, staff, creators, and partners.
++- Added Event Mode with live-event operations, upcoming events, staff/talent counts, and instance copying.
++- Added persistent notification rules for live events, approved instances, favorite-friend presence, and UWX updates.
++- Added live-event, approved-instance, favorite-online, and release-availability notifications.
++- Added release-channel status and update-check UI backed by the UnderWeb manifest.
++- Added direct Connected Accounts, event, and UnderWeb profile links.
++
+ ## 0.2.0
+ 
+ - Expanded the UnderWeb dashboard with live world, instance, friend, favorite, and session stats.
+@@ -23,3 +36,8 @@
+ - Added `uwx://` protocol identity.
+ - Disabled upstream updater.
+ - Added UnderWeb X login/nav branding while preserving the VRCX MIT license and upstream attribution.
++
++## v0.3 recruiter correction
++- Added **Group Recruiter**: invites eligible occupants already inside the current approved VRChat group instance into that VRChat group.
++- Renamed the previous friend-to-instance automation to **Instance Inviter** so the two behaviors are distinct.
++- Group Recruiter is opt-in, dwell-gated, paced, deduped per user/group for 24 hours, stops on instance changes, disarms on permission errors, and backs off on rate limits.
+diff --git a/UNDERWEB_X.md b/UNDERWEB_X.md
+index 4f0157a..c26c1dd 100644
+--- a/UNDERWEB_X.md
++++ b/UNDERWEB_X.md
+@@ -16,6 +16,19 @@ UnderWeb X (UWX) is an UnderWeb-focused fork of VRCX. The upstream VRCX project
+ - Electron app data is isolated under `UnderWebX` so stock VRCX can remain installed separately.
+ - Stock VRCX updater is disabled with `.no-updater` until UWX has its own update channel.
+ 
++## v0.3 network command center
++
++- Optional UnderWeb network manifest at `https://underweb.cloud/api/uwx/manifest`, with local cached fallback when the website feed is unavailable.
++- Connected Accounts panel for the existing UnderWeb account, verified VRChat identity, and Discord link.
++- Role-aware network directory for Staff, Creators, Partners, creator types, and badges.
++- Auto Invite role presets for UnderWeb Staff, Creators, and Partners in addition to v0.2 friend audiences.
++- Event Mode for live/upcoming UnderWeb events, instance metadata, staff/talent counts, and event links.
++- Network Radar filters and role summaries.
++- Friend profile quick-view with UnderWeb roles and direct public-profile access when linked.
++- Persistent notification rules and release-channel/update status.
++
++The network integration is deliberately tolerant of the website endpoint not existing yet: UWX remains usable as a VRCX-derived client, displays the network as offline/cached, and automatically activates the connected features once the manifest endpoint is deployed.
++
+ ## Important internal compatibility note
+ 
+ The native .NET assembly, namespaces, database filenames, IPC class names, and many internal `VRCX_*` config keys intentionally remain unchanged in this milestone. They are implementation details relied on by the Electron/.NET bridge. User-facing branding can change independently without destabilizing that bridge.
+@@ -30,3 +43,8 @@ The engine reuses VRCX's existing authenticated API client rather than browser a
+ 
+ Base: VRCX 2026.09.16
+ https://github.com/vrcx-team/VRCX
++
++## v0.3 recruiter correction
++- Added **Group Recruiter**: invites eligible occupants already inside the current approved VRChat group instance into that VRChat group.
++- Renamed the previous friend-to-instance automation to **Instance Inviter** so the two behaviors are distinct.
++- Group Recruiter is opt-in, dwell-gated, paced, deduped per user/group for 24 hours, stops on instance changes, disarms on permission errors, and backs off on rate limits.
+diff --git a/uwx03/VRCX-2026.09.16/UWX_MANIFEST_CONTRACT.md b/UWX_MANIFEST_CONTRACT.md
+new file mode 100644
+index 0000000..eedf3ec
+--- /dev/null
++++ b/UWX_MANIFEST_CONTRACT.md
+@@ -0,0 +1,56 @@
++# UnderWeb X network manifest contract
++
++UWX v0.3 reads an optional JSON feed from:
++
++`GET https://underweb.cloud/api/uwx/manifest`
++
++The client must continue working when this endpoint is missing or offline. UWX caches the last successful payload in its local SQLite config store.
++
++## Example payload
++
++```json
++{
++  "schemaVersion": "1",
++  "generatedAt": "2026-09-23T22:00:00Z",
++  "self": {
++    "underwebUserId": "profile-id",
++    "displayName": "Darko",
++    "vrchat": { "id": "usr_..." },
++    "discord": { "id": "123456", "username": "darko" }
++  },
++  "members": [
++    {
++      "underwebUserId": "profile-id",
++      "vrchatUserId": "usr_...",
++      "displayName": "Darko",
++      "roles": ["Owner"],
++      "creatorTypes": ["World Creator"],
++      "badges": ["Verified"],
++      "staff": true,
++      "partner": false
++    }
++  ],
++  "events": [
++    {
++      "id": "event-id",
++      "title": "UnderWeb Night",
++      "status": "live",
++      "startAt": "2026-09-24T02:00:00Z",
++      "endAt": "2026-09-24T06:00:00Z",
++      "worldId": "wrld_...",
++      "groupId": "grp_...",
++      "instanceTag": "wrld_...:123~group(grp_...)",
++      "host": "UnderWeb",
++      "posterUrl": "https://...",
++      "staff": ["usr_..."],
++      "performers": ["usr_..."]
++    }
++  ],
++  "release": {
++    "version": "0.3.0",
++    "downloadUrl": "https://..."
++  }
++}
++```
++
++Unknown fields are ignored. Missing arrays are treated as empty. Role matching is case-insensitive and deliberately tolerant of role names such as Owner, Director, Admin, Moderator, Staff, Security, Event Lead, DJ, Photographer, Avatar Creator, World Creator, Artist, Partner, and similar creator roles.
+diff --git a/UWX_VERSION b/UWX_VERSION
+index 0ea3a94..0d91a54 100644
+--- a/UWX_VERSION
++++ b/UWX_VERSION
+@@ -1 +1 @@
+-0.2.0
++0.3.0
+diff --git a/uwx03/VRCX-2026.09.16/src/shared/constants/uwx.js b/src/shared/constants/uwx.js
+new file mode 100644
+index 0000000..ac9b782
+--- /dev/null
++++ b/src/shared/constants/uwx.js
+@@ -0,0 +1,2 @@
++export const UWX_VERSION = '0.3.0';
++export const UWX_MANIFEST_URL = 'https://underweb.cloud/api/uwx/manifest';
+diff --git a/src/stores/index.js b/src/stores/index.js
+index daa794d..36e04e2 100644
+--- a/src/stores/index.js
++++ b/src/stores/index.js
+@@ -34,6 +34,7 @@ import { useSharedFeedStore } from './sharedFeed';
+ import { useUiStore } from './ui';
+ import { useToolsStore } from './tools';
+ import { useUnderWebStore } from './underweb';
++import { useUnderWebNetworkStore } from './underwebNetwork';
+ import { useUpdateLoopStore } from './updateLoop';
+ import { useUserStore } from './user';
+ import { useVRCXUpdaterStore } from './vrcxUpdater';
+@@ -148,6 +149,7 @@ export function createGlobalStores() {
+         ui: useUiStore(),
+         tools: useToolsStore(),
+         underWeb: useUnderWebStore(),
++        underWebNetwork: useUnderWebNetworkStore(),
+         gameLog: useGameLogStore(),
+         search: useSearchStore(),
+         game: useGameStore(),
+@@ -196,6 +198,7 @@ export {
+     useWristOverlaySettingsStore,
+     useToolsStore,
+     useUnderWebStore,
++    useUnderWebNetworkStore,
+     useUiStore,
+     useUserStore,
+     useVrStore,
+diff --git a/src/stores/underweb.js b/src/stores/underweb.js
+index 42992d2..a44ddaf 100644
+--- a/src/stores/underweb.js
++++ b/src/stores/underweb.js
+@@ -2,12 +2,14 @@ import { computed, reactive, ref, watch } from 'vue';
+ import { defineStore } from 'pinia';
+ import { toast } from 'vue-sonner';
+ 
+-import { notificationRequest, queryRequest } from '../api';
++import { groupRequest, notificationRequest, queryRequest } from '../api';
+ import configRepository from '../services/config';
+ import { parseLocation } from '../shared/utils';
+ import { watchState } from '../services/watchState';
+ import { useFriendStore } from './friend';
+ import { useLocationStore } from './location';
++import { useUserStore } from './user';
++import { useUnderWebNetworkStore } from './underwebNetwork';
+ 
+ const CONFIG = Object.freeze({
+     enabled: 'UWX_autoInviteEnabled',
+@@ -16,12 +18,18 @@ const CONFIG = Object.freeze({
+     excludedUsers: 'UWX_autoInviteExcludedUserIds',
+     scope: 'UWX_autoInviteScope',
+     cooldown: 'UWX_autoInviteCooldownMinutes',
+-    recent: 'UWX_autoInviteRecent'
++    recent: 'UWX_autoInviteRecent',
++    groupRecruitEnabled: 'UWX_groupRecruitEnabled',
++    groupRecruitMinPresenceSeconds: 'UWX_groupRecruitMinPresenceSeconds',
++    groupRecruitRecent: 'UWX_groupRecruitRecent'
+ });
+ 
+-const INVITE_SCOPES = Object.freeze(['selected', 'favorites', 'all-online']);
++const INVITE_SCOPES = Object.freeze(['selected', 'favorites', 'all-online', 'staff', 'creators', 'partners']);
+ const SCAN_INTERVAL_MS = 15000;
+ const SEND_DELAY_MS = 2500;
++const GROUP_RECRUIT_SEND_DELAY_MS = 3000;
++const GROUP_RECRUIT_COOLDOWN_MS = 24 * 60 * 60 * 1000;
++const GROUP_RECRUIT_MAX_PER_SCAN = 6;
+ const MAX_LOG_ENTRIES = 100;
+ 
+ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+@@ -29,6 +37,8 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+ export const useUnderWebStore = defineStore('UnderWeb', () => {
+     const friendStore = useFriendStore();
+     const locationStore = useLocationStore();
++    const userStore = useUserStore();
++    const networkStore = useUnderWebNetworkStore();
+ 
+     const initialized = ref(false);
+     const autoInviteEnabled = ref(false);
+@@ -45,9 +55,19 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+     const sessionInvitesSent = ref(0);
+     const recentInvites = reactive(new Map());
+ 
++    const groupRecruitEnabled = ref(false);
++    const groupRecruitMinPresenceSeconds = ref(60);
++    const isRecruiting = ref(false);
++    const groupRecruitLastScanAt = ref(0);
++    const groupRecruitBackoffUntil = ref(0);
++    const sessionGroupInvitesSent = ref(0);
++    const recentGroupRecruits = reactive(new Map());
++
+     let intervalHandle = null;
+     let unwatchLocation = null;
+     let unwatchLogin = null;
++    let unwatchFavoriteOnline = null;
++    let favoriteOnlineSnapshot = new Set();
+ 
+     const currentLocationTag = computed(() => {
+         const location = locationStore.lastLocation.location;
+@@ -66,6 +86,37 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+     );
+     const canAutoInviteHere = computed(() => isGroupInstance.value && isCurrentGroupAllowed.value);
+ 
++    const canRecruitHere = computed(() => canAutoInviteHere.value);
++
++    const lobbyPlayers = computed(() => {
++        return Array.from(locationStore.lastLocation.playerList?.values?.() || [])
++            .map((player) => ({
++                userId: String(player?.userId || ''),
++                displayName: player?.displayName || player?.userId || 'Unknown user',
++                joinTime: Number(player?.joinTime || Date.now())
++            }))
++            .filter((player) => player.userId.startsWith('usr_'));
++    });
++
++    const eligibleLobbyRecruits = computed(() => {
++        if (!canRecruitHere.value) return [];
++        const now = Date.now();
++        const minPresenceMs = Math.max(0, groupRecruitMinPresenceSeconds.value) * 1000;
++        return lobbyPlayers.value.filter((player) => {
++            if (player.userId === userStore.currentUser.id) return false;
++            if (excludedUserIds.value.includes(player.userId)) return false;
++            if (now - player.joinTime < minPresenceMs) return false;
++            const recent = recentGroupRecruits.get(player.userId);
++            if (
++                recent?.groupId === currentGroupId.value &&
++                now - Number(recent.at || 0) < GROUP_RECRUIT_COOLDOWN_MS
++            ) {
++                return false;
++            }
++            return true;
++        });
++    });
++
+     function normalizeFriend(ctx) {
+         if (!ctx) {
+             return null;
+@@ -104,6 +155,15 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+         if (inviteScope.value === 'all-online') {
+             return allOnlineFriends.value;
+         }
++        if (inviteScope.value === 'staff') {
++            return allOnlineFriends.value.filter((friend) => networkStore.staffUserIds.has(friend.id));
++        }
++        if (inviteScope.value === 'creators') {
++            return allOnlineFriends.value.filter((friend) => networkStore.creatorUserIds.has(friend.id));
++        }
++        if (inviteScope.value === 'partners') {
++            return allOnlineFriends.value.filter((friend) => networkStore.partnerUserIds.has(friend.id));
++        }
+         return selectedFriends.value;
+     });
+ 
+@@ -161,15 +221,38 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+         await configRepository.setObject(CONFIG.recent, serializable);
+     }
+ 
++
++    async function persistRecentGroupRecruits() {
++        const serializable = {};
++        for (const [userId, entry] of recentGroupRecruits.entries()) {
++            serializable[userId] = entry;
++        }
++        await configRepository.setObject(CONFIG.groupRecruitRecent, serializable);
++    }
++
+     async function loadSettings() {
+-        const [enabled, groups, users, excludedUsers, scope, cooldown, recent] = await Promise.all([
++        const [
++            enabled,
++            groups,
++            users,
++            excludedUsers,
++            scope,
++            cooldown,
++            recent,
++            recruitEnabled,
++            recruitMinPresence,
++            recruitRecent
++        ] = await Promise.all([
+             configRepository.getBool(CONFIG.enabled, false),
