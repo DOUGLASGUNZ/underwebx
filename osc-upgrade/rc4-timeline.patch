@@ -1,0 +1,134 @@
+diff --git a/CHANGELOG_UWX.md b/CHANGELOG_UWX.md
+--- a/CHANGELOG_UWX.md
++++ b/CHANGELOG_UWX.md
+@@ -1,5 +1,12 @@
+ # UnderWeb X changelog
+ 
++## 0.4.4-rc4 — Live media timeline
++
++- Added real Windows media-session position and duration to Now Playing.
++- Chatbox music status now shows a live timestamp such as 1:24/5:32 when timeline data is available.
++- Increased media timeline refresh frequency so the displayed position stays believable while a song is playing.
++- Made the UWX live-preview surface transparent.
++
+ ## 0.4.3-rc3 — UWX chatbox signature
+ 
+ - Added an optional UWX branding block to OSC Chatbox Composer.
+diff --git a/Dotnet/AppApi/Common/AppApiCommon.cs b/Dotnet/AppApi/Common/AppApiCommon.cs
+--- a/Dotnet/AppApi/Common/AppApiCommon.cs
++++ b/Dotnet/AppApi/Common/AppApiCommon.cs
+@@ -211,12 +211,18 @@ namespace VRCX
+                 if (session == null) return "{}";
+ 
+                 var properties = await session.TryGetMediaPropertiesAsync();
+                 var playback = session.GetPlaybackInfo();
++                var timeline = session.GetTimelineProperties();
++                var positionSeconds = Math.Max(0, (long)timeline.Position.TotalSeconds);
++                var durationSeconds = Math.Max(0, (long)(timeline.EndTime - timeline.StartTime).TotalSeconds);
+                 return JsonConvert.SerializeObject(new
+                 {
+                     title = properties?.Title ?? string.Empty,
+                     artist = properties?.Artist ?? string.Empty,
+                     album = properties?.AlbumTitle ?? string.Empty,
+                     source = session.SourceAppUserModelId ?? string.Empty,
+-                    status = playback?.PlaybackStatus.ToString() ?? string.Empty
++                    status = playback?.PlaybackStatus.ToString() ?? string.Empty,
++                    positionSeconds,
++                    durationSeconds
+                 });
+             }
+             catch (Exception ex)
+diff --git a/UWX_VERSION b/UWX_VERSION
+--- a/UWX_VERSION
++++ b/UWX_VERSION
+@@ -1 +1 @@
+-0.4.3-rc3
++0.4.4-rc4
+diff --git a/src/shared/constants/uwx.js b/src/shared/constants/uwx.js
+--- a/src/shared/constants/uwx.js
++++ b/src/shared/constants/uwx.js
+@@ -1,2 +1,2 @@
+-export const UWX_VERSION = '0.4.3-rc3';
++export const UWX_VERSION = '0.4.4-rc4';
+ export const UWX_MANIFEST_URL = 'https://underweb.cloud/api/uwx/manifest';
+diff --git a/src/stores/oscLab.js b/src/stores/oscLab.js
+--- a/src/stores/oscLab.js
++++ b/src/stores/oscLab.js
+@@ -59,6 +59,8 @@ export const useOscLabStore = defineStore('OscLab', () => {
+     const lastError = ref('');
+     const mediaState = ref('idle');
+     const mediaSource = ref('');
++    const mediaPositionSeconds = ref(0);
++    const mediaDurationSeconds = ref(0);
+ 
+     let pulsoidSocket = null;
+     let reconnectTimer = null;
+@@ -67,6 +69,15 @@ export const useOscLabStore = defineStore('OscLab', () => {
+     const worldName = computed(() => locationStore.lastLocation.name || 'VRChat');
+     const activeEvent = computed(() => networkStore.activeEvent);
+     const playerCount = computed(() => locationStore.lastLocation.playerList?.size || 0);
++
++    function formatMediaTime(seconds) {
++        const total = Math.max(0, Math.floor(Number(seconds) || 0));
++        const hours = Math.floor(total / 3600);
++        const minutes = Math.floor((total % 3600) / 60);
++        const secs = total % 60;
++        if (hours > 0) return `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
++        return `${minutes}:${String(secs).padStart(2, '0')}`;
++    }
+ 
+     const chatboxParts = computed(() => {
+         const parts = [];
+@@ -77,7 +88,11 @@ export const useOscLabStore = defineStore('OscLab', () => {
+         if (showEvent.value && activeEvent.value?.title) parts.push(`🕷 ${activeEvent.value.title}`);
+         if (showNowPlaying.value && nowPlayingTitle.value.trim()) {
+-            parts.push(`🎵 ${nowPlayingTitle.value.trim()}${nowPlayingArtist.value.trim() ? ` — ${nowPlayingArtist.value.trim()}` : ''}`);
++            const timeline =
++                mediaDurationSeconds.value > 0
++                    ? ` ${formatMediaTime(mediaPositionSeconds.value)}/${formatMediaTime(mediaDurationSeconds.value)}`
++                    : '';
++            parts.push(`🎵 ${nowPlayingTitle.value.trim()}${nowPlayingArtist.value.trim() ? ` — ${nowPlayingArtist.value.trim()}` : ''}${timeline}`);
+         }
+         if (showHeartRate.value && heartRate.value > 0) parts.push(`♥ ${heartRate.value} BPM`);
+         if (showWorld.value && worldName.value) parts.push(`🌎 ${worldName.value}`);
+@@ -313,6 +328,8 @@ export const useOscLabStore = defineStore('OscLab', () => {
+             const data = raw ? JSON.parse(raw) : {};
+             mediaState.value = String(data?.status || 'idle').toLowerCase();
+             mediaSource.value = String(data?.source || '');
++            mediaPositionSeconds.value = Math.max(0, Number(data?.positionSeconds) || 0);
++            mediaDurationSeconds.value = Math.max(0, Number(data?.durationSeconds) || 0);
+             if (data?.title) nowPlayingTitle.value = String(data.title).slice(0, 80);
+             if (data?.artist) nowPlayingArtist.value = String(data.artist).slice(0, 80);
+             if (!data?.title && mediaState.value === 'idle') {
+@@ -339,7 +356,7 @@ export const useOscLabStore = defineStore('OscLab', () => {
+         stopMediaPolling();
+         if (!autoMedia.value) return;
+         void refreshSystemMedia();
+-        mediaTimer = window.setInterval(() => void refreshSystemMedia(), 4000);
++        mediaTimer = window.setInterval(() => void refreshSystemMedia(), 1000);
+     }
+@@ -439,6 +456,8 @@ export const useOscLabStore = defineStore('OscLab', () => {
+         lastError,
+         mediaState,
+         mediaSource,
++        mediaPositionSeconds,
++        mediaDurationSeconds,
+         chatboxPreview,
+         previewLength,
+diff --git a/src/views/UnderWeb/UnderWeb.vue b/src/views/UnderWeb/UnderWeb.vue
+--- a/src/views/UnderWeb/UnderWeb.vue
++++ b/src/views/UnderWeb/UnderWeb.vue
+@@ -454,6 +454,7 @@
+                             <div class="flex items-center gap-2 mt-3">
+                                 <Button size="sm" variant="outline" :disabled="!oscAutoMedia" @click="refreshOscSystemMedia">Refresh media</Button>
+                                 <span v-if="oscMediaSource" class="uwx-help truncate">{{ oscMediaSource }}</span>
+                             </div>
++                            <p class="uwx-help mt-2">Track progress is read from Windows media and shown as elapsed/total time when available.</p>
+                             <p class="uwx-help mt-2">Uses Windows' media session, so Spotify desktop can populate title and artist without a separate Spotify login.</p>
+                         </section>
+@@ -1392,6 +1393,7 @@
+         background: rgb(118 255 0 / 3%);
+     }
++    .uwx-chatbox-preview { background: transparent; }
+     .uwx-signature-control strong,
+     .uwx-signature-control span { display: block; }
