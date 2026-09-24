@@ -419,7 +419,7 @@ index ec27edd..51bd248 100644
          setNowPlayingTitle: setOscNowPlayingTitle,
          setNowPlayingArtist: setOscNowPlayingArtist,
          setPulsoidToken: setOscPulsoidToken,
-@@ -761,6 +780,7 @@
+@@ -761,5 +780,6 @@
          setBpmAvatarParameter: setOscBpmAvatarParameter,
          applyPreset: applyOscPreset,
          sendChatbox: sendOscChatbox,
