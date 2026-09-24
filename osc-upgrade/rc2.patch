@@ -1,0 +1,429 @@
+diff --git a/CHANGELOG_UWX.md b/CHANGELOG_UWX.md
+index 7fe8125..f140772 100644
+--- a/CHANGELOG_UWX.md
++++ b/CHANGELOG_UWX.md
+@@ -1,5 +1,13 @@
+ # UnderWeb X changelog
+ 
++## 0.4.2-rc2 — OSC live status upgrade
++
++- Added continuous chatbox keep-alive output while OSC is armed.
++- Added current instance population to Chatbox Composer.
++- Added Windows media-session detection with Spotify preference for Now Playing.
++- Added media status/source visibility and manual refresh controls.
++- Updated Music/Normal/Event/AFK presets to include live world/population status where appropriate.
++
+ ## 0.4.1-rc1 — Launch polish
+ 
+ - Split the UnderWeb workspace into Command, OSC Lab, People, and System panels.
+diff --git a/Dotnet/AppApi/Common/AppApiCommon.cs b/Dotnet/AppApi/Common/AppApiCommon.cs
+index 0a6d590..6a1be7f 100644
+--- a/Dotnet/AppApi/Common/AppApiCommon.cs
++++ b/Dotnet/AppApi/Common/AppApiCommon.cs
+@@ -10,6 +10,9 @@ using System.Text;
+ using System.Threading.Tasks;
+ using Newtonsoft.Json;
+ using NLog;
++#if WINDOWS
++using Windows.Media.Control;
++#endif
+ 
+ namespace VRCX
+ {
+@@ -188,6 +191,48 @@ namespace VRCX
+             SendOscPacket($"/avatar/parameters/{name}", "f", OscFloat32((float)value));
+         }
+ 
++        public async Task<string> GetSystemMediaInfo()
++        {
++#if WINDOWS
++            try
++            {
++                var manager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
++                var sessions = manager.GetSessions();
++                GlobalSystemMediaTransportControlsSession? session = null;
++
++                foreach (var candidate in sessions)
++                {
++                    if ((candidate.SourceAppUserModelId ?? string.Empty).Contains("Spotify", StringComparison.OrdinalIgnoreCase))
++                    {
++                        session = candidate;
++                        break;
++                    }
++                }
++
++                session ??= manager.GetCurrentSession();
++                if (session == null) return "{}";
++
++                var properties = await session.TryGetMediaPropertiesAsync();
++                var playback = session.GetPlaybackInfo();
++                return JsonConvert.SerializeObject(new
++                {
++                    title = properties?.Title ?? string.Empty,
++                    artist = properties?.Artist ?? string.Empty,
++                    album = properties?.AlbumTitle ?? string.Empty,
++                    source = session.SourceAppUserModelId ?? string.Empty,
++                    status = playback?.PlaybackStatus.ToString() ?? string.Empty
++                });
++            }
++            catch (Exception ex)
++            {
++                logger.Debug(ex, "Unable to read Windows media session");
++                return "{}";
++            }
++#else
++            return "{}";
++#endif
++        }
++
+         public string CustomCss()
+         {
+             var filePath = Path.Join(Program.AppDataDirectory, "custom.css");
+diff --git a/UWX_VERSION b/UWX_VERSION
+index 20e5763..eb6d945 100644
+--- a/UWX_VERSION
++++ b/UWX_VERSION
+@@ -1 +1 @@
+-0.4.1-rc1
++0.4.2-rc2
+diff --git a/src/shared/constants/uwx.js b/src/shared/constants/uwx.js
+index 4a003a0..95487ae 100644
+--- a/src/shared/constants/uwx.js
++++ b/src/shared/constants/uwx.js
+@@ -1,2 +1,2 @@
+-export const UWX_VERSION = '0.4.1-rc1';
++export const UWX_VERSION = '0.4.2-rc2';
+ export const UWX_MANIFEST_URL = 'https://underweb.cloud/api/uwx/manifest';
+diff --git a/src/stores/oscLab.js b/src/stores/oscLab.js
+index eef7a39..efb28af 100644
+--- a/src/stores/oscLab.js
++++ b/src/stores/oscLab.js
+@@ -13,6 +13,9 @@ const CONFIG = Object.freeze({
+     showEvent: 'UWX_oscShowEvent',
+     showHeartRate: 'UWX_oscShowHeartRate',
+     showNowPlaying: 'UWX_oscShowNowPlaying',
++    showPopulation: 'UWX_oscShowPopulation',
++    autoBroadcast: 'UWX_oscAutoBroadcast',
++    autoMedia: 'UWX_oscAutoMedia',
+     nowPlayingTitle: 'UWX_oscNowPlayingTitle',
+     nowPlayingArtist: 'UWX_oscNowPlayingArtist',
+     pulsoidToken: 'UWX_pulsoidToken',
+@@ -22,10 +25,10 @@ const CONFIG = Object.freeze({
+ });
+ 
+ const PRESETS = Object.freeze({
+-    normal: { customStatus: '', showWorld: true, showEvent: false, showHeartRate: false, showNowPlaying: false },
+-    music: { customStatus: '', showWorld: false, showEvent: false, showHeartRate: false, showNowPlaying: true },
+-    event: { customStatus: 'UNDERWEB // EVENT LIVE', showWorld: true, showEvent: true, showHeartRate: true, showNowPlaying: true },
+-    afk: { customStatus: 'AFK', showWorld: false, showEvent: false, showHeartRate: false, showNowPlaying: false }
++    normal: { customStatus: '', showWorld: true, showEvent: false, showHeartRate: false, showNowPlaying: false, showPopulation: true },
++    music: { customStatus: '', showWorld: true, showEvent: false, showHeartRate: false, showNowPlaying: true, showPopulation: true },
++    event: { customStatus: 'UNDERWEB // EVENT LIVE', showWorld: true, showEvent: true, showHeartRate: true, showNowPlaying: true, showPopulation: true },
++    afk: { customStatus: 'AFK', showWorld: true, showEvent: false, showHeartRate: false, showNowPlaying: false, showPopulation: true }
+ });
+ 
+ const clampChatbox = (text) => Array.from(String(text || '')).slice(0, 144).join('');
+@@ -41,6 +44,9 @@ export const useOscLabStore = defineStore('OscLab', () => {
+     const showEvent = ref(true);
+     const showHeartRate = ref(false);
+     const showNowPlaying = ref(false);
++    const showPopulation = ref(true);
++    const autoBroadcast = ref(true);
++    const autoMedia = ref(true);
+     const nowPlayingTitle = ref('');
+     const nowPlayingArtist = ref('');
+     const pulsoidToken = ref('');
+@@ -51,12 +57,17 @@ export const useOscLabStore = defineStore('OscLab', () => {
+     const preset = ref('normal');
+     const lastSentAt = ref(0);
+     const lastError = ref('');
++    const mediaState = ref('idle');
++    const mediaSource = ref('');
+ 
+     let pulsoidSocket = null;
+     let reconnectTimer = null;
++    let broadcastTimer = null;
++    let mediaTimer = null;
+ 
+     const worldName = computed(() => locationStore.lastLocation.name || 'VRChat');
+     const activeEvent = computed(() => networkStore.activeEvent);
++    const playerCount = computed(() => locationStore.lastLocation.playerList?.size || 0);
+ 
+     const chatboxParts = computed(() => {
+         const parts = [];
+@@ -67,6 +78,7 @@ export const useOscLabStore = defineStore('OscLab', () => {
+         }
+         if (showHeartRate.value && heartRate.value > 0) parts.push(`♥ ${heartRate.value} BPM`);
+         if (showWorld.value && worldName.value) parts.push(`🌎 ${worldName.value}`);
++        if (showPopulation.value && playerCount.value > 0) parts.push(`👥 ${playerCount.value} here`);
+         return parts;
+     });
+ 
+@@ -89,6 +101,9 @@ export const useOscLabStore = defineStore('OscLab', () => {
+             storedEvent,
+             storedHeartRate,
+             storedNowPlaying,
++            storedPopulation,
++            storedAutoBroadcast,
++            storedAutoMedia,
+             storedTitle,
+             storedArtist,
+             storedToken,
+@@ -102,6 +117,9 @@ export const useOscLabStore = defineStore('OscLab', () => {
+             configRepository.getBool(CONFIG.showEvent, true),
+             configRepository.getBool(CONFIG.showHeartRate, false),
+             configRepository.getBool(CONFIG.showNowPlaying, false),
++            configRepository.getBool(CONFIG.showPopulation, true),
++            configRepository.getBool(CONFIG.autoBroadcast, true),
++            configRepository.getBool(CONFIG.autoMedia, true),
+             configRepository.getString(CONFIG.nowPlayingTitle, ''),
+             configRepository.getString(CONFIG.nowPlayingArtist, ''),
+             configRepository.getString(CONFIG.pulsoidToken, ''),
+@@ -115,6 +133,9 @@ export const useOscLabStore = defineStore('OscLab', () => {
+         showEvent.value = Boolean(storedEvent);
+         showHeartRate.value = Boolean(storedHeartRate);
+         showNowPlaying.value = Boolean(storedNowPlaying);
++        showPopulation.value = Boolean(storedPopulation);
++        autoBroadcast.value = Boolean(storedAutoBroadcast);
++        autoMedia.value = Boolean(storedAutoMedia);
+         nowPlayingTitle.value = storedTitle || '';
+         nowPlayingArtist.value = storedArtist || '';
+         pulsoidToken.value = storedToken || '';
+@@ -128,6 +149,8 @@ export const useOscLabStore = defineStore('OscLab', () => {
+         await loadSettings();
+         initialized.value = true;
+         if (showHeartRate.value && pulsoidToken.value) connectPulsoid();
++        if (autoMedia.value) startMediaPolling();
++        if (enabled.value && autoBroadcast.value) startAutoBroadcast();
+     }
+ 
+     async function persistBool(key, value) {
+@@ -137,6 +160,8 @@ export const useOscLabStore = defineStore('OscLab', () => {
+     async function setEnabled(value) {
+         enabled.value = Boolean(value);
+         await persistBool(CONFIG.enabled, enabled.value);
++        if (enabled.value && autoBroadcast.value) startAutoBroadcast();
++        else stopAutoBroadcast();
+     }
+ 
+     async function setCustomStatus(value) {
+@@ -166,6 +191,25 @@ export const useOscLabStore = defineStore('OscLab', () => {
+         await persistBool(CONFIG.showNowPlaying, showNowPlaying.value);
+     }
+ 
++    async function setShowPopulation(value) {
++        showPopulation.value = Boolean(value);
++        await persistBool(CONFIG.showPopulation, showPopulation.value);
++    }
++
++    async function setAutoBroadcast(value) {
++        autoBroadcast.value = Boolean(value);
++        await persistBool(CONFIG.autoBroadcast, autoBroadcast.value);
++        if (enabled.value && autoBroadcast.value) startAutoBroadcast();
++        else stopAutoBroadcast();
++    }
++
++    async function setAutoMedia(value) {
++        autoMedia.value = Boolean(value);
++        await persistBool(CONFIG.autoMedia, autoMedia.value);
++        if (autoMedia.value) startMediaPolling();
++        else stopMediaPolling();
++    }
++
+     async function setNowPlayingTitle(value) {
+         nowPlayingTitle.value = String(value || '').slice(0, 80);
+         await configRepository.setString(CONFIG.nowPlayingTitle, nowPlayingTitle.value);
+@@ -201,13 +245,15 @@ export const useOscLabStore = defineStore('OscLab', () => {
+         showEvent.value = next.showEvent;
+         showHeartRate.value = next.showHeartRate;
+         showNowPlaying.value = next.showNowPlaying;
++        showPopulation.value = next.showPopulation;
+         await Promise.all([
+             configRepository.setString(CONFIG.preset, preset.value),
+             configRepository.setString(CONFIG.customStatus, customStatus.value),
+             persistBool(CONFIG.showWorld, showWorld.value),
+             persistBool(CONFIG.showEvent, showEvent.value),
+             persistBool(CONFIG.showHeartRate, showHeartRate.value),
+-            persistBool(CONFIG.showNowPlaying, showNowPlaying.value)
++            persistBool(CONFIG.showNowPlaying, showNowPlaying.value),
++            persistBool(CONFIG.showPopulation, showPopulation.value)
+         ]);
+         if (showHeartRate.value && pulsoidToken.value) connectPulsoid();
+         else disconnectPulsoid();
+@@ -232,6 +278,51 @@ export const useOscLabStore = defineStore('OscLab', () => {
+         }
+     }
+ 
++    function stopAutoBroadcast() {
++        if (broadcastTimer) window.clearInterval(broadcastTimer);
++        broadcastTimer = null;
++    }
++
++    function startAutoBroadcast() {
++        stopAutoBroadcast();
++        if (!enabled.value || !autoBroadcast.value) return;
++        void sendChatbox();
++        broadcastTimer = window.setInterval(() => {
++            if (enabled.value && autoBroadcast.value && chatboxPreview.value) void sendChatbox();
++        }, 4000);
++    }
++
++    async function refreshSystemMedia() {
++        if (!autoMedia.value) return;
++        try {
++            const raw = await AppApi.GetSystemMediaInfo();
++            const data = raw ? JSON.parse(raw) : {};
++            mediaState.value = String(data?.status || 'idle').toLowerCase();
++            mediaSource.value = String(data?.source || '');
++            if (data?.title) nowPlayingTitle.value = String(data.title).slice(0, 80);
++            if (data?.artist) nowPlayingArtist.value = String(data.artist).slice(0, 80);
++            if (!data?.title && mediaState.value === 'idle') {
++                mediaState.value = 'nothing playing';
++            }
++        } catch (error) {
++            mediaState.value = 'unavailable';
++            lastError.value = error?.message || lastError.value;
++        }
++    }
++
++    function stopMediaPolling() {
++        if (mediaTimer) window.clearInterval(mediaTimer);
++        mediaTimer = null;
++        mediaState.value = 'manual';
++    }
++
++    function startMediaPolling() {
++        stopMediaPolling();
++        if (!autoMedia.value) return;
++        void refreshSystemMedia();
++        mediaTimer = window.setInterval(() => void refreshSystemMedia(), 4000);
++    }
++
+     async function sendAvatarParameter(name, type, value) {
+         if (!enabled.value) throw new Error('OSC Lab is disabled.');
+         const parameter = String(name || '').trim();
+@@ -323,6 +414,10 @@ export const useOscLabStore = defineStore('OscLab', () => {
+         showEvent,
+         showHeartRate,
+         showNowPlaying,
++        showPopulation,
++        autoBroadcast,
++        autoMedia,
++        playerCount,
+         nowPlayingTitle,
+         nowPlayingArtist,
+         pulsoidToken,
+@@ -333,6 +428,8 @@ export const useOscLabStore = defineStore('OscLab', () => {
+         preset,
+         lastSentAt,
+         lastError,
++        mediaState,
++        mediaSource,
+         chatboxPreview,
+         previewLength,
+         initOscLab,
+@@ -342,6 +439,9 @@ export const useOscLabStore = defineStore('OscLab', () => {
+         setShowEvent,
+         setShowHeartRate,
+         setShowNowPlaying,
++        setShowPopulation,
++        setAutoBroadcast,
++        setAutoMedia,
+         setNowPlayingTitle,
+         setNowPlayingArtist,
+         setPulsoidToken,
+@@ -349,6 +449,7 @@ export const useOscLabStore = defineStore('OscLab', () => {
+         setBpmAvatarParameter,
+         applyPreset,
+         sendChatbox,
++        refreshSystemMedia,
+         sendAvatarParameter,
+         connectPulsoid,
+         disconnectPulsoid
+diff --git a/src/types/globals.d.ts b/src/types/globals.d.ts
+index 6ece095..925c0db 100644
+--- a/src/types/globals.d.ts
++++ b/src/types/globals.d.ts
+@@ -179,6 +179,7 @@ declare global {
+         SendOscAvatarBool(parameter: string, value: boolean): Promise<void>;
+         SendOscAvatarInt(parameter: string, value: number): Promise<void>;
+         SendOscAvatarFloat(parameter: string, value: number): Promise<void>;
++        GetSystemMediaInfo(): Promise<string>;
+         CustomCss(): Promise<string>;
+         CustomScript(): Promise<string>;
+         CurrentCulture(): Promise<string>;
+diff --git a/src/views/UnderWeb/UnderWeb.vue b/src/views/UnderWeb/UnderWeb.vue
+index ec27edd..51bd248 100644
+--- a/src/views/UnderWeb/UnderWeb.vue
++++ b/src/views/UnderWeb/UnderWeb.vue
+@@ -397,9 +397,11 @@
+                                 @change="setOscCustomStatus($event.target.value)" />
+                             <div class="uwx-osc-toggle-grid mt-3">
+                                 <label class="uwx-toggle-row compact"><div><strong>World</strong><span>Current world name</span></div><Switch :model-value="oscShowWorld" @update:modelValue="setOscShowWorld" /></label>
++                                <label class="uwx-toggle-row compact"><div><strong>People here</strong><span>{{ oscPlayerCount }} in current instance</span></div><Switch :model-value="oscShowPopulation" @update:modelValue="setOscShowPopulation" /></label>
+                                 <label class="uwx-toggle-row compact"><div><strong>Event</strong><span>Live UnderWeb event</span></div><Switch :model-value="oscShowEvent" @update:modelValue="setOscShowEvent" /></label>
+                                 <label class="uwx-toggle-row compact"><div><strong>Heart rate</strong><span>Live Pulsoid BPM</span></div><Switch :model-value="oscShowHeartRate" @update:modelValue="setOscShowHeartRate" /></label>
+-                                <label class="uwx-toggle-row compact"><div><strong>Now playing</strong><span>Track block</span></div><Switch :model-value="oscShowNowPlaying" @update:modelValue="setOscShowNowPlaying" /></label>
++                                <label class="uwx-toggle-row compact"><div><strong>Now playing</strong><span>Windows / Spotify media</span></div><Switch :model-value="oscShowNowPlaying" @update:modelValue="setOscShowNowPlaying" /></label>
++                                <label class="uwx-toggle-row compact"><div><strong>Keep visible</strong><span>Refresh chatbox every 4 seconds</span></div><Switch :model-value="oscAutoBroadcast" @update:modelValue="setOscAutoBroadcast" /></label>
+                             </div>
+                             <div class="uwx-chatbox-preview mt-4">
+                                 <div class="flex items-center justify-between gap-3">
+@@ -430,10 +432,18 @@
+                         </section>
+ 
+                         <section class="uwx-control-block">
+-                            <div class="uwx-section-label">NOW PLAYING</div>
+-                            <Input :model-value="oscNowPlayingTitle" class="mt-2" placeholder="Track title" @change="setOscNowPlayingTitle($event.target.value)" />
++                            <div class="flex items-center justify-between gap-3">
++                                <div class="uwx-section-label">NOW PLAYING</div>
++                                <Badge variant="outline">{{ oscMediaState }}</Badge>
++                            </div>
++                            <label class="uwx-toggle-row compact mt-2"><div><strong>Auto-detect Windows media</strong><span>Prefers Spotify when available</span></div><Switch :model-value="oscAutoMedia" @update:modelValue="setOscAutoMedia" /></label>
++                            <Input :model-value="oscNowPlayingTitle" class="mt-3" placeholder="Track title" @change="setOscNowPlayingTitle($event.target.value)" />
+                             <Input :model-value="oscNowPlayingArtist" class="mt-2" placeholder="Artist" @change="setOscNowPlayingArtist($event.target.value)" />
+-                            <p class="uwx-help mt-2">Manual track source for launch. Windows media-session detection can plug into this module later without changing your presets.</p>
++                            <div class="flex items-center gap-2 mt-3">
++                                <Button size="sm" variant="outline" :disabled="!oscAutoMedia" @click="refreshOscSystemMedia">Refresh media</Button>
++                                <span v-if="oscMediaSource" class="uwx-help truncate">{{ oscMediaSource }}</span>
++                            </div>
++                            <p class="uwx-help mt-2">Uses Windows' media session, so Spotify desktop can populate title and artist without a separate Spotify login.</p>
+                         </section>
+ 
+                         <section class="uwx-control-block">
+@@ -734,11 +744,17 @@
+         showEvent: oscShowEvent,
+         showHeartRate: oscShowHeartRate,
+         showNowPlaying: oscShowNowPlaying,
++        showPopulation: oscShowPopulation,
++        autoBroadcast: oscAutoBroadcast,
++        autoMedia: oscAutoMedia,
++        playerCount: oscPlayerCount,
+         nowPlayingTitle: oscNowPlayingTitle,
+         nowPlayingArtist: oscNowPlayingArtist,
+         pulsoidToken: oscPulsoidToken,
+         heartRate: oscHeartRate,
+         heartRateState: oscHeartRateState,
++        mediaState: oscMediaState,
++        mediaSource: oscMediaSource,
+         pulseAvatarParameter: oscPulseAvatarParameter,
+         bpmAvatarParameter: oscBpmAvatarParameter,
+         preset: oscPreset,
+@@ -754,6 +770,9 @@
+         setShowEvent: setOscShowEvent,
+         setShowHeartRate: setOscShowHeartRate,
+         setShowNowPlaying: setOscShowNowPlaying,
++        setShowPopulation: setOscShowPopulation,
++        setAutoBroadcast: setOscAutoBroadcast,
++        setAutoMedia: setOscAutoMedia,
+         setNowPlayingTitle: setOscNowPlayingTitle,
+         setNowPlayingArtist: setOscNowPlayingArtist,
+         setPulsoidToken: setOscPulsoidToken,
+@@ -761,6 +780,7 @@
+         setBpmAvatarParameter: setOscBpmAvatarParameter,
+         applyPreset: applyOscPreset,
+         sendChatbox: sendOscChatbox,
++        refreshSystemMedia: refreshOscSystemMedia,
+         sendAvatarParameter: sendOscAvatarParameter
+     } = oscLabStore;
+ 
