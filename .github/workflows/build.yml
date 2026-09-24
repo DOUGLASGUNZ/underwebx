@@ -7,8 +7,7 @@ on:
       - main
     paths:
       - "UnderWebX*-source.zip"
-      - "base-patch/**"
-      - "launch-patch/**"
+      - "full-patch/**"
       - ".github/workflows/build.yml"
 
 permissions:
@@ -42,17 +41,13 @@ jobs:
           choco install nsis 7zip -y --no-progress
           "C:\Program Files\7-Zip" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
-      - name: Locate or extract UWX source
+      - name: Extract pinned UWX v0.2 source
         shell: pwsh
         run: |
-          if (Test-Path ".\package.json") {
-            "UWX_SOURCE=$((Resolve-Path '.').Path)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-            exit 0
-          }
-
           $zip = Get-Item ".\UnderWebX-v0.2.0-source.zip" -ErrorAction Stop
           Write-Host "Using pinned base source: $($zip.Name)"
 
+          if (Test-Path ".\uwx-src") { Remove-Item ".\uwx-src" -Recurse -Force }
           New-Item -ItemType Directory -Path uwx-src -Force | Out-Null
           Expand-Archive -Path $zip.FullName -DestinationPath uwx-src -Force
 
@@ -66,15 +61,15 @@ jobs:
 
           "UWX_SOURCE=$($root.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Apply missing v0.3 base patch
+      - name: Apply validated full RC1 patch
         shell: pwsh
         run: |
-          $parts = Get-ChildItem -Path "$env:GITHUB_WORKSPACE\base-patch" -Filter "part-*.patch" | Sort-Object Name
+          $parts = Get-ChildItem -Path "$env:GITHUB_WORKSPACE\full-patch" -Filter "part-*.patch" | Sort-Object Name
           if (-not $parts) {
-            throw "Base patch parts were not found."
+            throw "Full RC1 patch parts were not found."
           }
 
-          $patchFile = Join-Path $env:GITHUB_WORKSPACE "uwx-base.patch"
+          $patchFile = Join-Path $env:GITHUB_WORKSPACE "uwx-full-rc1.patch"
           if (Test-Path $patchFile) { Remove-Item $patchFile -Force }
 
           $out = [System.IO.File]::OpenWrite($patchFile)
@@ -88,42 +83,13 @@ jobs:
           }
 
           Push-Location $env:UWX_SOURCE
+          git apply --check $patchFile
           git apply --whitespace=nowarn $patchFile
-          $baseVersion = (Get-Content .\UWX_VERSION -Raw).Trim()
-          if ($baseVersion -ne "0.3.0") {
-            throw "Base patch did not produce UWX 0.3.0; got '$baseVersion'."
+          $version = (Get-Content .\UWX_VERSION -Raw).Trim()
+          if ($version -ne "0.4.1-rc1") {
+            throw "Full patch did not produce UWX 0.4.1-rc1; got '$version'."
           }
-          Write-Host "Base patch OK: UWX $baseVersion"
-          Pop-Location
-
-      - name: Apply UWX launch patch
-        shell: pwsh
-        run: |
-          $parts = Get-ChildItem -Path "$env:GITHUB_WORKSPACE\launch-patch" -Filter "part-*.patch" | Sort-Object Name
-          if (-not $parts) {
-            throw "Launch patch parts were not found."
-          }
-
-          $patchFile = Join-Path $env:GITHUB_WORKSPACE "uwx-launch.patch"
-          if (Test-Path $patchFile) { Remove-Item $patchFile -Force }
-
-          $out = [System.IO.File]::OpenWrite($patchFile)
-          try {
-            foreach ($part in $parts) {
-              $bytes = [System.IO.File]::ReadAllBytes($part.FullName)
-              $out.Write($bytes, 0, $bytes.Length)
-            }
-          } finally {
-            $out.Dispose()
-          }
-
-          Push-Location $env:UWX_SOURCE
-          git apply --whitespace=nowarn $patchFile
-          $finalVersion = (Get-Content .\UWX_VERSION -Raw).Trim()
-          if ($finalVersion -ne "0.4.1-rc1") {
-            throw "Launch patch did not produce UWX 0.4.1-rc1; got '$finalVersion'."
-          }
-          Write-Host "Launch patch OK: UWX $finalVersion"
+          Write-Host "Validated full patch applied: UWX $version"
           Pop-Location
 
       - name: Verify RC1 UI is present
