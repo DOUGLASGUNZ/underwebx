@@ -89,6 +89,15 @@ jobs:
             $out.Dispose()
           }
 
+          # Windows checkout converts text patch parts to CRLF. Normalize the
+          # assembled patch back to LF so git apply matches the source archive.
+          $patchText = [System.IO.File]::ReadAllText($patchFile).Replace("`r`n", "`n")
+          [System.IO.File]::WriteAllText(
+            $patchFile,
+            $patchText,
+            (New-Object System.Text.UTF8Encoding($false))
+          )
+
           Push-Location $env:UWX_SOURCE
           git init -q
           $diag = Join-Path $env:GITHUB_WORKSPACE "patch-diagnostics.txt"
