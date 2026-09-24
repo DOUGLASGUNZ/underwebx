@@ -1,0 +1,227 @@
+rite online</strong><span>Reserved for favorite-friend presence alerts.</span></div>
++                        <Switch
++                            :model-value="notificationRules.favoriteOnline"
++                            @update:modelValue="(value) => setNotificationRule('favoriteOnline', value)" />
++                    </label>
++                    <label class="uwx-toggle-row">
++                        <div><strong>UWX update</strong><span>Alert when the UnderWeb release feed reports a newer build.</span></div>
++                        <Switch
++                            :model-value="notificationRules.updateAvailable"
++                            @update:modelValue="(value) => setNotificationRule('updateAvailable', value)" />
++                    </label>
++                </CardContent>
++            </Card>
++
++            <Card class="uwx-card">
++                <CardHeader>
++                    <CardTitle>Release Channel</CardTitle>
++                    <CardDescription>UWX update status from the UnderWeb network manifest.</CardDescription>
++                </CardHeader>
++                <CardContent>
++                    <div class="uwx-release-card" :class="{ available: updateAvailable }">
++                        <div>
++                            <div class="uwx-section-label">INSTALLED</div>
++                            <strong>UnderWeb X {{ UWX_VERSION }}</strong>
++                        </div>
++                        <i class="ri-arrow-right-line" />
++                        <div>
++                            <div class="uwx-section-label">LATEST</div>
++                            <strong>{{ latestRelease?.version || 'Feed unavailable' }}</strong>
++                        </div>
++                    </div>
++                    <div class="flex flex-wrap gap-2 mt-4">
++                        <Button size="sm" variant="outline" :disabled="isRefreshing" @click="refreshNetwork({ quiet: false })">
++                            Check now
++                        </Button>
++                        <Button v-if="updateAvailable && latestRelease?.downloadUrl" size="sm" @click="openExternalLink(latestRelease.downloadUrl)">
++                            Get update
++                        </Button>
++                    </div>
++                    <p v-if="lastNetworkError" class="mt-3 text-xs text-muted-foreground">{{ lastNetworkError }}</p>
+                 </CardContent>
+             </Card>
+ 
+             <Card class="uwx-card">
+                 <CardHeader>
+                     <CardTitle>UnderWeb Quick Access</CardTitle>
+-                    <CardDescription>Jump between the desktop client and the network.</CardDescription>
++                    <CardDescription>Jump between UWX and the wider network.</CardDescription>
+                 </CardHeader>
+                 <CardContent class="uwx-quick-grid">
+-                    <Button variant="outline" @click="openUnderWeb">
+-                        <i class="ri-global-line" />
+-                        underweb.cloud
+-                    </Button>
+-                    <Button variant="outline" @click="openUnderWebEvents">
+-                        <i class="ri-calendar-event-line" />
+-                        Events
+-                    </Button>
+-                    <Button variant="outline" @click="openFriendsLocations">
+-                        <i class="ri-user-location-line" />
+-                        Friends Radar
+-                    </Button>
+-                    <Button variant="outline" @click="openGroups">
+-                        <i class="ri-group-2-line" />
+-                        VRChat Groups
+-                    </Button>
++                    <Button variant="outline" @click="openUnderWeb"><i class="ri-global-line" />underweb.cloud</Button>
++                    <Button variant="outline" @click="openUnderWebEvents"><i class="ri-calendar-event-line" />Events</Button>
++                    <Button variant="outline" @click="openFriendsLocations"><i class="ri-user-location-line" />Friends Radar</Button>
++                    <Button variant="outline" @click="openGroups"><i class="ri-group-2-line" />VRChat Groups</Button>
+                 </CardContent>
+             </Card>
+ 
+             <Card class="uwx-card">
+                 <CardHeader>
+-                    <CardTitle>Allowed groups</CardTitle>
++                    <CardTitle>Allowed Groups</CardTitle>
+                     <CardDescription>Only these group IDs can arm Auto Invite.</CardDescription>
+                 </CardHeader>
+                 <CardContent>
+@@ -196,88 +427,82 @@
+                 </CardContent>
+             </Card>
+ 
+-            <Card class="uwx-card">
+-                <CardHeader>
+-                    <CardTitle>Safety controls</CardTitle>
+-                    <CardDescription>Invite pacing, repeat protection, and exclusions.</CardDescription>
+-                </CardHeader>
+-                <CardContent class="space-y-4">
+-                    <div>
+-                        <label class="text-sm font-medium">Per-user cooldown (minutes)</label>
+-                        <Input
+-                            class="mt-2"
+-                            type="number"
+-                            min="1"
+-                            max="1440"
+-                            :model-value="cooldownMinutes"
+-                            @change="updateCooldown" />
+-                    </div>
+-                    <div class="uwx-list-row">
+-                        <span>Do-not-invite list</span>
+-                        <Badge variant="outline">{{ excludedUserIds.length }}</Badge>
+-                    </div>
+-                    <div class="uwx-list-row">
+-                        <span>Send pacing</span>
+-                        <Badge variant="outline">2.5 sec</Badge>
+-                    </div>
+-                    <div class="uwx-list-row">
+-                        <span>Background scan</span>
+-                        <Badge variant="outline">15 sec</Badge>
+-                    </div>
+-                    <div class="uwx-list-row">
+-                        <span>Last scan</span>
+-                        <Badge variant="outline">{{ lastScanText }}</Badge>
+-                    </div>
+-                </CardContent>
+-            </Card>
+-
+             <Card class="uwx-card uwx-card-wide">
+                 <CardHeader>
+                     <div class="flex items-start justify-between gap-4">
+                         <div>
+-                            <CardTitle>Invite List & Exclusions</CardTitle>
+-                            <CardDescription>
+-                                Select people for Selected mode. The shield icon blocks a user from every invite scope.
+-                            </CardDescription>
++                            <CardTitle>Invite List, Roles & Profile Quick-View</CardTitle>
++                            <CardDescription>Select friends, inspect UnderWeb roles, or hard-block them from all invite scopes.</CardDescription>
+                         </div>
+                         <Badge variant="outline">{{ filteredFriends.length }} shown</Badge>
+                     </div>
+                 </CardHeader>
+-                <CardContent>
+-                    <Input v-model="friendSearch" class="mb-3" placeholder="Search friends..." />
+-                    <div class="uwx-friend-list">
+-                        <div
+-                            v-for="friend in filteredFriends"
+-                            :key="friend.id"
+-                            class="uwx-friend-row"
+-                            :class="{
+-                                selected: selectedUserIds.includes(friend.id),
+-                                excluded: excludedUserIds.includes(friend.id)
+-                            }">
+-                            <button class="uwx-friend-main" type="button" @click="toggleSelectedUser(friend.id)">
+-                                <div class="min-w-0 text-left">
+-                                    <div class="font-medium truncate">{{ friend.displayName }}</div>
+-                                    <div class="text-xs text-muted-foreground truncate">{{ friend.id }}</div>
+-                                </div>
+-                                <div class="flex items-center gap-2">
+-                                    <Badge v-if="excludedUserIds.includes(friend.id)" variant="destructive">NO INVITE</Badge>
+-                                    <Badge :variant="friend.state === 'online' ? 'default' : 'outline'">{{ friend.state }}</Badge>
+-                                    <i
+-                                        :class="
+-                                            selectedUserIds.includes(friend.id)
+-                                                ? 'ri-checkbox-circle-fill text-primary'
+-                                                : 'ri-checkbox-blank-circle-line text-muted-foreground'
+-                                        "
+-                                        class="text-lg" />
+-                                </div>
+-                            </button>
++                <CardContent class="uwx-friend-layout">
++                    <div>
++                        <Input v-model="friendSearch" class="mb-3" placeholder="Search friends..." />
++                        <div class="uwx-friend-list">
++                            <div
++                                v-for="friend in filteredFriends"
++                                :key="friend.id"
++                                class="uwx-friend-row"
++                                :class="{
++                                    selected: selectedUserIds.includes(friend.id),
++                                    excluded: excludedUserIds.includes(friend.id),
++                                    profiled: profileUserId === friend.id
++                                }">
++                                <button class="uwx-friend-main" type="button" @click="profileUserId = friend.id">
++                                    <div class="min-w-0 text-left">
++                                        <div class="font-medium truncate">{{ friend.displayName }}</div>
++                                        <div class="flex flex-wrap gap-1 mt-1">
++                                            <span v-for="role in rolesForUser(friend.id).slice(0, 3)" :key="role" class="uwx-mini-role">{{ role }}</span>
++                                        </div>
++                                    </div>
++                                    <div class="flex items-center gap-2">
++                                        <Badge v-if="excludedUserIds.includes(friend.id)" variant="destructive">NO INVITE</Badge>
++                                        <Badge :variant="friend.state === 'online' ? 'default' : 'outline'">{{ friend.state }}</Badge>
++                                    </div>
++                                </button>
++                                <Button
++                                    size="icon"
++                                    :variant="selectedUserIds.includes(friend.id) ? 'default' : 'ghost'"
++                                    title="Toggle Selected invite audience"
++                                    @click="toggleSelectedUser(friend.id)">
++                                    <i :class="selectedUserIds.includes(friend.id) ? 'ri-user-follow-fill' : 'ri-user-add-line'" />
++                                </Button>
++                                <Button
++                                    size="icon"
++                                    :variant="excludedUserIds.includes(friend.id) ? 'destructive' : 'ghost'"
++                                    :title="excludedUserIds.includes(friend.id) ? 'Allow invites again' : 'Never auto-invite this user'"
++                                    @click="toggleExcludedUser(friend.id)">
++                                    <i :class="excludedUserIds.includes(friend.id) ? 'ri-shield-check-fill' : 'ri-shield-line'" />
++                                </Button>
++                            </div>
++                        </div>
++                    </div>
++                    <div class="uwx-profile-preview">
++                        <template v-if="selectedProfileFriend">
++                            <div class="uwx-profile-kicker">NETWORK PROFILE</div>
++                            <h3>{{ selectedProfileFriend.displayName }}</h3>
++                            <p>{{ selectedProfileFriend.id }}</p>
++                            <div class="flex flex-wrap gap-1 mt-4">
++                                <Badge v-for="role in selectedProfileRoles" :key="role" variant="outline">{{ role }}</Badge>
++                                <Badge v-if="!selectedProfileRoles.length" variant="outline">No UnderWeb roles</Badge>
++                            </div>
++                            <div class="uwx-profile-status mt-5">
++                                <div><span>VRChat</span><strong>{{ selectedProfileFriend.state }}</strong></div>
++                                <div><span>UnderWeb</span><strong>{{ selectedNetworkMember ? 'linked' : 'not linked' }}</strong></div>
++                            </div>
+                             <Button
+-                                size="icon"
+-                                :variant="excludedUserIds.includes(friend.id) ? 'destructive' : 'ghost'"
+-                                :title="excludedUserIds.includes(friend.id) ? 'Allow invites again' : 'Never auto-invite this user'"
+-                                @click="toggleExcludedUser(friend.id)">
+-                                <i :class="excludedUserIds.includes(friend.id) ? 'ri-shield-check-fill' : 'ri-shield-line'" />
++                                v-if="selectedNetworkMember?.underwebUserId"
++                                class="mt-5 w-full"
++                                variant="outline"
++                                @click="openUnderWebProfile(selectedNetworkMember)">
++                                
