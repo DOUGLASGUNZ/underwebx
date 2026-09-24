@@ -7,6 +7,7 @@ on:
       - main
     paths:
       - "UnderWebX*-source.zip"
+      - "base-patch/**"
       - "launch-patch/**"
       - ".github/workflows/build.yml"
 
@@ -49,10 +50,8 @@ jobs:
             exit 0
           }
 
-          $zip = Get-ChildItem -Path . -File | Where-Object { $_.Name -like "UnderWebX*-source.zip" } | Sort-Object Name -Descending | Select-Object -First 1
-          if (-not $zip) {
-            throw "No UnderWebX*-source.zip found in the repository root."
-          }
+          $zip = Get-Item ".\UnderWebX-v0.2.0-source.zip" -ErrorAction Stop
+          Write-Host "Using pinned base source: $($zip.Name)"
 
           New-Item -ItemType Directory -Path uwx-src -Force | Out-Null
           Expand-Archive -Path $zip.FullName -DestinationPath uwx-src -Force
@@ -66,6 +65,36 @@ jobs:
           }
 
           "UWX_SOURCE=$($root.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Apply missing v0.3 base patch
+        shell: pwsh
+        run: |
+          $parts = Get-ChildItem -Path "$env:GITHUB_WORKSPACE\base-patch" -Filter "part-*.patch" | Sort-Object Name
+          if (-not $parts) {
+            throw "Base patch parts were not found."
+          }
+
+          $patchFile = Join-Path $env:GITHUB_WORKSPACE "uwx-base.patch"
+          if (Test-Path $patchFile) { Remove-Item $patchFile -Force }
+
+          $out = [System.IO.File]::OpenWrite($patchFile)
+          try {
+            foreach ($part in $parts) {
+              $bytes = [System.IO.File]::ReadAllBytes($part.FullName)
+              $out.Write($bytes, 0, $bytes.Length)
+            }
+          } finally {
+            $out.Dispose()
+          }
+
+          Push-Location $env:UWX_SOURCE
+          git apply --whitespace=nowarn $patchFile
+          $baseVersion = (Get-Content .\UWX_VERSION -Raw).Trim()
+          if ($baseVersion -ne "0.3.0") {
+            throw "Base patch did not produce UWX 0.3.0; got '$baseVersion'."
+          }
+          Write-Host "Base patch OK: UWX $baseVersion"
+          Pop-Location
 
       - name: Apply UWX launch patch
         shell: pwsh
@@ -90,8 +119,31 @@ jobs:
 
           Push-Location $env:UWX_SOURCE
           git apply --whitespace=nowarn $patchFile
-          Write-Host "Patched UWX version: $(Get-Content .\UWX_VERSION -Raw)"
+          $finalVersion = (Get-Content .\UWX_VERSION -Raw).Trim()
+          if ($finalVersion -ne "0.4.1-rc1") {
+            throw "Launch patch did not produce UWX 0.4.1-rc1; got '$finalVersion'."
+          }
+          Write-Host "Launch patch OK: UWX $finalVersion"
           Pop-Location
+
+      - name: Verify RC1 UI is present
+        shell: pwsh
+        run: |
+          $view = Join-Path $env:UWX_SOURCE "src\views\UnderWeb\UnderWeb.vue"
+          $text = Get-Content $view -Raw
+          $required = @(
+            "uwx-panel-tabs",
+            "GROUP RECRUITER",
+            "OSC Lab",
+            "Connected Accounts",
+            "Event Mode"
+          )
+          foreach ($needle in $required) {
+            if (-not $text.Contains($needle)) {
+              throw "RC1 UI verification failed: missing '$needle'."
+            }
+          }
+          Write-Host "RC1 UI verification passed."
 
       - name: Verify build tools
         shell: pwsh
