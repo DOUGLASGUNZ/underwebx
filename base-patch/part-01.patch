@@ -1,0 +1,275 @@
+        configRepository.getArray(CONFIG.groups, []),
+             configRepository.getArray(CONFIG.users, []),
+             configRepository.getArray(CONFIG.excludedUsers, []),
+             configRepository.getString(CONFIG.scope, 'selected'),
+             configRepository.getInt(CONFIG.cooldown, 30),
+-            configRepository.getObject(CONFIG.recent, {})
++            configRepository.getObject(CONFIG.recent, {}),
++            configRepository.getBool(CONFIG.groupRecruitEnabled, false),
++            configRepository.getInt(CONFIG.groupRecruitMinPresenceSeconds, 60),
++            configRepository.getObject(CONFIG.groupRecruitRecent, {})
+         ]);
+         autoInviteEnabled.value = Boolean(enabled);
+         allowedGroupIds.value = Array.isArray(groups) ? groups.filter((id) => String(id).startsWith('grp_')) : [];
+@@ -187,12 +270,22 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+                 }
+             });
+         }
++        groupRecruitEnabled.value = Boolean(recruitEnabled);
++        groupRecruitMinPresenceSeconds.value = Math.min(600, Math.max(0, Number(recruitMinPresence) || 60));
++        recentGroupRecruits.clear();
++        if (recruitRecent && typeof recruitRecent === 'object') {
++            Object.entries(recruitRecent).forEach(([userId, entry]) => {
++                if (entry && typeof entry.at === 'number' && typeof entry.groupId === 'string') {
++                    recentGroupRecruits.set(userId, entry);
++                }
++            });
++        }
+     }
+ 
+     async function setAutoInviteEnabled(value) {
+         autoInviteEnabled.value = Boolean(value);
+         await configRepository.setBool(CONFIG.enabled, autoInviteEnabled.value);
+-        addLog('info', autoInviteEnabled.value ? 'Auto Invite armed.' : 'Auto Invite disarmed.');
++        addLog('info', autoInviteEnabled.value ? 'Instance Inviter armed.' : 'Instance Inviter disarmed.');
+         if (autoInviteEnabled.value) {
+             void scanAndInvite({ source: 'toggle' });
+         }
+@@ -205,7 +298,10 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+         const labels = {
+             selected: 'Selected friends',
+             favorites: 'Favorite friends',
+-            'all-online': 'All online friends'
++            'all-online': 'All online friends',
++            staff: 'UnderWeb staff',
++            creators: 'UnderWeb creators',
++            partners: 'UnderWeb partners'
+         };
+         addLog('info', `Invite scope changed to ${labels[normalized]}.`);
+     }
+@@ -215,6 +311,21 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+         await configRepository.setInt(CONFIG.cooldown, cooldownMinutes.value);
+     }
+ 
++
++    async function setGroupRecruitEnabled(value) {
++        groupRecruitEnabled.value = Boolean(value);
++        await configRepository.setBool(CONFIG.groupRecruitEnabled, groupRecruitEnabled.value);
++        addLog('info', groupRecruitEnabled.value ? 'Group Recruiter armed.' : 'Group Recruiter disarmed.');
++        if (groupRecruitEnabled.value) {
++            void scanAndRecruitGroup({ source: 'toggle' });
++        }
++    }
++
++    async function setGroupRecruitMinPresenceSeconds(value) {
++        groupRecruitMinPresenceSeconds.value = Math.min(600, Math.max(0, Number(value) || 60));
++        await configRepository.setInt(CONFIG.groupRecruitMinPresenceSeconds, groupRecruitMinPresenceSeconds.value);
++    }
++
+     async function addAllowedGroup(groupId) {
+         const normalized = String(groupId || '').trim();
+         if (!normalized.startsWith('grp_') || allowedGroupIds.value.includes(normalized)) {
+@@ -229,10 +340,13 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+     async function removeAllowedGroup(groupId) {
+         allowedGroupIds.value = allowedGroupIds.value.filter((id) => id !== groupId);
+         await configRepository.setArray(CONFIG.groups, allowedGroupIds.value);
+-        addLog('info', `Removed group ${groupId} from Auto Invite.`, { groupId });
++        addLog('info', `Removed group ${groupId} from UWX invite automation.`, { groupId });
+         if (currentGroupId.value === groupId && autoInviteEnabled.value) {
+             await setAutoInviteEnabled(false);
+         }
++        if (currentGroupId.value === groupId && groupRecruitEnabled.value) {
++            await setGroupRecruitEnabled(false);
++        }
+     }
+ 
+     async function toggleSelectedUser(userId) {
+@@ -302,6 +416,150 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+         addLog('success', `Invited ${friend.displayName}.`, { userId: friend.id });
+     }
+ 
++
++    async function isCurrentGroupMember(userId, groupId) {
++        try {
++            const args = await groupRequest.getGroupMember({ groupId, userId });
++            return Boolean(args?.json);
++        } catch (error) {
++            if (error?.status === 404) return false;
++            throw error;
++        }
++    }
++
++    async function markGroupRecruitSkipped(player, groupId, location, result) {
++        recentGroupRecruits.set(player.userId, {
++            groupId,
++            location,
++            at: Date.now(),
++            result
++        });
++        await persistRecentGroupRecruits();
++    }
++
++    async function sendGroupRecruitInvite(player) {
++        const groupId = currentGroupId.value;
++        const location = currentLocationTag.value;
++        if (!groupId || !canRecruitHere.value) {
++            throw new Error('Group instance changed before group invitation could be sent.');
++        }
++        await groupRequest.sendGroupInvite({ groupId, userId: player.userId });
++        recentGroupRecruits.set(player.userId, {
++            groupId,
++            location,
++            at: Date.now(),
++            result: 'sent'
++        });
++        sessionGroupInvitesSent.value += 1;
++        await persistRecentGroupRecruits();
++        addLog('success', `Invited ${player.displayName} to the VRChat group.`, {
++            userId: player.userId,
++            groupId
++        });
++    }
++
++    async function scanAndRecruitGroup({ source = 'automatic', force = false } = {}) {
++        if (isRecruiting.value) return { sent: 0, skipped: 'busy' };
++        if (Date.now() < groupRecruitBackoffUntil.value) return { sent: 0, skipped: 'rate-limit-backoff' };
++        if (!watchState.isLoggedIn) return { sent: 0, skipped: 'logged-out' };
++        if (!force && !groupRecruitEnabled.value) return { sent: 0, skipped: 'disabled' };
++        if (!canRecruitHere.value) {
++            if (source === 'manual') toast.error('Group Recruiter only runs in an approved group instance.');
++            return { sent: 0, skipped: 'not-allowed-instance' };
++        }
++
++        const scanLocationTag = currentLocationTag.value;
++        const scanGroupId = currentGroupId.value;
++        const candidates = [...eligibleLobbyRecruits.value].slice(0, GROUP_RECRUIT_MAX_PER_SCAN);
++        groupRecruitLastScanAt.value = Date.now();
++        if (!candidates.length) {
++            if (source === 'manual') toast.info('Nobody in this lobby is currently eligible for a group invite.');
++            return { sent: 0, skipped: 'no-candidates' };
++        }
++
++        isRecruiting.value = true;
++        let sent = 0;
++        try {
++            addLog('info', `Group Recruiter found ${candidates.length} eligible lobby occupant(s).`);
++            for (const player of candidates) {
++                if (
++                    (!force && !groupRecruitEnabled.value) ||
++                    !canRecruitHere.value ||
++                    currentLocationTag.value !== scanLocationTag ||
++                    currentGroupId.value !== scanGroupId
++                ) {
++                    addLog('warning', 'Group Recruiter queue stopped because it was disarmed or the active instance changed.');
++                    break;
++                }
++                if (excludedUserIds.value.includes(player.userId)) continue;
++
++                // Always verify current group membership immediately before inviting.
++                // Fail closed: if membership cannot be verified, do not send a group invite.
++                try {
++                    const alreadyMember = await isCurrentGroupMember(player.userId, scanGroupId);
++                    if (alreadyMember) {
++                        await markGroupRecruitSkipped(player, scanGroupId, scanLocationTag, 'already-member');
++                        addLog('info', `Skipped ${player.displayName}: already a member of this VRChat group.`, {
++                            userId: player.userId,
++                            groupId: scanGroupId
++                        });
++                        continue;
++                    }
++                } catch (error) {
++                    const status = error?.status || error?.statusCode || error?.response?.status;
++                    await markGroupRecruitSkipped(player, scanGroupId, scanLocationTag, 'membership-check-failed');
++                    addLog(
++                        'warning',
++                        `Skipped ${player.displayName}: group membership could not be verified, so no invite was sent.`,
++                        { userId: player.userId, groupId: scanGroupId, status }
++                    );
++                    if (status === 429) {
++                        groupRecruitBackoffUntil.value = Date.now() + 60000;
++                        addLog('warning', 'VRChat rate limit reached during membership verification. Group Recruiter paused for 60 seconds.');
++                        break;
++                    }
++                    continue;
++                }
++
++                try {
++                    await sendGroupRecruitInvite(player);
++                    sent += 1;
++                } catch (error) {
++                    const message = error?.error?.message || error?.message || 'Unknown group invite error';
++                    const status = error?.status || error?.statusCode || error?.response?.status;
++                    // Mark the user as attempted for this group so members/pending invites are not hammered repeatedly.
++                    recentGroupRecruits.set(player.userId, {
++                        groupId: scanGroupId,
++                        location: scanLocationTag,
++                        at: Date.now(),
++                        result: status === 403 ? 'permission-denied' : 'skipped'
++                    });
++                    await persistRecentGroupRecruits();
++                    if (status === 403) {
++                        lastError.value = 'Your VRChat account does not have permission to invite users to this group.';
++                        addLog('error', lastError.value, { groupId: scanGroupId });
++                        if (groupRecruitEnabled.value) await setGroupRecruitEnabled(false);
++                        if (source === 'manual') toast.error(lastError.value);
++                        break;
++                    }
++                    if (status === 429) {
++                        groupRecruitBackoffUntil.value = Date.now() + 60000;
++                        addLog('warning', 'VRChat rate limit reached. Group Recruiter paused for 60 seconds.');
++                        break;
++                    }
++                    addLog('info', `Skipped ${player.displayName}: ${message}`, { userId: player.userId });
++                }
++                if (sent < candidates.length) await sleep(GROUP_RECRUIT_SEND_DELAY_MS);
++            }
++            if (source === 'manual' && sent) {
++                toast.success(`Sent ${sent} VRChat group invite${sent === 1 ? '' : 's'}.`);
++            }
++            return { sent };
++        } finally {
++            isRecruiting.value = false;
++        }
++    }
++
+     async function scanAndInvite({ source = 'automatic', force = false } = {}) {
+         if (isScanning.value) {
+             return { sent: 0, skipped: 'busy' };
+@@ -317,7 +575,7 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+         }
+         if (!canAutoInviteHere.value) {
+             if (source === 'manual') {
+-                toast.error('UWX Auto Invite only runs in an allowed group instance.');
++                toast.error('UWX Instance Inviter only runs in an allowed group instance.');
+             }
+             return { sent: 0, skipped: 'not-allowed-instance' };
+         }
+@@ -344,7 +602,7 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+                     !canAutoInviteHere.value ||
+                     currentLocationTag.value !== scanLocationTag
+                 ) {
+-                    addLog('warning', 'Invite queue stopped because Auto Invite was disarmed or the active instance changed.');
++                    addLog('warning', 'Instance Inviter queue stopped because it was disarmed or the active instance changed.');
+                     break;
+                 }
+                 if (excludedUserIds.value.includes(friend.id)) {
+@@ -363,7 +621,7 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+                     const status = error?.status || error?.statusCode || error?.response?.status;
+                     if (status === 429) {
+                         rateLimitBackoffUntil.value = Date.now() + 60000;
+-                        addLog('warning', 'VRChat rate limit reached. UWX paused Auto Invite for 60 seconds.');
++                        addLog('warning', 'VRChat rate limit reached. UWX paused Instance Inviter for 60 seconds.');
+                         break;
+                     }
+                 }
+@@ -388,6 +646,9 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+             if (autoInviteEnabled.value) {
+                 void scanAndInvite({ source: 'automatic' });
+             }
++            if (groupRecruitEnabled.value) {
++                void scanAndRecruitGroup({ source: 'automatic' });
++            }
+         }, SCAN_INTERVAL_MS);
+     }
+ 
+@@ -396,6 +657,7 @@ export const useUnderWebStore = defin
