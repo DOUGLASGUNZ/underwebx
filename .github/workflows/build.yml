@@ -83,6 +83,7 @@ jobs:
           }
 
           Push-Location $env:UWX_SOURCE
+          git init -q
           $diag = Join-Path $env:GITHUB_WORKSPACE "patch-diagnostics.txt"
           "UWX_SOURCE=$env:UWX_SOURCE" | Out-File $diag -Encoding utf8
           "VERSION_BEFORE=$((Get-Content .\UWX_VERSION -Raw).Trim())" | Out-File $diag -Append -Encoding utf8
