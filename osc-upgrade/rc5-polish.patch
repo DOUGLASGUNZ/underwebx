@@ -1,7 +1,7 @@
 diff --git a/CHANGELOG_UWX.md b/CHANGELOG_UWX.md
 --- a/CHANGELOG_UWX.md
 +++ b/CHANGELOG_UWX.md
-@@ -1,5 +1,15 @@
+@@ -1,5 +1,14 @@
  # UnderWeb X changelog
  
 +## 0.4.5-rc5 — OSC polish pass
@@ -40,7 +40,7 @@ diff --git a/src/stores/oscLab.js b/src/stores/oscLab.js
      nowPlayingTitle: 'UWX_oscNowPlayingTitle',
      nowPlayingArtist: 'UWX_oscNowPlayingArtist',
      pulsoidToken: 'UWX_pulsoidToken',
-@@ -28,6 +29,8 @@ const PRESETS = Object.freeze({
+@@ -28,4 +29,6 @@ const PRESETS = Object.freeze({
      afk: { customStatus: 'AFK', showWorld: true, showEvent: false, showHeartRate: false, showNowPlaying: false, showPopulation: true }
  });
  
@@ -55,7 +55,7 @@ diff --git a/src/stores/oscLab.js b/src/stores/oscLab.js
      const nowPlayingTitle = ref('');
      const nowPlayingArtist = ref('');
      const pulsoidToken = ref('');
-@@ -78,18 +82,31 @@ export const useOscLabStore = defineStore('OscLab', () => {
+@@ -78,21 +82,24 @@ export const useOscLabStore = defineStore('OscLab', () => {
      const activeEvent = computed(() => networkStore.activeEvent);
      const playerCount = computed(() => locationStore.lastLocation.playerList?.size || 0);
  
@@ -105,7 +105,7 @@ diff --git a/src/stores/oscLab.js b/src/stores/oscLab.js
              configRepository.getString(CONFIG.nowPlayingTitle, ''),
              configRepository.getString(CONFIG.nowPlayingArtist, ''),
              configRepository.getString(CONFIG.pulsoidToken, ''),
-@@ -146,6 +165,13 @@ export const useOscLabStore = defineStore('OscLab', () => {
+@@ -146,5 +165,13 @@ export const useOscLabStore = defineStore('OscLab', () => {
          autoBroadcast.value = Boolean(storedAutoBroadcast);
          autoMedia.value = Boolean(storedAutoMedia);
          signatureMode.value = ['off', 'short', 'full'].includes(storedSignatureMode) ? storedSignatureMode : 'short';
@@ -119,7 +119,7 @@ diff --git a/src/stores/oscLab.js b/src/stores/oscLab.js
 +        }
          nowPlayingTitle.value = storedTitle || '';
          nowPlayingArtist.value = storedArtist || '';
-@@ -225,6 +251,18 @@ export const useOscLabStore = defineStore('OscLab', () => {
+@@ -225,4 +251,15 @@ export const useOscLabStore = defineStore('OscLab', () => {
          await configRepository.setString(CONFIG.signatureMode, signatureMode.value);
      }
  
@@ -135,13 +135,13 @@ diff --git a/src/stores/oscLab.js b/src/stores/oscLab.js
 +    }
 +
      async function setNowPlayingTitle(value) {
-@@ -458,6 +496,7 @@ export const useOscLabStore = defineStore('OscLab', () => {
+@@ -458,4 +496,5 @@ export const useOscLabStore = defineStore('OscLab', () => {
          autoBroadcast,
          autoMedia,
          signatureMode,
 +        blockOrder,
          playerCount,
-@@ -480,6 +519,7 @@ export const useOscLabStore = defineStore('OscLab', () => {
+@@ -480,4 +519,5 @@ export const useOscLabStore = defineStore('OscLab', () => {
          setAutoBroadcast,
          setAutoMedia,
          setSignatureMode,
@@ -150,19 +150,19 @@ diff --git a/src/stores/oscLab.js b/src/stores/oscLab.js
 diff --git a/src/views/UnderWeb/UnderWeb.vue b/src/views/UnderWeb/UnderWeb.vue
 --- a/src/views/UnderWeb/UnderWeb.vue
 +++ b/src/views/UnderWeb/UnderWeb.vue
-@@ -371,7 +371,7 @@
+@@ -371,4 +371,4 @@
                          <div>
                              <CardTitle>OSC Lab</CardTitle>
 -                            <CardDescription>A focused workspace for VRChat chatbox output, Pulsoid, presets, and avatar parameter testing.</CardDescription>
 +                            <CardDescription>Build a clean live VRChat status from music, world, population, events, heart rate, and UWX.</CardDescription>
                          </div>
-@@ -383,7 +383,7 @@
+@@ -383,4 +383,4 @@
                          <div>
                              <div class="uwx-section-label">ACTIVE PRESET</div>
 -                            <span>Switch the whole chatbox layout without rebuilding it.</span>
 +                            <span>One-tap layouts for how you actually use VRChat.</span>
                          </div>
-@@ -395,7 +395,7 @@
+@@ -395,6 +395,6 @@
  
                      <div class="uwx-osc-grid">
                          <section class="uwx-control-block">
@@ -170,7 +170,7 @@ diff --git a/src/views/UnderWeb/UnderWeb.vue b/src/views/UnderWeb/UnderWeb.vue
 +                            <div class="uwx-section-label">LIVE STATUS BUILDER</div>
                              <Input :model-value="oscCustomStatus" class="mt-2" placeholder="Custom status..."
                                  @change="setOscCustomStatus($event.target.value)" />
-@@ -418,6 +418,24 @@
+@@ -418,4 +418,23 @@
                                      <Button size="sm" :variant="oscSignatureMode === 'full' ? 'default' : 'outline'" @click="setOscSignatureMode('full')">UNDERWEB X</Button>
                                  </div>
                              </div>
@@ -194,7 +194,7 @@ diff --git a/src/views/UnderWeb/UnderWeb.vue b/src/views/UnderWeb/UnderWeb.vue
 +                                </div>
 +                            </div>
                              <div class="uwx-chatbox-preview mt-4">
-@@ -448,10 +466,6 @@
+@@ -448,8 +466,4 @@
                              <Input :model-value="oscPulsoidToken" type="password" class="mt-3" placeholder="Pulsoid access token"
                                  @change="setOscPulsoidToken($event.target.value)" />
                              <p class="uwx-help mt-2">Token stays in local UWX config and is never included in the UnderWeb network manifest.</p>
@@ -203,7 +203,7 @@ diff --git a/src/views/UnderWeb/UnderWeb.vue b/src/views/UnderWeb/UnderWeb.vue
 -                                <label><span class="uwx-field-label">Beat parameter</span><Input :model-value="oscPulseAvatarParameter" @change="setOscPulseAvatarParameter($event.target.value)" /></label>
 -                            </div>
                          </section>
-@@ -468,15 +482,24 @@
+@@ -468,12 +482,17 @@
                          </section>
  
                          <section class="uwx-control-block">
@@ -228,19 +228,19 @@ diff --git a/src/views/UnderWeb/UnderWeb.vue b/src/views/UnderWeb/UnderWeb.vue
 -                            <p class="uwx-help mt-2">Sends directly to <code>/avatar/parameters/&lt;name&gt;</code> on VRChat's local OSC port.</p>
 +                            <p class="uwx-help mt-3">If one of these goes stale, you know exactly which source to check instead of guessing why the chatbox stopped updating.</p>
                          </section>
-@@ -744,6 +767,7 @@
+@@ -744,4 +767,5 @@
          autoBroadcast: oscAutoBroadcast,
          autoMedia: oscAutoMedia,
          signatureMode: oscSignatureMode,
 +        blockOrder: oscBlockOrder,
          playerCount: oscPlayerCount,
-@@ -773,6 +797,7 @@
+@@ -773,4 +797,5 @@
          setAutoBroadcast: setOscAutoBroadcast,
          setAutoMedia: setOscAutoMedia,
          setSignatureMode: setOscSignatureMode,
 +        moveBlock: moveOscBlock,
          setNowPlayingTitle: setOscNowPlayingTitle,
-@@ -790,6 +815,15 @@
+@@ -790,2 +815,12 @@
      } = oscLabStore;
  
 +    const oscBlockLabels = {
@@ -253,19 +253,19 @@ diff --git a/src/views/UnderWeb/UnderWeb.vue b/src/views/UnderWeb/UnderWeb.vue
 +        population: 'People here'
 +    };
 +
-@@ -824,7 +858,7 @@
+@@ -824,4 +858,4 @@
      const panelTabs = [
          { id: 'command', label: 'Command', short: 'Live ops', icon: 'ri-dashboard-3-line' },
 -        { id: 'osc', label: 'OSC Lab', short: 'Avatar + chatbox', icon: 'ri-pulse-line' },
 +        { id: 'osc', label: 'OSC Lab', short: 'Live status', icon: 'ri-pulse-line' },
          { id: 'people', label: 'People', short: 'Roles + activity', icon: 'ri-team-line' },
-@@ -832,7 +866,7 @@
+@@ -832,4 +866,4 @@
      const panelMeta = {
          command: { eyebrow: 'LIVE OPERATIONS', title: 'Command Center', description: 'Lobby recruiting, instance invites, Radar, events, and connected identity.' },
 -        osc: { eyebrow: 'REAL-TIME CONTROL', title: 'OSC Lab', description: 'Chatbox composition, heart rate, presets, and direct avatar parameter testing.' },
 +        osc: { eyebrow: 'REAL-TIME STATUS', title: 'OSC Lab', description: 'A polished live-status builder for your VRChat chatbox.' },
          people: { eyebrow: 'NETWORK PEOPLE', title: 'People & Activity', description: 'Inspect roles, manage exclusions, and review what UWX did this session.' },
-@@ -1350,6 +1384,54 @@
+@@ -1350,3 +1384,50 @@
      .uwx-chatbox-preview small { display: block; margin-top: 8px; color: var(--muted-foreground); font-size: 9px; }
  
 +    .uwx-osc-card {
@@ -316,7 +316,7 @@ diff --git a/src/views/UnderWeb/UnderWeb.vue b/src/views/UnderWeb/UnderWeb.vue
 +    .uwx-health-item strong { display: block; margin-top: 4px; color: var(--foreground); font-size: 11px; text-transform: uppercase; }
 +
      .uwx-signature-control {
-@@ -1410,6 +1492,8 @@
+@@ -1410,3 +1492,5 @@
          .uwx-panel-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
          .uwx-panel-context { align-items: flex-start; flex-direction: column; gap: 6px; }
 +        .uwx-health-grid { grid-template-columns: 1fr; }
