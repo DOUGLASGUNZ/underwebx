@@ -17,7 +17,7 @@ diff --git a/CHANGELOG_UWX.md b/CHANGELOG_UWX.md
 diff --git a/Dotnet/AppApi/Common/AppApiCommon.cs b/Dotnet/AppApi/Common/AppApiCommon.cs
 --- a/Dotnet/AppApi/Common/AppApiCommon.cs
 +++ b/Dotnet/AppApi/Common/AppApiCommon.cs
-@@ -211,12 +211,18 @@ namespace VRCX
+@@ -211,14 +211,19 @@ namespace VRCX
                  if (session == null) return "{}";
  
                  var properties = await session.TryGetMediaPropertiesAsync();
@@ -79,7 +79,7 @@ diff --git a/src/stores/oscLab.js b/src/stores/oscLab.js
  
      const chatboxParts = computed(() => {
          const parts = [];
-@@ -77,7 +88,11 @@ export const useOscLabStore = defineStore('OscLab', () => {
+@@ -77,6 +88,10 @@ export const useOscLabStore = defineStore('OscLab', () => {
          if (showEvent.value && activeEvent.value?.title) parts.push(`🕷 ${activeEvent.value.title}`);
          if (showNowPlaying.value && nowPlayingTitle.value.trim()) {
 -            parts.push(`🎵 ${nowPlayingTitle.value.trim()}${nowPlayingArtist.value.trim() ? ` — ${nowPlayingArtist.value.trim()}` : ''}`);
@@ -100,14 +100,14 @@ diff --git a/src/stores/oscLab.js b/src/stores/oscLab.js
              if (data?.title) nowPlayingTitle.value = String(data.title).slice(0, 80);
              if (data?.artist) nowPlayingArtist.value = String(data.artist).slice(0, 80);
              if (!data?.title && mediaState.value === 'idle') {
-@@ -339,7 +356,7 @@ export const useOscLabStore = defineStore('OscLab', () => {
+@@ -339,5 +356,5 @@ export const useOscLabStore = defineStore('OscLab', () => {
          stopMediaPolling();
          if (!autoMedia.value) return;
          void refreshSystemMedia();
 -        mediaTimer = window.setInterval(() => void refreshSystemMedia(), 4000);
 +        mediaTimer = window.setInterval(() => void refreshSystemMedia(), 1000);
      }
-@@ -439,6 +456,8 @@ export const useOscLabStore = defineStore('OscLab', () => {
+@@ -439,5 +456,7 @@ export const useOscLabStore = defineStore('OscLab', () => {
          lastError,
          mediaState,
          mediaSource,
@@ -126,7 +126,7 @@ diff --git a/src/views/UnderWeb/UnderWeb.vue b/src/views/UnderWeb/UnderWeb.vue
 +                            <p class="uwx-help mt-2">Track progress is read from Windows media and shown as elapsed/total time when available.</p>
                              <p class="uwx-help mt-2">Uses Windows' media session, so Spotify desktop can populate title and artist without a separate Spotify login.</p>
                          </section>
-@@ -1392,6 +1393,7 @@
+@@ -1392,4 +1393,5 @@
          background: rgb(118 255 0 / 3%);
      }
 +    .uwx-chatbox-preview { background: transparent; }
