@@ -138,12 +138,14 @@ jobs:
           )
 
           Push-Location $env:UWX_SOURCE
-          git apply --check --verbose $patchFile
+          $oscDiag = Join-Path $env:GITHUB_WORKSPACE "osc-patch-diagnostics.txt"
+          "VERSION_BEFORE=$((Get-Content .\UWX_VERSION -Raw).Trim())" | Out-File $oscDiag -Encoding utf8
+          git apply --check --verbose $patchFile 2>&1 | Tee-Object -FilePath $oscDiag -Append
           if ($LASTEXITCODE -ne 0) {
             Pop-Location
             throw "OSC upgrade patch check failed."
           }
-          git apply --whitespace=nowarn $patchFile
+          git apply --whitespace=nowarn $patchFile 2>&1 | Tee-Object -FilePath $oscDiag -Append
           if ($LASTEXITCODE -ne 0) {
             Pop-Location
             throw "OSC upgrade patch failed."
@@ -200,7 +202,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: UWX-Patch-Diagnostics
-          path: patch-diagnostics.txt
+          path: |
+            patch-diagnostics.txt
+            osc-patch-diagnostics.txt
           if-no-files-found: ignore
           retention-days: 2
 
