@@ -230,6 +230,17 @@ jobs:
           Write-Host "Live media timeline upgrade applied: UWX $version"
           Pop-Location
 
+      - name: Upload RC4 patched source snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: UWX-RC4-Source-Snapshot
+          path: |
+            ${{ env.UWX_SOURCE }}/src/stores/oscLab.js
+            ${{ env.UWX_SOURCE }}/src/views/UnderWeb/UnderWeb.vue
+            ${{ env.UWX_SOURCE }}/UWX_VERSION
+            ${{ env.UWX_SOURCE }}/CHANGELOG_UWX.md
+          retention-days: 2
+
       - name: Apply OSC Lab polish upgrade
         shell: pwsh
         run: |
