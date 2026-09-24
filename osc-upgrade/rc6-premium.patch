@@ -483,35 +483,6 @@ index 6236a9f..59ff2c7 100644
      const {
          setAutoInviteEnabled,
          setGroupRecruitEnabled,
-@@ -812,9 +862,6 @@
-     const friendSearch = ref('');
-     const radarFilter = ref('all');
-     const profileUserId = ref('');
--    const oscTestParameter = ref('');
--    const oscTestType = ref('bool');
--    const oscTestValue = ref('true');
-     const radarFilters = [
-         { id: 'all', label: 'All' },
-         { id: 'underweb', label: 'UnderWeb' },
-@@ -1266,18 +1313,6 @@
-         }
-     }
- 
--    async function sendOscTestParameter() {
--        try {
--            let value = oscTestValue.value;
--            if (oscTestType.value === 'bool') value = String(value).toLowerCase() === 'true' || String(value) === '1';
--            else value = Number(value);
--            await sendOscAvatarParameter(oscTestParameter.value, oscTestType.value, value);
--            toast.success(`Sent OSC parameter ${oscTestParameter.value}.`);
--        } catch (error) {
--            toast.error(error?.message || 'OSC parameter send failed.');
--        }
--    }
--
-     function formatEventTime(event) {
-         if (!event?.startAt) return 'Schedule pending';
-         const date = new Date(event.startAt);
 @@ -1351,13 +1388,72 @@
      .uwx-log-row { display: grid; grid-template-columns: 76px 78px minmax(0, 1fr); align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
      .uwx-log-time { color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
