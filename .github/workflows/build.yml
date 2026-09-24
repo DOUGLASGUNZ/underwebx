@@ -241,14 +241,16 @@ jobs:
             ${{ env.UWX_SOURCE }}/CHANGELOG_UWX.md
           retention-days: 2
 
-      - name: Apply OSC Lab polish upgrade
+      - name: Apply premium OSC Lab redesign
         shell: pwsh
         run: |
-          $patchFile = Join-Path $env:GITHUB_WORKSPACE "osc-upgrade\rc5-polish.patch"
+          $patchFile = Join-Path $env:GITHUB_WORKSPACE "osc-upgrade\rc6-premium.patch"
           if (-not (Test-Path $patchFile)) {
-            throw "RC5 OSC polish patch not found."
+            throw "RC6 premium OSC patch not found."
           }
 
+          # Normalize the RC6 patch and only the files it touches to LF so the
+          # diff applies deterministically after the RC4 Windows build steps.
           $patchText = [System.IO.File]::ReadAllText($patchFile).Replace("`r`n", "`n")
           [System.IO.File]::WriteAllText(
             $patchFile,
@@ -256,28 +258,48 @@ jobs:
             (New-Object System.Text.UTF8Encoding($false))
           )
 
-          Push-Location $env:UWX_SOURCE
-          $polishDiag = Join-Path $env:GITHUB_WORKSPACE "polish-patch-diagnostics.txt"
-          "VERSION_BEFORE=$((Get-Content .\UWX_VERSION -Raw).Trim())" | Out-File $polishDiag -Encoding utf8
-          git apply --check --verbose $patchFile 2>&1 | Tee-Object -FilePath $polishDiag -Append
-          if ($LASTEXITCODE -ne 0) {
-            Pop-Location
-            throw "RC5 OSC polish patch check failed."
+          $targets = @(
+            "CHANGELOG_UWX.md",
+            "UWX_VERSION",
+            "src\stores\oscLab.js",
+            "src\views\UnderWeb\UnderWeb.vue",
+            "src\shared\constants\uwx.js"
+          )
+          foreach ($relative in $targets) {
+            $target = Join-Path $env:UWX_SOURCE $relative
+            if (-not (Test-Path $target)) {
+              throw "RC6 target file missing: $relative"
+            }
+            $text = [System.IO.File]::ReadAllText($target).Replace("`r`n", "`n")
+            [System.IO.File]::WriteAllText(
+              $target,
+              $text,
+              (New-Object System.Text.UTF8Encoding($false))
+            )
           }
-          git apply --whitespace=nowarn $patchFile 2>&1 | Tee-Object -FilePath $polishDiag -Append
+
+          Push-Location $env:UWX_SOURCE
+          $premiumDiag = Join-Path $env:GITHUB_WORKSPACE "premium-patch-diagnostics.txt"
+          "VERSION_BEFORE=$((Get-Content .\UWX_VERSION -Raw).Trim())" | Out-File $premiumDiag -Encoding utf8
+          git apply --check --verbose $patchFile 2>&1 | Tee-Object -FilePath $premiumDiag -Append
           if ($LASTEXITCODE -ne 0) {
             Pop-Location
-            throw "RC5 OSC polish patch failed."
+            throw "RC6 premium OSC patch check failed."
+          }
+          git apply --whitespace=nowarn $patchFile 2>&1 | Tee-Object -FilePath $premiumDiag -Append
+          if ($LASTEXITCODE -ne 0) {
+            Pop-Location
+            throw "RC6 premium OSC patch failed."
           }
           $version = (Get-Content .\UWX_VERSION -Raw).Trim()
-          if ($version -ne "0.4.5-rc5") {
+          if ($version -ne "0.4.6-rc6") {
             Pop-Location
-            throw "OSC polish upgrade did not produce UWX 0.4.5-rc5; got '$version'."
+            throw "Premium OSC redesign did not produce UWX 0.4.6-rc6; got '$version'."
           }
-          Write-Host "OSC Lab polish upgrade applied: UWX $version"
+          Write-Host "Premium OSC Lab redesign applied: UWX $version"
           Pop-Location
 
-      - name: Verify RC5 UI is present
+      - name: Verify RC6 premium UI is present
         shell: pwsh
         run: |
           $view = Join-Path $env:UWX_SOURCE "src\views\UnderWeb\UnderWeb.vue"
@@ -288,23 +310,26 @@ jobs:
             "OSC Lab",
             "Connected Accounts",
             "Event Mode",
-            "LIVE STATUS BUILDER",
-            "OUTPUT ORDER",
-            "CONNECTIONS & HEALTH",
+            "Broadcast Control",
+            "Live Status Builder",
+            "Live Preview",
+            "Presets",
+            "Output Log",
+            "VRChat OSC",
+            "Spotify / Media",
             "Keep visible",
             "Auto-detect Windows media",
-            "UWX signature",
-            "Track progress is read from Windows media"
+            "UWX signature"
           )
           foreach ($needle in $required) {
             if (-not $text.Contains($needle)) {
-              throw "RC5 UI verification failed: missing '$needle'."
+              throw "RC6 UI verification failed: missing '$needle'."
             }
           }
           if ($text.Contains("AVATAR PARAMETER TEST")) {
-            throw "RC5 UI verification failed: avatar parameter tester is still visible."
+            throw "RC6 UI verification failed: avatar parameter tester is still visible."
           }
-          Write-Host "RC5 UI verification passed."
+          Write-Host "RC6 premium UI verification passed."
 
       - name: Verify build tools
         shell: pwsh
@@ -333,7 +358,7 @@ jobs:
             osc-patch-diagnostics.txt
             signature-patch-diagnostics.txt
             timeline-patch-diagnostics.txt
-            polish-patch-diagnostics.txt
+            premium-patch-diagnostics.txt
           if-no-files-found: ignore
           retention-days: 2
 
