@@ -1,0 +1,212 @@
+ class="uwx-control-title">Bring friends and UnderWeb roles into this lobby</h3>
++                                <p class="text-sm text-muted-foreground mt-1">
++                                    This is the old Auto Invite behavior, now named correctly so it is not confused with group recruiting.
++                                </p>
++                            </div>
++                            <Switch :model-value="autoInviteEnabled" @update:modelValue="setAutoInviteEnabled" />
++                        </div>
++
++                        <div class="uwx-stat-row mt-4">
++                            <div class="uwx-stat"><span class="uwx-stat-label">SCOPE</span><strong>{{ inviteScopeLabel }}</strong></div>
++                            <div class="uwx-stat"><span class="uwx-stat-label">ELIGIBLE</span><strong>{{ eligibleInviteFriends.length }}</strong></div>
++                            <div class="uwx-stat"><span class="uwx-stat-label">COOLDOWN</span><strong>{{ cooldownMinutes }}m</strong></div>
++                            <div class="uwx-stat"><span class="uwx-stat-label">SENT</span><strong>{{ sessionInvitesSent }}</strong></div>
++                        </div>
++
++                        <div class="uwx-scope-grid mt-4">
++                            <div>
++                                <div class="uwx-section-label">FRIEND AUDIENCES</div>
++                                <div class="flex flex-wrap gap-2 mt-2">
++                                    <Button :variant="inviteScope === 'selected' ? 'default' : 'outline'" @click="setInviteScope('selected')">Selected ({{ selectedUserIds.length }})</Button>
++                                    <Button :variant="inviteScope === 'favorites' ? 'default' : 'outline'" @click="setInviteScope('favorites')">Favorites ({{ favoriteOnlineCount }})</Button>
++                                    <Button :variant="inviteScope === 'all-online' ? 'default' : 'outline'" @click="setInviteScope('all-online')">All Online ({{ onlineFriendsCount }})</Button>
++                                </div>
++                            </div>
++                            <div>
++                                <div class="uwx-section-label">UNDERWEB AUDIENCES</div>
++                                <div class="flex flex-wrap gap-2 mt-2">
++                                    <Button :variant="inviteScope === 'staff' ? 'default' : 'outline'" :disabled="!networkMemberCount" @click="setInviteScope('staff')">Staff ({{ staffOnlineCount }})</Button>
++                                    <Button :variant="inviteScope === 'creators' ? 'default' : 'outline'" :disabled="!networkMemberCount" @click="setInviteScope('creators')">Creators ({{ creatorOnlineCount }})</Button>
++                                    <Button :variant="inviteScope === 'partners' ? 'default' : 'outline'" :disabled="!networkMemberCount" @click="setInviteScope('partners')">Partners ({{ partnerOnlineCount }})</Button>
++                                </div>
++                            </div>
++                        </div>
++
++                        <Button class="mt-4" :disabled="isScanning || !canAutoInviteHere" variant="secondary" @click="inviteNow">
+                             <i :class="isScanning ? 'ri-loader-4-line animate-spin' : 'ri-send-plane-2-line'" />
+-                            Invite eligible now
++                            Invite selected audience into lobby
+                         </Button>
+-                    </div>
+-
+-                    <div class="uwx-warning">
+-                        <strong>Guardrails:</strong> UWX refuses to auto-invite outside an approved <code>grp_</code>
+-                        instance, skips people already with you, respects the per-user cooldown, honors the do-not-invite
+-                        list, and stops the active queue if your instance changes.
+-                    </div>
++                    </section>
+                 </CardContent>
+             </Card>
+ 
+@@ -122,13 +190,23 @@
+                     <div class="flex items-start justify-between gap-4">
+                         <div>
+                             <CardTitle>Network Radar</CardTitle>
+-                            <CardDescription>Live friend clusters from presence data already available to VRCX.</CardDescription>
++                            <CardDescription>Presence clusters with UnderWeb role-aware filtering.</CardDescription>
+                         </div>
+                         <Badge variant="outline">{{ radarClusters.length }} clusters</Badge>
+                     </div>
+                 </CardHeader>
+                 <CardContent>
+-                    <div v-if="radarClusters.length" class="uwx-radar-list">
++                    <div class="uwx-filter-row">
++                        <button
++                            v-for="filter in radarFilters"
++                            :key="filter.id"
++                            type="button"
++                            :class="{ active: radarFilter === filter.id }"
++                            @click="radarFilter = filter.id">
++                            {{ filter.label }}
++                        </button>
++                    </div>
++                    <div v-if="radarClusters.length" class="uwx-radar-list mt-3">
+                         <button
+                             v-for="cluster in radarClusters"
+                             :key="cluster.location"
+@@ -143,42 +221,195 @@
+                                 <div class="text-xs text-muted-foreground truncate">
+                                     {{ cluster.names.join(', ') }}
+                                 </div>
++                                <div v-if="cluster.roleSummary" class="uwx-role-summary">{{ cluster.roleSummary }}</div>
+                             </div>
+                             <div class="uwx-radar-count">{{ cluster.count }}</div>
+                         </button>
+                     </div>
+-                    <p v-else class="text-sm text-muted-foreground">No visible friend clusters right now.</p>
++                    <p v-else class="mt-3 text-sm text-muted-foreground">No visible clusters match this filter.</p>
++                </CardContent>
++            </Card>
++
++            <Card class="uwx-card">
++                <CardHeader>
++                    <div class="flex items-start justify-between gap-4">
++                        <div>
++                            <CardTitle>Connected Accounts</CardTitle>
++                            <CardDescription>One UnderWeb account, linked to VRChat and Discord.</CardDescription>
++                        </div>
++                        <Button size="sm" variant="ghost" @click="openConnections">Manage</Button>
++                    </div>
++                </CardHeader>
++                <CardContent class="space-y-2">
++                    <div class="uwx-account-row">
++                        <div class="uwx-account-icon"><i class="ri-spider-line" /></div>
++                        <div class="min-w-0 flex-1">
++                            <strong>UnderWeb</strong>
++                            <span>{{ connectedAccounts.underweb.label }}</span>
++                        </div>
++                        <Badge :variant="connectedAccounts.underweb.connected ? 'default' : 'outline'">
++                            {{ connectedAccounts.underweb.connected ? 'CONNECTED' : 'NOT LINKED' }}
++                        </Badge>
++                    </div>
++                    <div class="uwx-account-row">
++                        <div class="uwx-account-icon"><i class="ri-gamepad-line" /></div>
++                        <div class="min-w-0 flex-1">
++                            <strong>VRChat</strong>
++                            <span>{{ connectedAccounts.vrchat.label }}</span>
++                        </div>
++                        <Badge :variant="connectedAccounts.vrchat.verified ? 'default' : 'outline'">
++                            {{ connectedAccounts.vrchat.verified ? 'VERIFIED' : 'LOCAL SESSION' }}
++                        </Badge>
++                    </div>
++                    <div class="uwx-account-row">
++                        <div class="uwx-account-icon"><i class="ri-discord-line" /></div>
++                        <div class="min-w-0 flex-1">
++                            <strong>Discord</strong>
++                            <span>{{ connectedAccounts.discord.label }}</span>
++                        </div>
++                        <Badge :variant="connectedAccounts.discord.connected ? 'default' : 'outline'">
++                            {{ connectedAccounts.discord.connected ? 'CONNECTED' : 'NOT LINKED' }}
++                        </Badge>
++                    </div>
++                </CardContent>
++            </Card>
++
++            <Card class="uwx-card uwx-card-wide">
++                <CardHeader>
++                    <div class="flex items-start justify-between gap-4">
++                        <div>
++                            <CardTitle>Event Mode</CardTitle>
++                            <CardDescription>Live event operations and the next scheduled UnderWeb signals.</CardDescription>
++                        </div>
++                        <Badge :variant="activeEvent ? 'default' : 'outline'">{{ activeEvent ? 'LIVE' : 'STANDBY' }}</Badge>
++                    </div>
++                </CardHeader>
++                <CardContent>
++                    <div v-if="activeEvent" class="uwx-event-grid">
++                        <div class="uwx-event-primary">
++                            <div class="uwx-event-eyebrow">ACTIVE SIGNAL</div>
++                            <h3>{{ activeEvent.title }}</h3>
++                            <p>{{ formatEventTime(activeEvent) }}</p>
++                            <div class="flex flex-wrap gap-2 mt-4">
++                                <Badge v-if="activeEvent.host" variant="outline">HOST · {{ activeEvent.host }}</Badge>
++                                <Badge v-if="activeEvent.groupId" variant="outline">GROUP INSTANCE</Badge>
++                                <Badge variant="outline">{{ activeEvent.staff.length }} STAFF</Badge>
++                                <Badge variant="outline">{{ activeEvent.performers.length }} TALENT</Badge>
++                            </div>
++                            <div class="flex flex-wrap gap-2 mt-5">
++                                <Button @click="openEvent(activeEvent)">Open event page</Button>
++                                <Button v-if="activeEvent.instanceTag" variant="outline" @click="copyText(activeEvent.instanceTag)">
++                                    Copy instance
++                                </Button>
++                            </div>
++                        </div>
++                        <div class="uwx-event-side">
++                            <div class="uwx-section-label">OPERATION STATUS</div>
++                            <div class="uwx-list-row mt-2"><span>Network feed</span><Badge variant="outline">{{ networkStatus }}</Badge></div>
++                            <div class="uwx-list-row"><span>Approved instance</span><Badge :variant="isCurrentGroupAllowed ? 'default' : 'outline'">{{ isCurrentGroupAllowed ? 'YES' : 'NO' }}</Badge></div>
++                            <div class="uwx-list-row"><span>Auto Invite</span><Badge :variant="autoInviteEnabled ? 'default' : 'outline'">{{ autoInviteEnabled ? 'ARMED' : 'OFF' }}</Badge></div>
++                        </div>
++                    </div>
++                    <div v-else class="uwx-event-empty">
++                        <i class="ri-calendar-schedule-line" />
++                        <div>
++                            <strong>No live UnderWeb event.</strong>
++                            <p>The command center will switch into Event Mode when the network manifest marks an event live.</p>
++                        </div>
++                    </div>
++
++                    <div class="uwx-section-label mt-5">UP NEXT</div>
++                    <div v-if="upcomingEvents.length" class="uwx-upcoming-list mt-2">
++                        <button v-for="event in upcomingEvents.slice(0, 4)" :key="event.id" type="button" @click="openEvent(event)">
++                            <div class="min-w-0">
++                                <strong class="block truncate">{{ event.title }}</strong>
++                                <span>{{ formatEventTime(event) }}</span>
++                            </div>
++                            <i class="ri-arrow-right-line" />
++                        </button>
++                    </div>
++                    <p v-else class="mt-2 text-sm text-muted-foreground">No upcoming event data in the network feed.</p>
++                </CardContent>
++            </Card>
++
++            <Card class="uwx-card">
++                <CardHeader>
++                    <CardTitle>Notification Rules</CardTitle>
++                    <CardDescription>Choose which UnderWeb signals can interrupt you.</CardDescription>
++                </CardHeader>
++                <CardContent class="space-y-3">
++                    <label class="uwx-toggle-row">
++                        <div><strong>Event goes live</strong><span>Alert when an UnderWeb event switches live.</span></div>
++                        <Switch
++                            :model-value="notificationRules.eventLive"
++                            @update:modelValue="(value) => setNotificationRule('eventLive', value)" />
++                    </label>
++                    <label class="uwx-toggle-row">
++                        <div><strong>Approved instance</strong><span>Notify when an approved group instance becomes relevant.</span></div>
++                        <Switch
++                            :model-value="notificationRules.approvedInstance"
++                            @update:modelValue="(value) => setNotificationRule('approvedInstance', value)" />
++                    </label>
++                    <label class="uwx-toggle-row">
++                        <div><strong>Favo
