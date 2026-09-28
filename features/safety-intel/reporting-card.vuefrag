@@ -1,0 +1,92 @@
+            <Card v-show="activePanel === 'safety'" class="uwx-card uwx-card-wide uwx-report-card">
+                <CardHeader>
+                    <div class="flex items-start justify-between gap-4">
+                        <div>
+                            <div class="uwx-section-label">PRIVATE INTAKE // SHARED WITH UNDERWEB.CLOUD</div>
+                            <CardTitle>Submit a Safety Report</CardTitle>
+                            <CardDescription>Reports from UWX and the website enter the same private staff queue. Nothing becomes a public warning until reviewed.</CardDescription>
+                        </div>
+                        <Badge variant="outline">PRIVATE UNTIL REVIEWED</Badge>
+                    </div>
+                </CardHeader>
+                <CardContent class="space-y-4">
+                    <div v-if="!reportingStore.session" class="uwx-report-auth">
+                        <strong>Connect your UnderWeb account</strong>
+                        <p>Use the email already on your UnderWeb profile. UWX never asks for your password or VRChat login.</p>
+                        <div class="uwx-report-auth-row">
+                            <Input v-model="reportEmail" type="email" placeholder="UnderWeb account email" autocomplete="email" />
+                            <Button :disabled="reportingStore.busy || !reportEmail.trim()" @click="sendReportSignIn">Email sign-in link</Button>
+                        </div>
+                        <p>Copy the original sign-in link from the email and paste it here without opening it. If your email contains a code, enter that instead.</p>
+                        <div class="uwx-report-auth-row">
+                            <Input v-model="reportEmailProof" type="text" placeholder="Paste original email link or code" autocomplete="off" />
+                            <Button variant="outline" :disabled="reportingStore.busy || !reportEmailProof.trim()" @click="verifyReportSignIn">Connect</Button>
+                        </div>
+                    </div>
+                    <div v-else class="uwx-report-connected">
+                        <div><span>UNDERWEB ACCOUNT</span><strong>{{ reportingStore.session.user.email || 'Connected' }}</strong></div>
+                        <Button size="sm" variant="outline" @click="disconnectReportAccount">Disconnect</Button>
+                    </div>
+                    <template v-if="reportingStore.session">
+                        <div class="uwx-report-grid">
+                            <label>Visible player (optional)
+                                <select class="uwx-report-input" @change="pickReportPlayer($event.target.value)">
+                                    <option value="">Choose a player in this instance</option>
+                                    <option v-for="player in currentInstancePlayers" :key="player.userId" :value="player.userId">{{ player.displayName }}</option>
+                                </select>
+                            </label>
+                            <label>VRChat user ID *
+                                <Input v-model="reportTarget" placeholder="usr_..." maxlength="80" />
+                            </label>
+                            <label>Last known display name
+                                <Input v-model="reportDisplayName" maxlength="100" placeholder="Optional" />
+                            </label>
+                            <label>Category *
+                                <select v-model="reportCategory" class="uwx-report-input">
+                                    <option value="">Choose a category</option>
+                                    <option value="crashing">Crashing</option>
+                                    <option value="doxxing_privacy_threat">Doxxing / privacy threat</option>
+                                    <option value="harassment">Harassment</option>
+                                    <option value="scam_impersonation">Scam / impersonation</option>
+                                    <option value="malicious_client_behavior">Malicious client behavior</option>
+                                    <option value="ban_evasion">Ban evasion</option>
+                                    <option value="other">Other harmful behavior</option>
+                                </select>
+                            </label>
+                            <label>Suggested severity
+                                <select v-model="reportSeverity" class="uwx-report-input">
+                                    <option value="info">Info</option>
+                                    <option value="caution">Caution</option>
+                                    <option value="high">High</option>
+                                </select>
+                            </label>
+                            <label>Incident date / time
+                                <Input v-model="reportIncidentAt" type="datetime-local" />
+                            </label>
+                            <label>World or location
+                                <Input v-model="reportWorld" maxlength="160" placeholder="Optional" />
+                            </label>
+                            <label>Private evidence link
+                                <Input v-model="reportEvidence" type="url" placeholder="https://... (optional)" />
+                            </label>
+                            <label class="uwx-report-wide">What happened? *
+                                <textarea v-model="reportSummary" class="uwx-report-input" maxlength="2000" rows="5" placeholder="Describe what you directly observed."></textarea>
+                            </label>
+                        </div>
+                        <p class="uwx-help">Never include addresses, phone numbers, passwords, IP addresses, or doxxed material. Staff can request evidence privately.</p>
+                        <Button :disabled="reportingStore.busy" @click="submitSafetyReport">Submit private report</Button>
+                        <div class="uwx-report-history">
+                            <div class="uwx-safety-panel-head">
+                                <div><strong>Your reports</strong><span>Only your account and authorized reviewers can see these details.</span></div>
+                                <Button size="sm" variant="outline" @click="refreshMySafetyReports">Refresh</Button>
+                            </div>
+                            <div v-for="row in reportingStore.myReports" :key="row.id" class="uwx-report-history-row">
+                                <span>{{ row.last_known_display_name || row.vrchat_user_id }}</span>
+                                <small>{{ safetyCategoryLabel(row.category) }} · {{ formatSafetyDate(row.created_at) }}</small>
+                                <Badge variant="outline">{{ row.status }}</Badge>
+                            </div>
+                            <p v-if="!reportingStore.myReports.length" class="uwx-help">No reports submitted from this UnderWeb account yet.</p>
+                        </div>
+                    </template>
+                </CardContent>
+            </Card>

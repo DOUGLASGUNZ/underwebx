@@ -12,6 +12,16 @@ on:
       - "polish/**"
       - "features/**"
       - ".github/workflows/build.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "UnderWebX*-source.zip"
+      - "full-patch/**"
+      - "osc-upgrade/**"
+      - "polish/**"
+      - "features/**"
+      - ".github/workflows/build.yml"
 
 permissions:
   contents: read
@@ -440,6 +450,19 @@ jobs:
           if (-not (Test-Path $nsis)) {
             throw "NSIS was not found at $nsis"
           }
+
+      - name: Apply RC9 private Safety Intel reporting
+        shell: pwsh
+        run: |
+          $base = Join-Path $env:GITHUB_WORKSPACE "features\safety-intel"
+          $script = Join-Path $base "apply-rc9.mjs"
+          $store = Join-Path $base "safetyReporting.js"
+          $card = Join-Path $base "reporting-card.vuefrag"
+          $css = Join-Path $base "safety-intel.css"
+          node $script $env:UWX_SOURCE $store $card $css
+          if ($LASTEXITCODE -ne 0) { throw "RC9 reporting applicator failed." }
+          $version = (Get-Content (Join-Path $env:UWX_SOURCE "UWX_VERSION") -Raw).Trim()
+          if ($version -ne "0.4.9-rc9") { throw "RC9 version mismatch: $version" }
 
       - name: Build UnderWeb X
         shell: pwsh

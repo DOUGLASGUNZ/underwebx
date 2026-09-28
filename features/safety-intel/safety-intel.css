@@ -147,3 +147,26 @@
     .uwx-safety-search { grid-template-columns: 1fr; }
     .uwx-safety-meta { grid-template-columns: 1fr; }
 }
+
+/* RC9 private report submission */
+.uwx-report-auth { padding: 18px; border: 1px solid rgb(120 255 140 / 25%); background: rgb(15 40 20 / 25%); }
+.uwx-report-auth strong { font-size: 13px; }
+.uwx-report-auth p { margin: 8px 0 13px; color: var(--muted-foreground); font-size: 11px; line-height: 1.5; }
+.uwx-report-auth-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; margin-bottom: 10px; }
+.uwx-report-connected { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border: 1px solid rgb(120 255 140 / 25%); }
+.uwx-report-connected span, .uwx-report-connected strong { display: block; }
+.uwx-report-connected span { color: var(--muted-foreground); font-size: 8px; letter-spacing: .12em; }
+.uwx-report-connected strong { font-size: 11px; margin-top: 3px; }
+.uwx-report-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.uwx-report-grid label { display: grid; gap: 6px; color: var(--muted-foreground); font-size: 10px; }
+.uwx-report-grid .uwx-report-wide { grid-column: 1 / -1; }
+.uwx-report-input { width: 100%; min-height: 34px; padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--background); color: var(--foreground); font-size: 11px; }
+textarea.uwx-report-input { min-height: 104px; resize: vertical; }
+.uwx-report-history { border-top: 1px solid var(--border); padding-top: 16px; margin-top: 20px; }
+.uwx-report-history-row { display: flex; align-items: center; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 10px; }
+.uwx-report-history-row span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.uwx-report-history-row small { color: var(--muted-foreground); }
+@media (max-width: 720px) {
+    .uwx-report-auth-row, .uwx-report-grid { grid-template-columns: 1fr; }
+    .uwx-report-history-row { flex-wrap: wrap; }
+}
