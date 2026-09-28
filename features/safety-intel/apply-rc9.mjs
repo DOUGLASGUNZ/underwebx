@@ -24,9 +24,8 @@ replaceOnce('CHANGELOG_UWX.md', '# UnderWeb X changelog\n\n',
 ## 0.4.9-rc9 — private Safety Intel reports
 
 - Submit private reports in UWX to the same UnderWeb staff queue as the website.
-- Connect an existing UnderWeb account using the emailed link or code; credentials stay local to UWX.
-- Prefill a visible player or selected friend and track your own report status.
-- Private evidence links remain separate from reviewed public summaries.
+- Report anonymously without another login or storing reporter account details.
+- Prefill a visible player or selected friend; private evidence stays out of public summaries.
 
 `);
 
@@ -40,9 +39,6 @@ const systemAnchor = '            <Card v-show="activePanel === \'system\'" clas
 if (!view.includes(systemAnchor)) throw new Error('RC9: system panel anchor missing.');
 view = view.replace(systemAnchor, card + '\n' + systemAnchor);
 
-const vueImport = "    import { computed, ref } from 'vue';";
-if (!view.includes(vueImport)) throw new Error('RC9: Vue import anchor missing.');
-view = view.replace(vueImport, "    import { computed, onMounted, ref } from 'vue';");
 const storeImport = "    import { useSafetyIntelStore } from '../../stores/safetyIntel';";
 if (!view.includes(storeImport)) throw new Error('RC9: Safety Intel store import missing.');
 view = view.replace(storeImport, storeImport + "\n    import { useSafetyReportingStore } from '../../stores/safetyReporting';");
@@ -51,8 +47,6 @@ view = view.replace(storeInit, storeInit + '\n    const reportingStore = useSafe
 
 const stateAnchor = "    const safetyLookupComplete = ref(false);";
 const state = `${stateAnchor}
-    const reportEmail = ref('');
-    const reportEmailProof = ref('');
     const reportTarget = ref('');
     const reportDisplayName = ref('');
     const reportCategory = ref('');
@@ -76,30 +70,9 @@ const logic = `    function prefillSafetyReport(userId, displayName = '') {
         if (player) prefillSafetyReport(player.userId, player.displayName);
     }
 
-    async function sendReportSignIn() {
-        try {
-            await reportingStore.sendSignInLink(reportEmail.value);
-            toast.success('Check your email. Copy the original link into UWX without opening it.');
-        } catch (error) { toast.error(error?.message || 'Could not email a sign-in link.'); }
-    }
-
-    async function verifyReportSignIn() {
-        try {
-            await reportingStore.verifyEmail(reportEmail.value, reportEmailProof.value);
-            reportEmailProof.value = '';
-            toast.success('UnderWeb account connected.');
-            await reportingStore.loadMyReports();
-        } catch (error) { toast.error(error?.message || 'Could not verify the email link.'); }
-    }
-
-    async function disconnectReportAccount() {
-        await reportingStore.disconnect();
-        toast.success('UnderWeb reporting account disconnected.');
-    }
-
     async function submitSafetyReport() {
         try {
-            const result = await reportingStore.submitReport({
+            await reportingStore.submitReport({
                 vrchatUserId: reportTarget.value,
                 displayName: reportDisplayName.value,
                 category: reportCategory.value,
@@ -109,22 +82,12 @@ const logic = `    function prefillSafetyReport(userId, displayName = '') {
                 evidenceUrl: reportEvidence.value,
                 summary: reportSummary.value
             });
-            if (result.evidenceSaved) toast.success('Private report submitted for staff review.');
-            else toast.warning('Report submitted, but the evidence link failed. Share report ID ' + result.reportId + ' privately with staff.');
+            toast.success('Private report submitted for staff review.');
             reportSummary.value = '';
             reportEvidence.value = '';
             reportCategory.value = '';
         } catch (error) { toast.error(error?.message || 'Could not submit the report.'); }
     }
-
-    async function refreshMySafetyReports() {
-        try { await reportingStore.loadMyReports(); }
-        catch (error) { toast.error(error?.message || 'Could not load your reports.'); }
-    }
-
-    onMounted(() => {
-        if (reportingStore.session) void refreshMySafetyReports();
-    });
 
 ${logicAnchor}`;
 if (!view.includes(logicAnchor)) throw new Error('RC9: logic anchor missing.');
