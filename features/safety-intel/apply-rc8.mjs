@@ -166,7 +166,7 @@ if (!view.includes("const selectedSafetyIntel = computed")) {
             await safetyIntelStore.batchLookup(currentInstancePlayers.value.map((player) => player.userId), { force: true });
             if (!quiet) {
                 if (flaggedCurrentPlayers.value.length) {
-                    toast.warning(`Safety Intel found ${flaggedCurrentPlayers.value.length} reviewed flag${flaggedCurrentPlayers.value.length === 1 ? '' : 's'} in this instance.`);
+                    toast.warning('Safety Intel found ' + flaggedCurrentPlayers.value.length + ' reviewed flag' + (flaggedCurrentPlayers.value.length === 1 ? '' : 's') + ' in this instance.');
                 } else {
                     toast.success('No reviewed Safety Intel records found for the visible instance list.');
                 }
@@ -227,7 +227,7 @@ if (!view.includes('SELECTED SAFETY INTEL') && view.includes(profileStatus)) {
     view = view.replace(
         profileStatus,
         `${profileStatus}
-                            <div v-if="selectedSafetyIntel" class="uwx-safety-result mt-4" :class="`risk-${selectedSafetyIntel.risk_level}`">
+                            <div v-if="selectedSafetyIntel" class="uwx-safety-result mt-4" :class="'risk-' + selectedSafetyIntel.risk_level">
                                 <div class="uwx-section-label">SELECTED SAFETY INTEL</div>
                                 <div class="flex items-center justify-between gap-3 mt-2">
                                     <strong>{{ selectedSafetyIntel.last_known_display_name || selectedProfileFriend.displayName }}</strong>
@@ -288,7 +288,7 @@ if (!view.includes('UWX SAFETY INTEL') && view.includes(firstSystemCard)) {
                                     v-for="player in flaggedCurrentPlayers"
                                     :key="player.userId"
                                     class="uwx-safety-row"
-                                    :class="`risk-${player.intel.risk_level}`">
+                                    :class="'risk-' + player.intel.risk_level">
                                     <div class="uwx-safety-row-name">
                                         <strong>{{ player.displayName }}</strong>
                                         <span>{{ player.userId }}</span>
@@ -330,7 +330,7 @@ if (!view.includes('UWX SAFETY INTEL') && view.includes(firstSystemCard)) {
                                 </Button>
                             </div>
 
-                            <div v-if="safetyLookupComplete && safetyLookupIntel" class="uwx-safety-result mt-3" :class="`risk-${safetyLookupIntel.risk_level}`">
+                            <div v-if="safetyLookupComplete && safetyLookupIntel" class="uwx-safety-result mt-3" :class="'risk-' + safetyLookupIntel.risk_level">
                                 <div class="flex items-start justify-between gap-3">
                                     <div class="uwx-safety-row-name">
                                         <strong>{{ safetyLookupIntel.last_known_display_name || safetyLookupUserId }}</strong>
