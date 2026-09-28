@@ -9,6 +9,7 @@ on:
       - "UnderWebX*-source.zip"
       - "full-patch/**"
       - "osc-upgrade/**"
+      - "polish/**"
       - ".github/workflows/build.yml"
 
 permissions:
@@ -330,6 +331,52 @@ jobs:
             throw "RC6 UI verification failed: avatar parameter tester is still visible."
           }
           Write-Host "RC6 premium UI verification passed."
+
+      - name: Apply RC7 premium interface polish
+        shell: pwsh
+        run: |
+          $script = Join-Path $env:GITHUB_WORKSPACE "polish\apply-rc7.mjs"
+          $css = Join-Path $env:GITHUB_WORKSPACE "polish\rc7-premium.css"
+          if (-not (Test-Path $script)) { throw "RC7 polish applicator missing." }
+          if (-not (Test-Path $css)) { throw "RC7 premium stylesheet missing." }
+
+          node $script $env:UWX_SOURCE $css
+          if ($LASTEXITCODE -ne 0) {
+            throw "RC7 premium polish applicator failed."
+          }
+
+      - name: Verify RC7 premium interface polish
+        shell: pwsh
+        run: |
+          $version = (Get-Content (Join-Path $env:UWX_SOURCE "UWX_VERSION") -Raw).Trim()
+          if ($version -ne "0.4.7-rc7") {
+            throw "RC7 polish did not produce UWX 0.4.7-rc7; got '$version'."
+          }
+
+          $app = Get-Content (Join-Path $env:UWX_SOURCE "src\App.vue") -Raw
+          $card = Get-Content (Join-Path $env:UWX_SOURCE "src\components\ui\card\Card.vue") -Raw
+          $empty = Get-Content (Join-Path $env:UWX_SOURCE "src\components\ui\empty\Empty.vue") -Raw
+          $skeleton = Get-Content (Join-Path $env:UWX_SOURCE "src\components\ui\skeleton\Skeleton.vue") -Raw
+          $sonner = Get-Content (Join-Path $env:UWX_SOURCE "src\components\ui\sonner\Sonner.vue") -Raw
+          $styles = Get-Content (Join-Path $env:UWX_SOURCE "src\styles\uwx-premium.css") -Raw
+
+          $checks = @(
+            @{ Text = $app; Needle = "uwx-premium.css" },
+            @{ Text = $card; Needle = "uwx-premium-card" },
+            @{ Text = $empty; Needle = "uwx-empty-state" },
+            @{ Text = $skeleton; Needle = "uwx-skeleton" },
+            @{ Text = $sonner; Needle = "uwx-toaster" },
+            @{ Text = $styles; Needle = "UWX_RC7_PREMIUM_POLISH" },
+            @{ Text = $styles; Needle = "sidebar-menu-button" },
+            @{ Text = $styles; Needle = "uwx-shimmer" },
+            @{ Text = $styles; Needle = "data-sonner-toast" }
+          )
+          foreach ($check in $checks) {
+            if (-not $check.Text.Contains($check.Needle)) {
+              throw "RC7 premium interface verification failed: missing '$($check.Needle)'."
+            }
+          }
+          Write-Host "RC7 premium interface verification passed."
 
       - name: Verify build tools
         shell: pwsh
