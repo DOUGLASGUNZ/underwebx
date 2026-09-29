@@ -66,6 +66,12 @@ s = s.replace(builderStart, `                        <section class="uwx-premium
                             <div class="uwx-osc2-status-list mt-3"><div v-for="item in osc2Statuses" :key="item.id"><button type="button" @click="toggleOsc2StatusFavorite(item.id)">{{ item.favorite ? '★' : '☆' }}</button><span>{{ item.text }}</span><button type="button" @click="deleteOsc2Status(item.id)">×</button></div></div>
                         </section>
 
+                        <section class="uwx-premium-panel uwx-osc2-weather">
+                            <div class="uwx-panel-title"><div><i class="ri-cloudy-line" /><div><strong>Weather</strong><span>ZIP stays local. OSC only receives temperature and conditions.</span></div></div></div>
+                            <div class="flex gap-2"><Input v-model="osc2WeatherZip" inputmode="numeric" maxlength="5" placeholder="ZIP code" /><Button size="sm" :disabled="osc2WeatherLoading" @click="refreshOsc2Weather">{{ osc2WeatherLoading ? 'Loading…' : 'Save & Refresh' }}</Button></div>
+                            <p class="uwx-help mt-2">{{ osc2WeatherMessage || (osc2Weather.temperature ? `${osc2Weather.temperature} · ${osc2Weather.condition}` : 'Weather is not configured yet.') }}</p>
+                        </section>
+
                         <section class="uwx-premium-panel uwx-osc2-interrupts">
                             <div class="uwx-panel-title"><div><i class="ri-flashlight-line" /><div><strong>Smart Interrupts</strong><span>Briefly take over, then return to your queue.</span></div></div></div>
                             <label class="uwx-toggle-row compact"><div><strong>New Track</strong><span>Show a new song immediately</span></div><Switch :model-value="osc2TrackInterrupt" @update:modelValue="osc2TrackInterrupt = $event" /></label>
@@ -86,6 +92,7 @@ s = s.replace(destructureAnchor, `${destructureAnchor}
         osc2Durations,
         osc2Statuses,
         osc2ActiveStatus,
+        osc2Weather,
         osc2CurrentKey,
         osc2CurrentScreen,`);
 
@@ -100,7 +107,39 @@ s = s.replace(actionAnchor, `${actionAnchor}
 
 const helperAnchor = `    const oscPresetCards = [`;
 if (!s.includes(helperAnchor)) throw new Error('OSC2 UI: helper anchor missing');
-s = s.replace(helperAnchor, `    const osc2Themes = ['underweb', 'minimal', 'void', 'cyber', 'horror'];
+s = s.replace(helperAnchor, `    const osc2WeatherZip = ref(window.localStorage.getItem('UWX_osc2WeatherZip') || '');
+    const osc2WeatherLoading = ref(false);
+    const osc2WeatherMessage = ref('');
+    const osc2WeatherCodes = { 0: 'Clear', 1: 'Mostly clear', 2: 'Partly cloudy', 3: 'Cloudy', 45: 'Fog', 48: 'Fog', 51: 'Drizzle', 53: 'Drizzle', 55: 'Drizzle', 61: 'Rain', 63: 'Rain', 65: 'Heavy rain', 71: 'Snow', 73: 'Snow', 75: 'Heavy snow', 80: 'Showers', 81: 'Showers', 82: 'Heavy showers', 95: 'Thunderstorm', 96: 'Thunderstorm', 99: 'Thunderstorm' };
+    async function refreshOsc2Weather() {
+        const zip = osc2WeatherZip.value.trim();
+        if (!/^\\d{5}$/.test(zip)) { osc2WeatherMessage.value = 'Enter a valid 5-digit ZIP code.'; return; }
+        osc2WeatherLoading.value = true;
+        osc2WeatherMessage.value = '';
+        try {
+            const placeResponse = await fetch(`https://api.zippopotam.us/us/${encodeURIComponent(zip)}`);
+            if (!placeResponse.ok) throw new Error('ZIP lookup failed');
+            const placeData = await placeResponse.json();
+            const place = placeData.places?.[0];
+            if (!place) throw new Error('ZIP not found');
+            const latitude = Number(place.latitude);
+            const longitude = Number(place.longitude);
+            const weatherResponse = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,weather_code&temperature_unit=fahrenheit`);
+            if (!weatherResponse.ok) throw new Error('Weather lookup failed');
+            const weatherData = await weatherResponse.json();
+            const temp = Number(weatherData.current?.temperature_2m);
+            const code = Number(weatherData.current?.weather_code);
+            if (!Number.isFinite(temp)) throw new Error('Weather unavailable');
+            window.localStorage.setItem('UWX_osc2WeatherZip', zip);
+            osc2Weather.value = { temperature: `${Math.round(temp)}°F`, condition: osc2WeatherCodes[code] || 'Current conditions' };
+            osc2WeatherMessage.value = `${osc2Weather.value.temperature} · ${osc2Weather.value.condition}`;
+        } catch (error) {
+            osc2WeatherMessage.value = 'Could not load weather for that ZIP.';
+        } finally {
+            osc2WeatherLoading.value = false;
+        }
+    }
+    const osc2Themes = ['underweb', 'minimal', 'void', 'cyber', 'horror'];
     const osc2ModuleLabels = { music: 'Music', status: 'Status', weather: 'Weather', heart: 'Heart Rate', world: 'World', custom: 'Custom', uwx: 'UWX' };
     const osc2ModuleIcons = { music: 'ri-music-2-fill', status: 'ri-chat-3-line', weather: 'ri-cloudy-line', heart: 'ri-heart-pulse-fill', world: 'ri-global-line', custom: 'ri-text', uwx: 'ri-spider-line' };
     const osc2StatusDraft = ref('');
