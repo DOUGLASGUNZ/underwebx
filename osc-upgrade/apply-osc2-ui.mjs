@@ -77,6 +77,7 @@ s = s.replace(destructureAnchor, `${destructureAnchor}
         osc2Enabled,
         osc2Durations,
         osc2Statuses,
+        osc2ActiveStatus,
         osc2CurrentKey,
         osc2CurrentScreen,`);
 
@@ -85,7 +86,9 @@ if (!s.includes(actionAnchor)) throw new Error('OSC2 UI: action destructure anch
 s = s.replace(actionAnchor, `${actionAnchor}
         osc2Step,
         osc2SetMode,
-        osc2RestoreFromStealth,`);
+        osc2RestoreFromStealth,
+        osc2NextStatus,
+        sendOsc2Current,`);
 
 const helperAnchor = `    const oscPresetCards = [`;
 if (!s.includes(helperAnchor)) throw new Error('OSC2 UI: helper anchor missing');
@@ -95,6 +98,8 @@ s = s.replace(helperAnchor, `    const osc2Themes = ['underweb', 'minimal', 'voi
     const osc2StatusDraft = ref('');
     const osc2TrackInterrupt = ref(true);
     const osc2HeartInterrupt = ref(true);
+    let osc2StatusRotationTimer = null;
+    let osc2MusicRefreshTimer = null;
     const osc2PreviousLabel = computed(() => '—');
     const osc2NextLabel = computed(() => {
         const queue = osc2Queue.value.filter((key) => osc2Enabled.value[key]);
@@ -114,6 +119,10 @@ s = s.replace(helperAnchor, `    const osc2Themes = ['underweb', 'minimal', 'voi
     }
     function toggleOsc2StatusFavorite(id) { osc2Statuses.value = osc2Statuses.value.map((item) => item.id === id ? { ...item, favorite: !item.favorite } : item); }
     function deleteOsc2Status(id) { osc2Statuses.value = osc2Statuses.value.filter((item) => item.id !== id); }
+    function rotateOsc2Status() { if (osc2Enabled.value.status && osc2Statuses.value.some((item) => item.favorite)) osc2NextStatus(); }
+    osc2StatusRotationTimer = window.setInterval(rotateOsc2Status, 10000);
+    osc2MusicRefreshTimer = window.setInterval(() => { if (osc2Enabled.value.music && osc2Mode.value !== 'stealth') void sendOsc2Current(); }, 1000);
+    onBeforeUnmount(() => { window.clearInterval(osc2StatusRotationTimer); window.clearInterval(osc2MusicRefreshTimer); });
 
 ${helperAnchor}`);
 
