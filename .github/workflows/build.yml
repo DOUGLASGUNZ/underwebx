@@ -495,6 +495,33 @@ jobs:
           }
           Write-Host "OSC Lab 2.0 verification passed."
 
+      - name: Apply OSC Lab 2.0 core
+        shell: pwsh
+        run: |
+          node "$env:GITHUB_WORKSPACE\osc-upgrade\apply-osc2.mjs" $env:UWX_SOURCE
+          if ($LASTEXITCODE -ne 0) { throw "OSC Lab 2.0 core applicator failed." }
+
+      - name: Apply OSC Lab 2.0 UI
+        shell: pwsh
+        run: |
+          node "$env:GITHUB_WORKSPACE\osc-upgrade\apply-osc2-ui.mjs" $env:UWX_SOURCE
+          if ($LASTEXITCODE -ne 0) { throw "OSC Lab 2.0 UI applicator failed." }
+
+      - name: Verify OSC Lab 2.0
+        shell: pwsh
+        run: |
+          $version = (Get-Content (Join-Path $env:UWX_SOURCE "UWX_VERSION") -Raw).Trim()
+          if ($version -ne "0.5.0-osc2") { throw "OSC2 version mismatch: $version" }
+          $store = Get-Content (Join-Path $env:UWX_SOURCE "src\stores\oscLab.js") -Raw
+          $view = Get-Content (Join-Path $env:UWX_SOURCE "src\views\UnderWeb\UnderWeb.vue") -Raw
+          @("osc2SetMode", "sendOsc2Current", "osc2CurrentScreen", "OSC2_QUEUE") | ForEach-Object {
+            if (-not $store.Contains($_)) { throw "OSC2 store verification failed: missing '$_'." }
+          }
+          @("Current Screen", "Screen Queue", "Status Pool", "Smart Interrupts", "HIDE") | ForEach-Object {
+            if (-not $view.Contains($_)) { throw "OSC2 UI verification failed: missing '$_'." }
+          }
+          Write-Host "OSC Lab 2.0 verification passed."
+
       - name: Build UnderWeb X
         shell: pwsh
         working-directory: ${{ env.UWX_SOURCE }}
