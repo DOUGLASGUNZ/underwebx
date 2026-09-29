@@ -12,8 +12,8 @@ function replaceOnce(rel, from, to) {
     write(rel, value.replace(from, to));
 }
 
-replaceOnce('UWX_VERSION', '0.4.7-rc7', '0.5.0-osc2');
-replaceOnce('src/shared/constants/uwx.js', "export const UWX_VERSION = '0.4.7-rc7';", "export const UWX_VERSION = '0.5.0-osc2';");
+replaceOnce('UWX_VERSION', '0.4.9-rc9', '0.5.0-osc2');
+replaceOnce('src/shared/constants/uwx.js', "export const UWX_VERSION = '0.4.9-rc9';", "export const UWX_VERSION = '0.5.0-osc2';");
 
 const storePath = 'src/stores/oscLab.js';
 let store = read(storePath);
