@@ -8,7 +8,7 @@ const write = (rel, value) => fs.writeFileSync(file(rel), value.replace(/\r\n/g,
 
 function replaceOnce(rel, from, to) {
     const value = read(rel);
-    if (!value.includes(from)) throw new Error(`OSC2: expected anchor missing in ${rel}`);
+    if (!value.includes(from)) throw new Error(`OSC2: expected anchor missing in \${rel}`);
     write(rel, value.replace(from, to));
 }
 
@@ -143,7 +143,7 @@ store = store.replace(clearLogAnchor, `${clearLogAnchor}
     function osc2Render(key, statusText = '') {
         const music = {
             title: nowPlayingTitle.value.trim(), artist: nowPlayingArtist.value.trim(),
-            time: mediaDurationSeconds.value > 0 ? \`${formatMediaTime(mediaPositionSeconds.value)}/${formatMediaTime(mediaDurationSeconds.value)}\` : '',
+            time: mediaDurationSeconds.value > 0 ? \`\${formatMediaTime(mediaPositionSeconds.value)}/\${formatMediaTime(mediaDurationSeconds.value)}\` : '',
             progress: osc2ProgressBar(mediaPositionSeconds.value, mediaDurationSeconds.value)
         };
         const data = {
@@ -153,12 +153,12 @@ store = store.replace(clearLogAnchor, `${clearLogAnchor}
         };
         const d = data[key] || {};
         const theme = osc2Theme.value;
-        if (key === 'music') return theme === 'minimal' ? \`♫ ${d.title} — ${d.artist} · ${d.time}\` : \`🕷 SIGNAL // AUDIO\\n${d.title} ${d.progress} ${d.time}\`;
-        if (key === 'status') return theme === 'minimal' ? d.text : \`🕷 STATUS // SIGNAL\\n${d.text}\`;
-        if (key === 'weather') return theme === 'minimal' ? \`${d.temperature} · ${d.condition}\` : \`🕷 SIGNAL // WEATHER\\n${d.temperature} · ${d.condition}\`;
-        if (key === 'heart') return theme === 'minimal' ? \`♥ ${d.bpm} BPM\` : \`🕷 SIGNAL // VITALS\\n♥ ${d.bpm} BPM\`;
-        if (key === 'world') return theme === 'minimal' ? d.world : \`🕷 SIGNAL // WORLD\\n${d.world}\`;
-        if (key === 'custom') return theme === 'minimal' ? d.text : \`🕷 SIGNAL // STATUS\\n${d.text}\`;
+        if (key === 'music') return theme === 'minimal' ? \`♫ \${d.title} — \${d.artist} · \${d.time}\` : \`🕷 SIGNAL // AUDIO\\n\${d.title} \${d.progress} \${d.time}\`;
+        if (key === 'status') return theme === 'minimal' ? d.text : \`🕷 STATUS // SIGNAL\\n\${d.text}\`;
+        if (key === 'weather') return theme === 'minimal' ? \`\${d.temperature} · \${d.condition}\` : \`🕷 SIGNAL // WEATHER\\n\${d.temperature} · \${d.condition}\`;
+        if (key === 'heart') return theme === 'minimal' ? \`♥ \${d.bpm} BPM\` : \`🕷 SIGNAL // VITALS\\n♥ \${d.bpm} BPM\`;
+        if (key === 'world') return theme === 'minimal' ? d.world : \`🕷 SIGNAL // WORLD\\n\${d.world}\`;
+        if (key === 'custom') return theme === 'minimal' ? d.text : \`🕷 SIGNAL // STATUS\\n\${d.text}\`;
         return theme === 'minimal' ? 'UWX // CONNECTED' : '🕷 UNDERWEB X // CONNECTED';
     }
 
