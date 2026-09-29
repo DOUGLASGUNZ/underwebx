@@ -12,7 +12,7 @@ let s = read(rel);
 const livePreview = `                        <section class="uwx-premium-panel uwx-preview-panel">
                             <div class="uwx-panel-title"><div><i class="ri-eye-line" /><div><strong>Live Preview</strong><span>This is what will be sent to VRChat.</span></div></div><strong class="uwx-char-count">{{ oscPreviewLength }}/144</strong></div>
                             <div class="uwx-live-preview"><p>{{ oscChatboxPreview || 'Nothing enabled yet.' }}</p></div>
-                            <div class="uwx-char-meter"><span :style="{ width: \`${oscPreviewPercent}%\` }" /></div>
+                            <div class="uwx-char-meter"><span :style="{ width: \`\${oscPreviewPercent}%\` }" /></div>
                             <small class="uwx-help">Lower-priority blocks drop first when the chatbox budget gets tight.</small>
                         </section>`;
 
@@ -109,7 +109,7 @@ s = s.replace(helperAnchor, `    const osc2Themes = ['underweb', 'minimal', 'voi
     function addOsc2Status() {
         const text = osc2StatusDraft.value.trim();
         if (!text) return;
-        osc2Statuses.value = [...osc2Statuses.value, { id: \`${Date.now()}-${Math.random().toString(36).slice(2, 7)}\`, text, favorite: true, createdAt: Date.now() }];
+        osc2Statuses.value = [...osc2Statuses.value, { id: \`\${Date.now()}-\${Math.random().toString(36).slice(2, 7)}\`, text, favorite: true, createdAt: Date.now() }];
         osc2StatusDraft.value = '';
     }
     function toggleOsc2StatusFavorite(id) { osc2Statuses.value = osc2Statuses.value.map((item) => item.id === id ? { ...item, favorite: !item.favorite } : item); }
