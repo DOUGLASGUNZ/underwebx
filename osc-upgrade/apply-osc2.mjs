@@ -74,6 +74,7 @@ store = store.replace(stateAnchor, `${stateAnchor}
     const osc2PinnedModule = ref('');
     const osc2Statuses = ref([]);
     const osc2StatusBag = ref([]);
+    const osc2ActiveStatus = ref('');
     const osc2Weather = ref({ temperature: '', condition: '' });
     const osc2Interrupt = ref(null);
     let osc2ResumeMode = 'rotate';`);
@@ -110,7 +111,15 @@ store = store.replace(clearLogAnchor, `${clearLogAnchor}
     function osc2NextStatus() {
         if (!osc2StatusBag.value.length) osc2RefillStatusBag();
         const id = osc2StatusBag.value.shift();
-        return osc2Statuses.value.find((status) => status.id === id)?.text || '';
+        osc2ActiveStatus.value = osc2Statuses.value.find((status) => status.id === id)?.text || '';
+        return osc2ActiveStatus.value;
+    }
+
+    function osc2EnsureActiveStatus() {
+        if (!osc2ActiveStatus.value || !osc2Statuses.value.some((status) => status.favorite && status.text === osc2ActiveStatus.value)) {
+            osc2NextStatus();
+        }
+        return osc2ActiveStatus.value;
     }
 
     function osc2Step(direction = 1) {
@@ -153,7 +162,12 @@ store = store.replace(clearLogAnchor, `${clearLogAnchor}
         };
         const d = data[key] || {};
         const theme = osc2Theme.value;
-        if (key === 'music') return theme === 'minimal' ? \`♫ \${d.title} — \${d.artist} · \${d.time}\` : \`🕷 SIGNAL // AUDIO\\n\${d.title} \${d.progress} \${d.time}\`;
+        if (key === 'music') {
+            const statusLine = osc2Enabled.value.status ? osc2EnsureActiveStatus() : '';
+            const minimalMusic = \`♫ \${d.title} — \${d.artist} · \${d.time}\`;
+            const themedMusic = \`🕷 SIGNAL // AUDIO\\n\${d.title} \${d.progress} \${d.time}\`;
+            return statusLine ? \`\${statusLine}\\n\${theme === 'minimal' ? minimalMusic : themedMusic}\` : (theme === 'minimal' ? minimalMusic : themedMusic);
+        }
         if (key === 'status') return theme === 'minimal' ? d.text : \`🕷 STATUS // SIGNAL\\n\${d.text}\`;
         if (key === 'weather') return theme === 'minimal' ? \`\${d.temperature} · \${d.condition}\` : \`🕷 SIGNAL // WEATHER\\n\${d.temperature} · \${d.condition}\`;
         if (key === 'heart') return theme === 'minimal' ? \`♥ \${d.bpm} BPM\` : \`🕷 SIGNAL // VITALS\\n♥ \${d.bpm} BPM\`;
@@ -172,15 +186,14 @@ store = store.replace(clearLogAnchor, `${clearLogAnchor}
         if (osc2Mode.value === 'stealth') return '';
         if (osc2Interrupt.value?.text) return clampChatbox(osc2Interrupt.value.text);
         const key = osc2CurrentKey.value;
-        // Preview never consumes the status shuffle bag; the sender chooses the next status.
-        const status = key === 'status' ? osc2Statuses.value.find((item) => item.favorite)?.text || '' : '';
+        const status = key === 'status' ? osc2EnsureActiveStatus() : '';
         return clampChatbox(osc2Render(key, status));
     });
 
     async function sendOsc2Current() {
         if (osc2Mode.value === 'stealth') return false;
         const key = osc2CurrentKey.value;
-        const status = key === 'status' ? osc2NextStatus() : '';
+        const status = key === 'status' ? osc2EnsureActiveStatus() : '';
         const message = osc2Interrupt.value?.text || osc2Render(key, status);
         const safe = validateOsc2Text(message);
         if (!safe.ok) {
@@ -205,6 +218,8 @@ store = store.replace(exportAnchor, `${exportAnchor}
         osc2Durations,
         osc2PinnedModule,
         osc2Statuses,
+        osc2ActiveStatus,
+        osc2NextStatus,
         osc2Weather,
         osc2Interrupt,
         osc2CurrentKey,
