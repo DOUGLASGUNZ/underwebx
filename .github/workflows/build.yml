@@ -464,6 +464,37 @@ jobs:
           $version = (Get-Content (Join-Path $env:UWX_SOURCE "UWX_VERSION") -Raw).Trim()
           if ($version -ne "0.4.9-rc9") { throw "RC9 version mismatch: $version" }
 
+      - name: Apply OSC Lab 2.0 core
+        shell: pwsh
+        run: |
+          $script = Join-Path $env:GITHUB_WORKSPACE "osc-upgrade\apply-osc2.mjs"
+          if (-not (Test-Path $script)) { throw "OSC2 core applicator missing." }
+          node $script $env:UWX_SOURCE
+          if ($LASTEXITCODE -ne 0) { throw "OSC2 core applicator failed." }
+
+      - name: Apply OSC Lab 2.0 interface
+        shell: pwsh
+        run: |
+          $script = Join-Path $env:GITHUB_WORKSPACE "osc-upgrade\apply-osc2-ui.mjs"
+          if (-not (Test-Path $script)) { throw "OSC2 UI applicator missing." }
+          node $script $env:UWX_SOURCE
+          if ($LASTEXITCODE -ne 0) { throw "OSC2 UI applicator failed." }
+
+      - name: Verify OSC Lab 2.0
+        shell: pwsh
+        run: |
+          $version = (Get-Content (Join-Path $env:UWX_SOURCE "UWX_VERSION") -Raw).Trim()
+          if ($version -ne "0.5.0-osc2") { throw "OSC2 version mismatch: $version" }
+          $view = Get-Content (Join-Path $env:UWX_SOURCE "src\views\UnderWeb\UnderWeb.vue") -Raw
+          $store = Get-Content (Join-Path $env:UWX_SOURCE "src\stores\oscLab.js") -Raw
+          foreach ($needle in @("Current Screen","Screen Queue","Status Pool","Smart Interrupts","HIDE")) {
+            if (-not $view.Contains($needle)) { throw "OSC2 UI verification failed: missing '$needle'." }
+          }
+          foreach ($needle in @("osc2SetMode","sendOsc2Current","OSC2_QUEUE","validateOsc2Text")) {
+            if (-not $store.Contains($needle)) { throw "OSC2 core verification failed: missing '$needle'." }
+          }
+          Write-Host "OSC Lab 2.0 verification passed."
+
       - name: Build UnderWeb X
         shell: pwsh
         working-directory: ${{ env.UWX_SOURCE }}
