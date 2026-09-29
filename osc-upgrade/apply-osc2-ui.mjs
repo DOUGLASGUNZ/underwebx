@@ -9,6 +9,14 @@ const write = (rel, value) => fs.writeFileSync(p(rel), value.replace(/\r\n/g, '\
 const rel = 'src/views/UnderWeb/UnderWeb.vue';
 let s = read(rel);
 
+const vueImportMatch = s.match(/import\s*\{([^}]*)\}\s*from\s*['"]vue['"];?/);
+if (!vueImportMatch) throw new Error('OSC2 UI: Vue import anchor missing');
+if (!vueImportMatch[1].split(',').map((name) => name.trim()).includes('onBeforeUnmount')) {
+    const imports = vueImportMatch[1].split(',').map((name) => name.trim()).filter(Boolean);
+    imports.push('onBeforeUnmount');
+    s = s.replace(vueImportMatch[0], `import { ${imports.join(', ')} } from 'vue';`);
+}
+
 const livePreview = `                        <section class="uwx-premium-panel uwx-preview-panel">
                             <div class="uwx-panel-title"><div><i class="ri-eye-line" /><div><strong>Live Preview</strong><span>This is what will be sent to VRChat.</span></div></div><strong class="uwx-char-count">{{ oscPreviewLength }}/144</strong></div>
                             <div class="uwx-live-preview"><p>{{ oscChatboxPreview || 'Nothing enabled yet.' }}</p></div>
