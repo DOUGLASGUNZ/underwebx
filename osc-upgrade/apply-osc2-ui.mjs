@@ -169,7 +169,13 @@ s = s.replace(helperAnchor, `    const osc2WeatherZip = ref(window.localStorage.
     function deleteOsc2Status(id) { osc2Statuses.value = osc2Statuses.value.filter((item) => item.id !== id); }
     function rotateOsc2Status() { if (osc2Enabled.value.status && osc2Statuses.value.some((item) => item.favorite)) osc2NextStatus(); }
     osc2StatusRotationTimer = window.setInterval(rotateOsc2Status, 10000);
-    osc2MusicRefreshTimer = window.setInterval(() => { if (osc2Enabled.value.music && osc2Mode.value !== 'stealth') void sendOsc2Current(); }, 1000);
+    // Keep the local music/progress UI reactive, but do not transmit OSC every second.
+    // Queue transitions and explicit interrupts are responsible for chatbox sends.
+    osc2MusicRefreshTimer = window.setInterval(() => {
+        if (osc2Enabled.value.music && osc2Mode.value !== 'stealth') {
+            void osc2CurrentScreen.value;
+        }
+    }, 1000);
     let osc2LastQueueKey = '';
     let osc2QueueElapsed = 0;
     osc2QueueRotationTimer = window.setInterval(() => {
