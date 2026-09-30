@@ -165,7 +165,7 @@ store = store.replace(clearLogAnchor, `${clearLogAnchor}
         if (key === 'music') {
             const statusLine = osc2Enabled.value.status ? osc2EnsureActiveStatus() : '';
             const minimalMusic = \`♫ \${d.title} — \${d.artist} · \${d.time}\`;
-            const themedMusic = \`🕷 SIGNAL // AUDIO\\n\${d.title}\${d.artist ? ` — ${d.artist}` : ''}\\n\${d.progress} \${d.time}\`;
+            const themedMusic = \`🕷 SIGNAL // AUDIO\\n\${d.title}\${d.artist ? ' — ' + d.artist : ''}\\n\${d.progress} \${d.time}\`;
             return statusLine ? \`\${statusLine}\\n\${theme === 'minimal' ? minimalMusic : themedMusic}\` : (theme === 'minimal' ? minimalMusic : themedMusic);
         }
         if (key === 'status') return theme === 'minimal' ? d.text : \`🕷 STATUS // SIGNAL\\n\${d.text}\`;
