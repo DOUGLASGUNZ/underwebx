@@ -122,11 +122,15 @@ store = store.replace(clearLogAnchor, `${clearLogAnchor}
         return osc2ActiveStatus.value;
     }
 
-    function osc2Step(direction = 1) {
+    async function osc2Step(direction = 1) {
         const queue = osc2AvailableQueue();
-        if (!queue.length || osc2Mode.value !== 'rotate') return;
-        osc2PreviousKey.value = queue[osc2CurrentIndex.value % queue.length] || '';
-        osc2CurrentIndex.value = (osc2CurrentIndex.value + Number(direction || 0) + queue.length) % queue.length;
+        if (!queue.length || osc2Mode.value !== 'rotate') return false;
+        const currentKey = osc2CurrentKey.value;
+        const currentIndex = Math.max(0, queue.indexOf(currentKey));
+        osc2PreviousKey.value = currentKey || '';
+        osc2CurrentIndex.value = (currentIndex + Number(direction || 0) + queue.length) % queue.length;
+        await sendOsc2Current();
+        return true;
     }
 
     async function osc2SetMode(mode, pinnedModule = '') {
