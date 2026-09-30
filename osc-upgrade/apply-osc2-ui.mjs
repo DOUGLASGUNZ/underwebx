@@ -147,6 +147,7 @@ s = s.replace(helperAnchor, `    const osc2WeatherZip = ref(window.localStorage.
     const osc2HeartInterrupt = ref(true);
     let osc2StatusRotationTimer = null;
     let osc2MusicRefreshTimer = null;
+    let osc2QueueRotationTimer = null;
     const osc2PreviousLabel = computed(() => '—');
     const osc2NextLabel = computed(() => {
         const queue = osc2Queue.value.filter((key) => osc2Enabled.value[key]);
@@ -169,7 +170,17 @@ s = s.replace(helperAnchor, `    const osc2WeatherZip = ref(window.localStorage.
     function rotateOsc2Status() { if (osc2Enabled.value.status && osc2Statuses.value.some((item) => item.favorite)) osc2NextStatus(); }
     osc2StatusRotationTimer = window.setInterval(rotateOsc2Status, 10000);
     osc2MusicRefreshTimer = window.setInterval(() => { if (osc2Enabled.value.music && osc2Mode.value !== 'stealth') void sendOsc2Current(); }, 1000);
-    onBeforeUnmount(() => { window.clearInterval(osc2StatusRotationTimer); window.clearInterval(osc2MusicRefreshTimer); });
+    let osc2LastQueueKey = '';
+    let osc2QueueElapsed = 0;
+    osc2QueueRotationTimer = window.setInterval(() => {
+        if (osc2Mode.value !== 'rotate') { osc2QueueElapsed = 0; osc2LastQueueKey = ''; return; }
+        const key = osc2CurrentKey.value;
+        if (key !== osc2LastQueueKey) { osc2LastQueueKey = key; osc2QueueElapsed = 0; return; }
+        osc2QueueElapsed += 1;
+        const duration = Math.max(1, Number(osc2Durations.value[key] || 10));
+        if (osc2QueueElapsed >= duration) { osc2QueueElapsed = 0; void osc2Step(1); }
+    }, 1000);
+    onBeforeUnmount(() => { window.clearInterval(osc2StatusRotationTimer); window.clearInterval(osc2MusicRefreshTimer); window.clearInterval(osc2QueueRotationTimer); });
 
 ${helperAnchor}`);
 
