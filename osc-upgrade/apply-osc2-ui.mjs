@@ -69,7 +69,7 @@ s = s.replace(builderStart, `                        <section class="uwx-premium
                         <section class="uwx-premium-panel uwx-osc2-weather">
                             <div class="uwx-panel-title"><div><i class="ri-cloudy-line" /><div><strong>Weather</strong><span>ZIP stays local. OSC only receives temperature and conditions.</span></div></div></div>
                             <div class="flex gap-2"><Input v-model="osc2WeatherZip" inputmode="numeric" maxlength="5" placeholder="ZIP code" /><Button size="sm" :disabled="osc2WeatherLoading" @click="refreshOsc2Weather">{{ osc2WeatherLoading ? 'Loading…' : 'Save & Refresh' }}</Button></div>
-                            <p class="uwx-help mt-2">{{ osc2WeatherMessage || (osc2Weather.temperature ? `${osc2Weather.temperature} · ${osc2Weather.condition}` : 'Weather is not configured yet.') }}</p>
+                            <p class="uwx-help mt-2">{{ osc2WeatherMessage || (osc2Weather.temperature ? (osc2Weather.temperature + ' · ' + osc2Weather.condition) : 'Weather is not configured yet.') }}</p>
                         </section>
 
                         <section class="uwx-premium-panel uwx-osc2-interrupts">
@@ -117,22 +117,22 @@ s = s.replace(helperAnchor, `    const osc2WeatherZip = ref(window.localStorage.
         osc2WeatherLoading.value = true;
         osc2WeatherMessage.value = '';
         try {
-            const placeResponse = await fetch(`https://api.zippopotam.us/us/${encodeURIComponent(zip)}`);
+            const placeResponse = await fetch('https://api.zippopotam.us/us/' + encodeURIComponent(zip));
             if (!placeResponse.ok) throw new Error('ZIP lookup failed');
             const placeData = await placeResponse.json();
             const place = placeData.places?.[0];
             if (!place) throw new Error('ZIP not found');
             const latitude = Number(place.latitude);
             const longitude = Number(place.longitude);
-            const weatherResponse = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,weather_code&temperature_unit=fahrenheit`);
+            const weatherResponse = await fetch('https://api.open-meteo.com/v1/forecast?latitude=' + latitude + '&longitude=' + longitude + '&current=temperature_2m,weather_code&temperature_unit=fahrenheit');
             if (!weatherResponse.ok) throw new Error('Weather lookup failed');
             const weatherData = await weatherResponse.json();
             const temp = Number(weatherData.current?.temperature_2m);
             const code = Number(weatherData.current?.weather_code);
             if (!Number.isFinite(temp)) throw new Error('Weather unavailable');
             window.localStorage.setItem('UWX_osc2WeatherZip', zip);
-            osc2Weather.value = { temperature: `${Math.round(temp)}°F`, condition: osc2WeatherCodes[code] || 'Current conditions' };
-            osc2WeatherMessage.value = `${osc2Weather.value.temperature} · ${osc2Weather.value.condition}`;
+            osc2Weather.value = { temperature: Math.round(temp) + '°F', condition: osc2WeatherCodes[code] || 'Current conditions' };
+            osc2WeatherMessage.value = osc2Weather.value.temperature + ' · ' + osc2Weather.value.condition;
         } catch (error) {
             osc2WeatherMessage.value = 'Could not load weather for that ZIP.';
         } finally {
