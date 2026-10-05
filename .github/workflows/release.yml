@@ -22,7 +22,9 @@ jobs:
     if: >-
       (github.event_name == 'workflow_run' &&
        github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_branch == 'main') ||
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.head_repository.full_name == github.repository) ||
       github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
 
@@ -47,11 +49,13 @@ jobs:
             run_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}")"
             run_name="$(jq -r '.name' <<< "$run_json")"
             conclusion="$(jq -r '.conclusion' <<< "$run_json")"
+            event_name="$(jq -r '.event' <<< "$run_json")"
             head_branch="$(jq -r '.head_branch' <<< "$run_json")"
+            head_repo="$(jq -r '.head_repository.full_name' <<< "$run_json")"
             head_sha="$(jq -r '.head_sha' <<< "$run_json")"
 
-            if [[ "$run_name" != "Build UnderWeb X" || "$conclusion" != "success" || "$head_branch" != "main" ]]; then
-              echo "Run $run_id is not a successful main-branch Build UnderWeb X run." >&2
+            if [[ "$run_name" != "Build UnderWeb X" || "$conclusion" != "success" || "$event_name" != "push" || "$head_branch" != "main" || "$head_repo" != "$GITHUB_REPOSITORY" ]]; then
+              echo "Run $run_id is not a trusted successful main-branch Build UnderWeb X push run." >&2
               exit 1
             fi
           fi
