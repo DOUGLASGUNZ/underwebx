@@ -73,15 +73,24 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          version="$(tr -d '[:space:]' < features/release/RELEASE_VERSION)"
+          marker="features/release/RELEASE_VERSION"
+          if [[ ! -f "$marker" ]]; then
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            echo "Built commit predates the release marker; skipping publication."
+            exit 0
+          fi
+
+          version="$(tr -d '[:space:]' < "$marker")"
           if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
             echo "Invalid release version: $version" >&2
             exit 1
           fi
+          echo "eligible=true" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
 
       - name: Check whether release already exists
+        if: steps.version.outputs.eligible == 'true'
         id: existing
         shell: bash
         env:
@@ -97,7 +106,7 @@ jobs:
           fi
 
       - name: Download validated Windows artifact
-        if: steps.existing.outputs.exists != 'true'
+        if: steps.version.outputs.eligible == 'true' && steps.existing.outputs.exists != 'true'
         uses: actions/download-artifact@v4
         with:
           name: UnderWebX-Windows
@@ -107,7 +116,7 @@ jobs:
           run-id: ${{ steps.meta.outputs.run_id }}
 
       - name: Validate release payload
-        if: steps.existing.outputs.exists != 'true'
+        if: steps.version.outputs.eligible == 'true' && steps.existing.outputs.exists != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -117,7 +126,7 @@ jobs:
           test -n "$(find release-assets -type f -name 'SHA256SUMS.txt' -print -quit)"
 
       - name: Publish permanent GitHub Release
-        if: steps.existing.outputs.exists != 'true'
+        if: steps.version.outputs.eligible == 'true' && steps.existing.outputs.exists != 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
