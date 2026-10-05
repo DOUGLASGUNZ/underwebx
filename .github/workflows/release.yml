@@ -1,0 +1,117 @@
+name: Publish UnderWeb X Release
+
+on:
+  workflow_run:
+    workflows:
+      - Build UnderWeb X
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Successful Build UnderWeb X run ID to publish
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  release:
+    if: >-
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main') ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Resolve build metadata
+        id: meta
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id }}
+          WORKFLOW_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          MANUAL_RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "workflow_run" ]]; then
+            run_id="$WORKFLOW_RUN_ID"
+            head_sha="$WORKFLOW_HEAD_SHA"
+          else
+            run_id="$MANUAL_RUN_ID"
+            head_sha="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" --jq '.head_sha')"
+          fi
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Checkout exact built commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.meta.outputs.head_sha }}
+
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < features/release/RELEASE_VERSION)"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid release version: $version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+      - name: Check whether release already exists
+        id: existing
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Release $TAG already exists; nothing to publish."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download validated Windows artifact
+        if: steps.existing.outputs.exists != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: UnderWebX-Windows
+          path: release-assets
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.meta.outputs.run_id }}
+
+      - name: Validate release payload
+        if: steps.existing.outputs.exists != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          find release-assets -maxdepth 2 -type f -print
+          test -n "$(find release-assets -type f -name 'UnderWebX_*_Setup.exe' -print -quit)"
+          test -n "$(find release-assets -type f -name 'UnderWebX_*.zip' -print -quit)"
+          test -n "$(find release-assets -type f -name 'SHA256SUMS.txt' -print -quit)"
+
+      - name: Publish permanent GitHub Release
+        if: steps.existing.outputs.exists != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          target_commitish: ${{ steps.meta.outputs.head_sha }}
+          name: UnderWeb X ${{ steps.version.outputs.tag }}
+          generate_release_notes: true
+          make_latest: true
+          files: |
+            release-assets/**/UnderWebX_*_Setup.exe
+            release-assets/**/UnderWebX_*.zip
+            release-assets/**/SHA256SUMS.txt
