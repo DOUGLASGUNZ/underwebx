@@ -23,6 +23,45 @@ replaceOnce(
     "        moderation: { eyebrow: 'GROUP OPERATIONS', title: 'Group Moderation', description: 'Review and moderate your current approved VRChat group; invite friends from Command.' },\n        osc: { eyebrow: 'REAL-TIME CONTROL'"
 );
 
+
+// Instance Inviter: manual invites work from any detected VRChat instance.
+// Automatic sweeps remain restricted to an explicitly approved group lobby.
+const underWebPath = path.join(root, 'src/stores/underweb.js');
+let underWeb = fs.readFileSync(underWebPath, 'utf8').replace(/\r\n/g, '\n');
+function storeReplace(anchor, replacement) {
+    if (!underWeb.includes(anchor)) throw new Error('Group Ops: missing invite anchor: ' + anchor.slice(0, 100));
+    underWeb = underWeb.replace(anchor, replacement);
+}
+storeReplace(
+    "const canAutoInviteHere = computed(() => isGroupInstance.value && isCurrentGroupAllowed.value);",
+    "const canAutoInviteHere = computed(() => Boolean(currentParsedLocation.value?.isRealInstance && currentLocationTag.value));"
+);
+storeReplace(
+    "const canRecruitHere = computed(() => canAutoInviteHere.value);",
+    "const canRecruitHere = computed(() => isGroupInstance.value && isCurrentGroupAllowed.value);"
+);
+storeReplace(
+    "    async function scanAndInvite({ source = 'automatic', force = false } = {}) {",
+    "    async function scanAndInvite({ source = 'automatic', force = false } = {}) {\n" +
+    "        // Manual invites may target any detected instance, but automated inviting is opt-in for approved group lobbies only.\n" +
+    "        if (source !== 'manual' && !isCurrentGroupAllowed.value) return { sent: 0, skipped: 'automatic-invites-require-approved-group' };"
+);
+fs.writeFileSync(underWebPath, underWeb, 'utf8');
+
+// Keep messaging aligned to the invitation permission boundary.
+replaceOnce(
+    "This is the old Auto Invite behavior, now named correctly so it is not confused with group recruiting.",
+    "Manual invites work in any detected instance. Automatic inviting runs only in explicitly approved group instances."
+);
+replaceOnce(
+    "Invite selected audience into lobby",
+    "Invite audience into this instance"
+);
+replaceOnce(
+    "                            <Switch :model-value=\"autoInviteEnabled\" @update:modelValue=\"setAutoInviteEnabled\" />",
+    "                            <Switch :model-value=\"autoInviteEnabled\" :disabled=\"!isCurrentGroupAllowed\" @update:modelValue=\"setAutoInviteEnabled\" />"
+);
+
 // Keep this area as a manual-only tool. A Group Ban is not an Instance Kick.
 // VRChat server validates permissions. The allowlist provides an additional
 // voluntary scope restriction so an unexpected group lobby can't be moderated.
@@ -90,10 +129,10 @@ const code = [
 ].join('\n');
 replaceOnce("    const groupInput = ref('');", code + "\n    const groupInput = ref('');");
 
-// Add a one-click safe disarm to the existing Instance Inviter control card.
+// Disarm both invitation tools immediately (without modifying the group allowlist).
 replaceOnce(
-    "                            <Switch :model-value=\"autoInviteEnabled\" @update:modelValue=\"setAutoInviteEnabled\" />",
-    "                            <Switch :model-value=\"autoInviteEnabled\" @update:modelValue=\"setAutoInviteEnabled\" />"
+    "                            Invite {{ eligibleLobbyRecruits.length }} eligible to group",
+    "                            Invite {{ eligibleLobbyRecruits.length }} eligible to group"
 );
 const moderationCard = `
             <Card v-show="activePanel === 'moderation'" class="uwx-card uwx-card-wide">
