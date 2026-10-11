@@ -16,7 +16,7 @@ function replaceRequired(before, after) {
 }
 
 const restoredState = [
-    "    // UWX OSC preferences are local-only; never send ZIP or saved data to the UnderWeb server.",
+    "    // UWX OSC preferences are stored locally; the weather ZIP goes to the third-party ZIP lookup only.",
     "    function osc2ReadLocal(key) {",
     "        try { return window.localStorage.getItem(key); } catch { return null; }",
     "    }",
@@ -106,6 +106,10 @@ replaceRequired(
 replaceRequired(
     "    // Keep the local music/progress UI reactive, but do not transmit OSC every second.\n    // Queue transitions and explicit interrupts are responsible for chatbox sends.\n    osc2MusicRefreshTimer = window.setInterval(() => {\n        if (osc2Enabled.value.music && osc2Mode.value !== 'stealth') {\n            void osc2CurrentScreen.value;\n        }\n    }, 1000);",
     "    // Refresh remote music progress while the music screen is active, without 1-second OSC spam.\n    let osc2LastMusicFrame = '';\n    osc2MusicRefreshTimer = window.setInterval(() => {\n        if (osc2Mode.value === 'stealth' || osc2CurrentKey.value !== 'music' || !osc2Enabled.value.music) {\n            osc2LastMusicFrame = '';\n            return;\n        }\n        const next = osc2CurrentScreen.value;\n        if (next && next !== osc2LastMusicFrame) {\n            osc2LastMusicFrame = next;\n            void sendOsc2Current();\n        }\n    }, 5000);"
+);
+replaceRequired(
+    "ZIP stays local. OSC only receives temperature and conditions.",
+    "Weather ZIP is used for third-party lookup. OSC receives temperature and conditions only."
 );
 replaceRequired(
     "    onBeforeUnmount(() => { window.clearInterval(osc2StatusRotationTimer); window.clearInterval(osc2MusicRefreshTimer); window.clearInterval(osc2QueueRotationTimer); });",
