@@ -495,6 +495,41 @@ jobs:
           }
           Write-Host "OSC Lab 2.0 verification passed."
 
+      - name: Apply RC10 OSC reliability fixes
+        shell: pwsh
+        run: |
+          $script = Join-Path $env:GITHUB_WORKSPACE "features\foundation\apply-rc10.mjs"
+          if (-not (Test-Path $script)) { throw "RC10 applicator missing." }
+          node --check $script
+          if ($LASTEXITCODE -ne 0) { throw "RC10 applicator syntax invalid." }
+          node $script $env:UWX_SOURCE
+          if ($LASTEXITCODE -ne 0) { throw "RC10 applicator failed." }
+
+      - name: Verify RC10 OSC reliability fixes
+        shell: pwsh
+        run: |
+          $version = (Get-Content (Join-Path $env:UWX_SOURCE "UWX_VERSION") -Raw).Trim()
+          if ($version -ne "0.5.1-rc10") { throw "RC10 version mismatch: $version" }
+          $view = Get-Content (Join-Path $env:UWX_SOURCE "src\views\UnderWeb\UnderWeb.vue") -Raw
+          foreach ($needle in @("osc2RestorePreferences", "osc2PersistPreferences", "osc2LastMusicFrame", "osc2WeatherRefreshTimer", "UWX_osc2Statuses", "UWX_osc2LastMode")) {
+            if (-not $view.Contains($needle)) { throw "RC10 UI verification failed: $needle" }
+          }
+          Write-Host "RC10 OSC reliability verification passed."
+
+      - name: Apply playing-media OSC selection fix
+        shell: pwsh
+        run: |
+          $script = Join-Path $env:GITHUB_WORKSPACE "features\music-osc\apply-music-osc.mjs"
+          if (-not (Test-Path $script)) { throw "Music OSC applicator missing." }
+          node --check $script
+          if ($LASTEXITCODE -ne 0) { throw "Music OSC syntax check failed." }
+          node $script $env:UWX_SOURCE
+          if ($LASTEXITCODE -ne 0) { throw "Music OSC applicator failed." }
+          $cs = Get-Content (Join-Path $env:UWX_SOURCE "Dotnet\AppApi\Common\AppApiCommon.cs") -Raw
+          $js = Get-Content (Join-Path $env:UWX_SOURCE "src\stores\oscLab.js") -Raw
+          if (-not $cs.Contains("GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing")) { throw "Playing-media C# selection missing." }
+          if (-not $js.Contains("mediaState.value === 'playing'")) { throw "OSC playing-only guard missing." }
+
       - name: Build UnderWeb X
         shell: pwsh
         working-directory: ${{ env.UWX_SOURCE }}
