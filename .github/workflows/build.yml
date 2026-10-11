@@ -516,6 +516,20 @@ jobs:
           }
           Write-Host "RC10 OSC reliability verification passed."
 
+      - name: Apply playing-media OSC selection fix
+        shell: pwsh
+        run: |
+          $script = Join-Path $env:GITHUB_WORKSPACE "features\music-osc\apply-music-osc.mjs"
+          if (-not (Test-Path $script)) { throw "Music OSC applicator missing." }
+          node --check $script
+          if ($LASTEXITCODE -ne 0) { throw "Music OSC syntax check failed." }
+          node $script $env:UWX_SOURCE
+          if ($LASTEXITCODE -ne 0) { throw "Music OSC applicator failed." }
+          $cs = Get-Content (Join-Path $env:UWX_SOURCE "Dotnet\AppApi\Common\AppApiCommon.cs") -Raw
+          $js = Get-Content (Join-Path $env:UWX_SOURCE "src\stores\oscLab.js") -Raw
+          if (-not $cs.Contains("GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing")) { throw "Playing-media C# selection missing." }
+          if (-not $js.Contains("mediaState.value === 'playing'")) { throw "OSC playing-only guard missing." }
+
       - name: Build UnderWeb X
         shell: pwsh
         working-directory: ${{ env.UWX_SOURCE }}
