@@ -71,13 +71,13 @@ const code = [
 "    const modLookupBusy = ref(false);",
 "    const modActionBusy = ref(false);",
 "    const modTargetMember = ref(null);",
-"    const modLookupMessage = ref('');",
+"    const modLookupMessage = ref('');\n    const modPreparedGroupId = ref('');",
 "    const modLastAction = ref('');",
 "    const modGroupId = computed(() => (isGroupInstance.value && isCurrentGroupAllowed.value) ? currentGroupId.value : '');",
 "    const modTargetValid = computed(() => /^usr_[A-Za-z0-9-]{8,}$/.test(modTargetUserId.value.trim()));",
 "    const modCanAct = computed(() => Boolean(modGroupId.value && modTargetValid.value &&",
-"        modConfirmation.value.trim() === modTargetUserId.value.trim() && !modActionBusy.value));",
-"    function modResetLookup() { modTargetMember.value = null; modLookupMessage.value = ''; modConfirmation.value = ''; }",
+"        modConfirmation.value.trim() === modTargetUserId.value.trim() && modPreparedGroupId.value === modGroupId.value && !modActionBusy.value));",
+"    function modResetLookup() { modTargetMember.value = null; modLookupMessage.value = ''; modConfirmation.value = ''; modPreparedGroupId.value = ''; }",
 "    async function modLookupMember() {",
 "        const groupId = modGroupId.value;",
 "        const userId = modTargetUserId.value.trim();",
@@ -87,11 +87,11 @@ const code = [
 "        try {",
 "            const response = await groupRequest.getGroupMember({ groupId, userId });",
 "            if (groupId !== modGroupId.value || userId !== modTargetUserId.value.trim()) return;",
-"            modTargetMember.value = response?.json || response?.ref || null;",
+"            modTargetMember.value = response?.json || response?.ref || null;\n            if (modTargetMember.value) modPreparedGroupId.value = groupId;",
 "            modLookupMessage.value = modTargetMember.value ? 'Current group membership confirmed.' : 'No group member details returned.';",
 "        } catch (error) {",
 "            const status = error?.status || error?.statusCode || error?.response?.status;",
-"            modLookupMessage.value = status === 404 ? 'This user is not currently a group member.' :",
+"            if (groupId !== modGroupId.value || userId !== modTargetUserId.value.trim()) return;\n            if (status === 404) modPreparedGroupId.value = groupId;\n            modLookupMessage.value = status === 404 ? 'This user is not currently a group member.' :",
 "                status === 403 ? 'Your account cannot read group membership.' : 'Member lookup failed. No changes were made.';",
 "        } finally { modLookupBusy.value = false; }",
 "    }",
@@ -164,7 +164,7 @@ const moderationCard = `
                     </p>
                     <div class="uwx-premium-panel">
                         <strong>Confirm the person, not just the button.</strong>
-                        <p class="uwx-help mt-1">Paste the exact user ID above into the confirmation field to unlock actions.
+                        <p class="uwx-help mt-1">Check member first, then paste the exact user ID above into the confirmation field to unlock actions.
                             These actions take effect immediately on VRChat. There is no bulk moderation.</p>
                         <Input v-model="modConfirmation" class="mt-3" placeholder="Repeat target usr_… to confirm"
                             :disabled="!modGroupId || !modTargetValid || modActionBusy" />
