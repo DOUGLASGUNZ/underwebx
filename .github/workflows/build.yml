@@ -516,6 +516,29 @@ jobs:
           }
           Write-Host "RC10 OSC reliability verification passed."
 
+      - name: Apply group moderation and instance inviter improvements
+        shell: pwsh
+        run: |
+          $script = Join-Path $env:GITHUB_WORKSPACE "features\group-ops\apply-group-ops.mjs"
+          if (-not (Test-Path $script)) { throw "Group Ops applicator missing." }
+          node --check $script
+          if ($LASTEXITCODE -ne 0) { throw "Group Ops applicator syntax invalid." }
+          node $script $env:UWX_SOURCE
+          if ($LASTEXITCODE -ne 0) { throw "Group Ops applicator failed." }
+
+      - name: Verify group moderation and manual invites
+        shell: pwsh
+        run: |
+          $view = Get-Content (Join-Path $env:UWX_SOURCE "src\views\UnderWeb\UnderWeb.vue") -Raw
+          $store = Get-Content (Join-Path $env:UWX_SOURCE "src\stores\underweb.js") -Raw
+          foreach ($needle in @("Group Moderation", "modTakeAction", "kickGroupMember", "banGroupMember", "unbanGroupMember", "NO AUTO-ENFORCEMENT")) {
+            if (-not $view.Contains($needle)) { throw "Group Ops UI missing: $needle" }
+          }
+          foreach ($needle in @("automatic-invites-require-approved-group", "currentParsedLocation.value?.isRealInstance")) {
+            if (-not $store.Contains($needle)) { throw "Instance Inviter scope check missing: $needle" }
+          }
+          Write-Host "Group Ops and Instance Inviter verification passed."
+
       - name: Apply playing-media OSC selection fix
         shell: pwsh
         run: |
