@@ -553,6 +553,25 @@ jobs:
           if (-not $cs.Contains("GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing")) { throw "Playing-media C# selection missing." }
           if (-not $js.Contains("mediaState.value === 'playing'")) { throw "OSC playing-only guard missing." }
 
+      - name: Verify three-line chatbox composition
+        shell: pwsh
+        run: |
+          node --check "$env:GITHUB_WORKSPACE\features\osc-combined\oscComposer.mjs"
+          if ($LASTEXITCODE -ne 0) { throw "OSC composer syntax invalid." }
+          node "$env:GITHUB_WORKSPACE\features\osc-combined\test-compose.mjs"
+          if ($LASTEXITCODE -ne 0) { throw "Three-line OSC composer test failed." }
+
+      - name: Apply RC11 combined status music weather
+        shell: pwsh
+        run: |
+          $script = Join-Path $env:GITHUB_WORKSPACE "features\osc-combined\apply-rc11.mjs"
+          node --check $script
+          if ($LASTEXITCODE -ne 0) { throw "RC11 script syntax invalid." }
+          node $script $env:UWX_SOURCE
+          if ($LASTEXITCODE -ne 0) { throw "RC11 application failed." }
+          $version = (Get-Content (Join-Path $env:UWX_SOURCE "UWX_VERSION") -Raw).Trim()
+          if ($version -ne "0.5.2-rc11") { throw "RC11 version mismatch: $version" }
+
       - name: Verify combined Group Ops and Music OSC integration
         shell: pwsh
         run: |
