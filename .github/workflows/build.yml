@@ -553,6 +553,15 @@ jobs:
           if (-not $cs.Contains("GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing")) { throw "Playing-media C# selection missing." }
           if (-not $js.Contains("mediaState.value === 'playing'")) { throw "OSC playing-only guard missing." }
 
+      - name: Verify combined Group Ops and Music OSC integration
+        shell: pwsh
+        run: |
+          $script = Join-Path $env:GITHUB_WORKSPACE "features\integration\check-integration.mjs"
+          node --check $script
+          if ($LASTEXITCODE -ne 0) { throw "Integration smoke test syntax invalid." }
+          node $script $env:UWX_SOURCE
+          if ($LASTEXITCODE -ne 0) { throw "Integration smoke checks failed." }
+
       - name: Build UnderWeb X
         shell: pwsh
         working-directory: ${{ env.UWX_SOURCE }}
