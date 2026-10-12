@@ -13,7 +13,7 @@ const version = read('UWX_VERSION').trim();
 function has(file, label, needle) {
     assert.ok(file.includes(needle), `Missing ${label}: ${needle}`);
 }
-assert.equal(version, '0.5.1-rc10', 'Combined build should remain a beta/RC test, never overwrite public release marker.');
+assert.equal(version, '0.5.2-rc11', 'Combined build should remain a beta/RC test, never overwrite public release marker.');
 
 for (const needle of [
     "activePanel === 'moderation'",
@@ -41,6 +41,8 @@ for (const needle of [
     "osc2RestorePreferences",
     "osc2PersistPreferences",
     "osc2LastMusicFrame",
+    "osc2VisibleModules",
+    "setOsc2BroadcastLayout('combined')",
     "sendOsc2Current()",
     "osc2Mode.value !== 'stealth'",
 ]) has(ui, 'Music/status OSC client', needle);
@@ -52,6 +54,9 @@ for (const needle of [
 
 for (const needle of [
     "mediaState.value === 'playing'",
+    "osc2ComposeCurrent()",
+    "renderCombinedOsc",
+    "osc2Mode.value === 'combined'",
     "if (osc2Mode.value === 'stealth') return false;",
     "validateOsc2Text(message)",
 ]) has(music, 'Music/Stealth output boundary', needle);
