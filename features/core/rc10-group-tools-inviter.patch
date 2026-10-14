@@ -1,0 +1,1283 @@
+diff --git a/CHANGELOG_UWX.md b/CHANGELOG_UWX.md
+index 740e8c8..4fd1499 100644
+--- a/CHANGELOG_UWX.md
++++ b/CHANGELOG_UWX.md
+@@ -1,5 +1,14 @@
+ # UnderWeb X changelog
+ 
++## 0.5.1-rc10 — Group Tools + everyday Instance Inviter
++
++- Instance Inviter now works in any instance VRChat lets you invite into (public, group, Friends+, Invite+, your own), not only approved group instances. Uses VRCX's own invite rules, so blocked instances show the reason instead of failing.
++- New "Invite now" sends to the chosen audience once: skips people already here, offline, on your do-not-invite list, or invited to this instance in the last 2 minutes; paces sends 2.5s apart; stops on instance change or a VRChat rate limit; shows sent/skipped/failed with reasons.
++- Automatic invites stay limited to approved group instances unless you turn on "Auto-invite in any instance".
++- Group Recruiter is unchanged and still limited to approved group instances.
++- New Groups tab: lists the VRChat groups where your role can moderate (permissions read from VRChat), member lookup by name or usr_ ID, Remove / Ban / Unban with a confirmation prompt, people in the current group instance, a shortcut to VRCX's full moderation dialog (bans, invites, audit log), and a persistent local history of actions taken from this PC.
++- Tests: 13 new unit tests for the inviter and group tools.
++
+ ## 0.5.0-osc2 — OSC Lab 2.0 core
+ 
+ - Added one-screen-at-a-time OSC rotation with Rotate, Pin, and instant Stealth modes.
+diff --git a/UWX_VERSION b/UWX_VERSION
+index a71e3a9..f26adfb 100644
+--- a/UWX_VERSION
++++ b/UWX_VERSION
+@@ -1 +1 @@
+-0.5.0-osc2
++0.5.1-rc10
+diff --git a/src/shared/constants/uwx.js b/src/shared/constants/uwx.js
+index 62132a3..6f6d51b 100644
+--- a/src/shared/constants/uwx.js
++++ b/src/shared/constants/uwx.js
+@@ -1,2 +1,2 @@
+-export const UWX_VERSION = '0.5.0-osc2';
++export const UWX_VERSION = '0.5.1-rc10';
+ export const UWX_MANIFEST_URL = 'https://underweb.cloud/api/uwx/manifest';
+diff --git a/src/stores/__tests__/uwxGroupTools.test.js b/src/stores/__tests__/uwxGroupTools.test.js
+new file mode 100644
+index 0000000..11c6e9c
+--- /dev/null
++++ b/src/stores/__tests__/uwxGroupTools.test.js
+@@ -0,0 +1,132 @@
++import { beforeEach, describe, expect, test, vi } from 'vitest';
++import { createPinia, setActivePinia } from 'pinia';
++import { reactive } from 'vue';
++
++const groupRequest = {
++    getGroup: vi.fn(),
++    getGroupMember: vi.fn(),
++    getGroupMembersSearch: vi.fn(),
++    kickGroupMember: vi.fn(),
++    banGroupMember: vi.fn(),
++    unbanGroupMember: vi.fn()
++};
++vi.mock('../../api', () => ({ groupRequest }));
++
++const configStore = {};
++vi.mock('../../services/config', () => ({
++    default: {
++        getArray: vi.fn(async (key, d) => configStore[key] ?? d),
++        setArray: vi.fn(async (key, value) => {
++            configStore[key] = value;
++        })
++    }
++}));
++vi.mock('../../services/watchState', () => ({ watchState: { isLoggedIn: true } }));
++vi.mock('vue-sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }));
++vi.mock('../../shared/utils', async () => ({
++    ...(await vi.importActual('../../shared/utils/group')),
++    ...(await vi.importActual('../../shared/utils/location'))
++}));
++vi.mock('../../coordinators/groupCoordinator', () => ({ showGroupMemberModerationDialog: vi.fn() }));
++
++const groupStore = { currentUserGroups: reactive(new Map()) };
++vi.mock('../group', () => ({ useGroupStore: () => groupStore }));
++const locationStore = reactive({ lastLocation: { location: '', playerList: new Map() } });
++vi.mock('../location', () => ({ useLocationStore: () => locationStore }));
++const modalStore = { confirm: vi.fn() };
++vi.mock('../modal', () => ({ useModalStore: () => modalStore }));
++
++const { useUwxGroupToolsStore } = await import('../uwxGroupTools');
++
++const GROUP = 'grp_11111111-1111-1111-1111-111111111111';
++const USER = 'usr_22222222-2222-2222-2222-222222222222';
++
++function groupWithPerms(permissions) {
++    return { id: GROUP, name: 'The UnderWeb', myMember: { permissions } };
++}
++
++describe('uwxGroupTools', () => {
++    beforeEach(() => {
++        setActivePinia(createPinia());
++        Object.values(groupRequest).forEach((fn) => fn.mockReset());
++        modalStore.confirm.mockReset();
++        for (const key of Object.keys(configStore)) delete configStore[key];
++        groupStore.currentUserGroups.clear();
++        groupStore.currentUserGroups.set(GROUP, { id: GROUP, name: 'The UnderWeb' });
++    });
++
++    test('only lists groups where VRChat says the role can moderate', async () => {
++        groupRequest.getGroup.mockResolvedValue({ ref: groupWithPerms(['group-bans-manage']) });
++        const store = useUwxGroupToolsStore();
++        await store.loadAllPermissions();
++        expect(store.moderatableGroups.map((g) => g.id)).toEqual([GROUP]);
++        expect(store.can(GROUP, 'ban')).toBe(true);
++        expect(store.can(GROUP, 'kick')).toBe(false);
++
++        groupRequest.getGroup.mockResolvedValue({ ref: groupWithPerms([]) });
++        await store.loadAllPermissions({ force: true });
++        expect(store.moderatableGroups).toEqual([]);
++    });
++
++    test('refuses an action the role lacks, without calling VRChat or prompting', async () => {
++        groupRequest.getGroup.mockResolvedValue({ ref: groupWithPerms(['group-bans-manage']) });
++        const store = useUwxGroupToolsStore();
++        await store.loadAllPermissions();
++        const ok = await store.moderate('kick', { groupId: GROUP, groupName: 'The UnderWeb', userId: USER });
++        expect(ok).toBe(false);
++        expect(modalStore.confirm).not.toHaveBeenCalled();
++        expect(groupRequest.kickGroupMember).not.toHaveBeenCalled();
++    });
++
++    test('cancelling the confirmation sends nothing', async () => {
++        groupRequest.getGroup.mockResolvedValue({ ref: groupWithPerms(['*']) });
++        modalStore.confirm.mockResolvedValue({ ok: false });
++        const store = useUwxGroupToolsStore();
++        await store.loadAllPermissions();
++        expect(await store.moderate('ban', { groupId: GROUP, groupName: 'The UnderWeb', userId: USER })).toBe(false);
++        expect(groupRequest.banGroupMember).not.toHaveBeenCalled();
++        expect(store.moderationLog).toEqual([]);
++    });
++
++    test('a confirmed ban calls VRChat once and is logged persistently', async () => {
++        groupRequest.getGroup.mockResolvedValue({ ref: groupWithPerms(['group-bans-manage']) });
++        groupRequest.banGroupMember.mockResolvedValue({ json: {} });
++        modalStore.confirm.mockResolvedValue({ ok: true });
++        const store = useUwxGroupToolsStore();
++        await store.init();
++        await store.loadAllPermissions();
++        const ok = await store.moderate('ban', { groupId: GROUP, groupName: 'The UnderWeb', userId: USER, displayName: 'Troll' });
++        expect(ok).toBe(true);
++        expect(groupRequest.banGroupMember).toHaveBeenCalledWith({ groupId: GROUP, userId: USER });
++        expect(store.moderationLog[0]).toMatchObject({ action: 'ban', result: 'ok', userId: USER });
++        expect(configStore.UWX_groupModerationLog).toHaveLength(1);
++    });
++
++    test('a VRChat 403 is reported and logged as failed', async () => {
++        groupRequest.getGroup.mockResolvedValue({ ref: groupWithPerms(['group-members-remove']) });
++        groupRequest.kickGroupMember.mockRejectedValue({ status: 403 });
++        modalStore.confirm.mockResolvedValue({ ok: true });
++        const store = useUwxGroupToolsStore();
++        await store.loadAllPermissions();
++        expect(await store.moderate('kick', { groupId: GROUP, groupName: 'The UnderWeb', userId: USER })).toBe(false);
++        expect(store.moderationLog[0]).toMatchObject({ action: 'kick', result: 'failed' });
++        expect(store.moderationLog[0].error).toMatch(/permission/);
++    });
++
++    test('lookup by usr_ ID treats 404 as not a member, so they can still be banned', async () => {
++        groupRequest.getGroupMember.mockRejectedValue({ status: 404 });
++        const store = useUwxGroupToolsStore();
++        const { results } = await store.lookupMember(GROUP, USER);
++        expect(results).toEqual([expect.objectContaining({ userId: USER, membershipStatus: 'not a member' })]);
++    });
++
++    test('lookup by name uses member search', async () => {
++        groupRequest.getGroupMembersSearch.mockResolvedValue({
++            json: { results: [{ userId: USER, user: { displayName: 'Darko' }, membershipStatus: 'member', roleIds: ['grol_x'] }] }
++        });
++        const store = useUwxGroupToolsStore();
++        const { results } = await store.lookupMember(GROUP, 'dar');
++        expect(groupRequest.getGroupMembersSearch).toHaveBeenCalledWith({ groupId: GROUP, query: 'dar', n: 25, offset: 0 });
++        expect(results[0]).toMatchObject({ displayName: 'Darko', membershipStatus: 'member' });
++    });
++});
+diff --git a/src/stores/__tests__/uwxInviter.test.js b/src/stores/__tests__/uwxInviter.test.js
+new file mode 100644
+index 0000000..946428d
+--- /dev/null
++++ b/src/stores/__tests__/uwxInviter.test.js
+@@ -0,0 +1,136 @@
++import { beforeEach, describe, expect, test, vi } from 'vitest';
++import { createPinia, setActivePinia } from 'pinia';
++import { reactive } from 'vue';
++
++const notificationRequest = { sendInvite: vi.fn() };
++vi.mock('../../api', () => ({
++    groupRequest: {},
++    notificationRequest,
++    queryRequest: { fetch: vi.fn().mockResolvedValue({ ref: { name: 'Test World' } }) }
++}));
++vi.mock('../../services/config', () => ({
++    default: {
++        getBool: vi.fn(async (_k, d) => d),
++        setBool: vi.fn(),
++        getArray: vi.fn(async (_k, d) => d),
++        setArray: vi.fn(),
++        getString: vi.fn(async (_k, d) => d),
++        setString: vi.fn(),
++        getInt: vi.fn(async (_k, d) => d),
++        setInt: vi.fn(),
++        getObject: vi.fn(async (_k, d) => d),
++        setObject: vi.fn()
++    }
++}));
++vi.mock('../../shared/utils', async () => ({
++    ...(await vi.importActual('../../shared/utils/invite')),
++    ...(await vi.importActual('../../shared/utils/location'))
++}));
++vi.mock('../../services/watchState', () => ({ watchState: { isLoggedIn: true } }));
++vi.mock('vue-sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }));
++
++const ME = 'usr_00000000-0000-0000-0000-000000000000';
++const A = 'usr_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
++const B = 'usr_bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
++const C = 'usr_cccccccc-cccc-cccc-cccc-cccccccccccc';
++
++const friendStore = reactive({ friends: new Map(), allFavoriteFriendIds: new Set(), allFavoriteOnlineFriends: [] });
++const locationStore = reactive({ lastLocation: { location: '', name: 'Test World', friendList: new Map(), playerList: new Map() } });
++const instanceStore = { cachedInstances: new Map() };
++const userStore = { currentUser: { id: ME } };
++const networkStore = {
++    staffUserIds: new Set(),
++    creatorUserIds: new Set(),
++    partnerUserIds: new Set(),
++    notificationRules: {},
++    initUnderWebNetwork: vi.fn()
++};
++vi.mock('../friend', () => ({ useFriendStore: () => friendStore }));
++vi.mock('../location', () => ({ useLocationStore: () => locationStore }));
++vi.mock('../instance', () => ({ useInstanceStore: () => instanceStore }));
++vi.mock('../user', () => ({ useUserStore: () => userStore }));
++vi.mock('../underwebNetwork', () => ({ useUnderWebNetworkStore: () => networkStore }));
++
++const { useUnderWebStore } = await import('../underweb');
++
++const WORLD = 'wrld_12345678-1234-1234-1234-123456789012';
++const at = (suffix) => `${WORLD}:12345${suffix}`;
++
++function friend(id, state = 'online', location = 'wrld_other:1') {
++    return { id, state, name: id.slice(4, 8), ref: { displayName: id.slice(4, 8), location } };
++}
++
++describe('UWX Instance Inviter — invite now', () => {
++    beforeEach(() => {
++        vi.useFakeTimers();
++        setActivePinia(createPinia());
++        notificationRequest.sendInvite.mockReset().mockResolvedValue({ json: {} });
++        friendStore.friends = new Map([[A, friend(A)], [B, friend(B)], [C, friend(C, 'offline')]]);
++        locationStore.lastLocation.friendList = new Map();
++    });
++
++    async function run(store, ids) {
++        const pending = store.inviteFriendsNow(ids);
++        await vi.runAllTimersAsync();
++        return pending;
++    }
++
++    test('works in a public (non-group) instance', async () => {
++        locationStore.lastLocation.location = at('~region(us)');
++        const store = useUnderWebStore();
++        expect(store.canInviteHere).toBe(true);
++        const result = await run(store, [A, B, C]);
++        expect(result.sent).toBe(2);
++        expect(result.skipped).toEqual([{ userId: C, reason: 'not in-game right now' }]);
++        expect(notificationRequest.sendInvite).toHaveBeenCalledTimes(2);
++        expect(notificationRequest.sendInvite.mock.calls[0][0]).toMatchObject({ instanceId: at('~region(us)') });
++    });
++
++    test('is blocked in an Invite instance owned by someone else, with a clear reason', async () => {
++        locationStore.lastLocation.location = at(`~private(${A})~region(us)`);
++        const store = useUnderWebStore();
++        expect(store.canInviteHere).toBe(false);
++        expect(store.inviteBlockedReason).toMatch(/Only the instance owner/);
++        const result = await run(store, [B]);
++        expect(result.sent).toBe(0);
++        expect(notificationRequest.sendInvite).not.toHaveBeenCalled();
++    });
++
++    test('is allowed in your own Invite instance', async () => {
++        locationStore.lastLocation.location = at(`~private(${ME})~region(us)`);
++        const store = useUnderWebStore();
++        expect(store.canInviteHere).toBe(true);
++    });
++
++    test('skips friends already here and does not double-invite within 2 minutes', async () => {
++        locationStore.lastLocation.location = at('~region(us)');
++        locationStore.lastLocation.friendList = new Map([[B, {}]]);
++        const store = useUnderWebStore();
++        const first = await run(store, [A, B]);
++        expect(first.sent).toBe(1);
++        expect(first.skipped).toEqual([{ userId: B, reason: 'already in this instance' }]);
++        const second = await run(store, [A]);
++        expect(second.sent).toBe(0);
++        expect(second.skipped[0].reason).toMatch(/less than 2 minutes/);
++        expect(notificationRequest.sendInvite).toHaveBeenCalledTimes(1);
++    });
++
++    test('stops the batch on a VRChat rate limit', async () => {
++        locationStore.lastLocation.location = at('~region(us)');
++        notificationRequest.sendInvite.mockRejectedValueOnce({ status: 429, message: 'Too many' });
++        const store = useUnderWebStore();
++        const result = await run(store, [A, B]);
++        expect(result.sent).toBe(0);
++        expect(result.failed).toHaveLength(1);
++        expect(result.skipped).toEqual([{ userId: B, reason: 'VRChat rate limit — paused' }]);
++        expect(store.rateLimitBackoffUntil).toBeGreaterThan(Date.now());
++    });
++
++    test('auto-invite stays limited to approved groups unless "any instance" is on', async () => {
++        locationStore.lastLocation.location = at('~region(us)');
++        const store = useUnderWebStore();
++        expect(store.canAutoInviteHere).toBe(false);
++        await store.setAutoInviteAnywhere(true);
++        expect(store.canAutoInviteHere).toBe(true);
++    });
++});
+diff --git a/src/stores/underweb.js b/src/stores/underweb.js
+index a44ddaf..64c438e 100644
+--- a/src/stores/underweb.js
++++ b/src/stores/underweb.js
+@@ -4,9 +4,10 @@ import { toast } from 'vue-sonner';
+ 
+ import { groupRequest, notificationRequest, queryRequest } from '../api';
+ import configRepository from '../services/config';
+-import { parseLocation } from '../shared/utils';
++import { checkCanInvite, parseLocation } from '../shared/utils';
+ import { watchState } from '../services/watchState';
+ import { useFriendStore } from './friend';
++import { useInstanceStore } from './instance';
+ import { useLocationStore } from './location';
+ import { useUserStore } from './user';
+ import { useUnderWebNetworkStore } from './underwebNetwork';
+@@ -21,7 +22,8 @@ const CONFIG = Object.freeze({
+     recent: 'UWX_autoInviteRecent',
+     groupRecruitEnabled: 'UWX_groupRecruitEnabled',
+     groupRecruitMinPresenceSeconds: 'UWX_groupRecruitMinPresenceSeconds',
+-    groupRecruitRecent: 'UWX_groupRecruitRecent'
++    groupRecruitRecent: 'UWX_groupRecruitRecent',
++    autoInviteAnywhere: 'UWX_autoInviteAnywhere'
+ });
+ 
+ const INVITE_SCOPES = Object.freeze(['selected', 'favorites', 'all-online', 'staff', 'creators', 'partners']);
+@@ -31,17 +33,25 @@ const GROUP_RECRUIT_SEND_DELAY_MS = 3000;
+ const GROUP_RECRUIT_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+ const GROUP_RECRUIT_MAX_PER_SCAN = 6;
+ const MAX_LOG_ENTRIES = 100;
++// A manual invite to the same person for the same instance is skipped inside this window
++// so double-clicks and repeated batches do not spam them.
++const MANUAL_REINVITE_WINDOW_MS = 2 * 60 * 1000;
++const MAX_MANUAL_BATCH = 40;
+ 
+ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+ 
+ export const useUnderWebStore = defineStore('UnderWeb', () => {
+     const friendStore = useFriendStore();
++    const instanceStore = useInstanceStore();
+     const locationStore = useLocationStore();
+     const userStore = useUserStore();
+     const networkStore = useUnderWebNetworkStore();
+ 
+     const initialized = ref(false);
+     const autoInviteEnabled = ref(false);
++    const autoInviteAnywhere = ref(false);
++    const isManualInviting = ref(false);
++    const lastManualResult = ref(null);
+     const allowedGroupIds = ref([]);
+     const selectedUserIds = ref([]);
+     const excludedUserIds = ref([]);
+@@ -84,9 +94,37 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+     const isCurrentGroupAllowed = computed(() =>
+         Boolean(currentGroupId.value && allowedGroupIds.value.includes(currentGroupId.value))
+     );
+-    const canAutoInviteHere = computed(() => isGroupInstance.value && isCurrentGroupAllowed.value);
++    // VRChat decides who may invite into an instance by its access type. Reuse VRCX's
++    // checkCanInvite so UWX follows exactly the same rules as the rest of the client:
++    // public / group / own instances: yes; invite-only and friends-only you don't own: no;
++    // invite+ and friends+ while you are inside it: yes.
++    const canInviteHere = computed(() =>
++        Boolean(
++            currentLocationTag.value &&
++                currentParsedLocation.value.isRealInstance &&
++                checkCanInvite(currentLocationTag.value, {
++                    currentUserId: userStore.currentUser.id,
++                    lastLocationStr: locationStore.lastLocation.location,
++                    cachedInstances: instanceStore.cachedInstances
++                })
++        )
++    );
++    const inviteBlockedReason = computed(() => {
++        const L = currentParsedLocation.value;
++        if (!currentLocationTag.value || !L.isRealInstance) return 'You are not in a VRChat instance right now.';
++        if (canInviteHere.value) return '';
++        const cached = instanceStore.cachedInstances?.get(currentLocationTag.value);
++        if (cached?.closedAt) return 'This instance has been closed.';
++        if (L.accessType === 'invite') return 'Only the instance owner can invite people into an Invite instance.';
++        if (L.accessType === 'friends') return 'Only the instance owner can invite people into a Friends instance.';
++        return 'VRChat does not allow invites into this instance.';
++    });
++    const canAutoInviteHere = computed(
++        () => canInviteHere.value && (isCurrentGroupAllowed.value || autoInviteAnywhere.value)
++    );
+ 
+-    const canRecruitHere = computed(() => canAutoInviteHere.value);
++    // Group Recruiter sends VRChat *group* invites, so it stays limited to approved group instances.
++    const canRecruitHere = computed(() => isGroupInstance.value && isCurrentGroupAllowed.value);
+ 
+     const lobbyPlayers = computed(() => {
+         return Array.from(locationStore.lastLocation.playerList?.values?.() || [])
+@@ -233,6 +271,7 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+     async function loadSettings() {
+         const [
+             enabled,
++            anywhere,
+             groups,
+             users,
+             excludedUsers,
+@@ -244,6 +283,7 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+             recruitRecent
+         ] = await Promise.all([
+             configRepository.getBool(CONFIG.enabled, false),
++            configRepository.getBool(CONFIG.autoInviteAnywhere, false),
+             configRepository.getArray(CONFIG.groups, []),
+             configRepository.getArray(CONFIG.users, []),
+             configRepository.getArray(CONFIG.excludedUsers, []),
+@@ -255,6 +295,7 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+             configRepository.getObject(CONFIG.groupRecruitRecent, {})
+         ]);
+         autoInviteEnabled.value = Boolean(enabled);
++        autoInviteAnywhere.value = Boolean(anywhere);
+         allowedGroupIds.value = Array.isArray(groups) ? groups.filter((id) => String(id).startsWith('grp_')) : [];
+         selectedUserIds.value = Array.isArray(users) ? users.filter((id) => String(id).startsWith('usr_')) : [];
+         excludedUserIds.value = Array.isArray(excludedUsers)
+@@ -291,6 +332,130 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+         }
+     }
+ 
++    async function setAutoInviteAnywhere(value) {
++        autoInviteAnywhere.value = Boolean(value);
++        await configRepository.setBool(CONFIG.autoInviteAnywhere, autoInviteAnywhere.value);
++        addLog(
++            'info',
++            autoInviteAnywhere.value
++                ? 'Auto-invite will run in any instance you are allowed to invite into.'
++                : 'Auto-invite limited to approved group instances.'
++        );
++    }
++
++    /**
++     * Invite specific friends into the current instance right now. Works in any instance
++     * VRChat lets you invite into (not just group instances). Skips people who are already
++     * here, offline, on the do-not-invite list, or invited to this same instance in the last
++     * two minutes. Sends one at a time with a pause between, and stops if you change instance.
++     * @param {string[]} userIds
++     * @returns {Promise<{ sent: number, skipped: Array<{ userId: string, reason: string }>, failed: Array<{ userId: string, reason: string }> }>}
++     */
++    async function inviteFriendsNow(userIds) {
++        const result = { sent: 0, skipped: [], failed: [] };
++        if (isManualInviting.value) {
++            toast.info('An invite batch is already running.');
++            return result;
++        }
++        if (!watchState.isLoggedIn) {
++            toast.error('Log in to VRChat first.');
++            return result;
++        }
++        if (!canInviteHere.value) {
++            toast.error(inviteBlockedReason.value);
++            return result;
++        }
++        if (Date.now() < rateLimitBackoffUntil.value) {
++            const seconds = Math.ceil((rateLimitBackoffUntil.value - Date.now()) / 1000);
++            toast.error(`VRChat rate limit: wait ${seconds}s before sending more invites.`);
++            return result;
++        }
++        const unique = [...new Set((userIds || []).map((id) => String(id || '').trim()))].filter((id) =>
++            id.startsWith('usr_')
++        );
++        const scanLocationTag = currentLocationTag.value;
++        const queue = [];
++        for (const userId of unique) {
++            const ctx = friendStore.friends.get(userId);
++            const friend = normalizeFriend(ctx);
++            const label = friend?.displayName || userId;
++            if (!friend) {
++                result.skipped.push({ userId, reason: 'not on your friends list' });
++                continue;
++            }
++            if (excludedUserIds.value.includes(userId)) {
++                result.skipped.push({ userId, reason: 'on your do-not-invite list' });
++                continue;
++            }
++            if (friend.state !== 'online') {
++                result.skipped.push({ userId, reason: 'not in-game right now' });
++                continue;
++            }
++            const friendTag = friend.ref?.$location?.tag || friend.ref?.location || '';
++            if (friendTag === scanLocationTag || locationStore.lastLocation.friendList.has(userId)) {
++                result.skipped.push({ userId, reason: 'already in this instance' });
++                continue;
++            }
++            const recent = recentInvites.get(userId);
++            if (recent?.location === scanLocationTag && Date.now() - recent.at < MANUAL_REINVITE_WINDOW_MS) {
++                result.skipped.push({ userId, reason: 'invited to this instance less than 2 minutes ago' });
++                continue;
++            }
++            queue.push({ ...friend, displayName: label });
++        }
++        if (queue.length > MAX_MANUAL_BATCH) {
++            queue.slice(MAX_MANUAL_BATCH).forEach((friend) =>
++                result.skipped.push({ userId: friend.id, reason: `batch limit is ${MAX_MANUAL_BATCH}` })
++            );
++            queue.length = MAX_MANUAL_BATCH;
++        }
++        if (!queue.length) {
++            lastManualResult.value = { at: Date.now(), ...result };
++            toast.info(result.skipped.length ? 'Nobody to invite — everyone selected was skipped.' : 'Pick at least one friend.');
++            return result;
++        }
++
++        isManualInviting.value = true;
++        try {
++            const worldName = await getWorldName();
++            addLog('info', `Invite now: sending ${queue.length} invite(s).`);
++            for (const [index, friend] of queue.entries()) {
++                if (currentLocationTag.value !== scanLocationTag || !canInviteHere.value) {
++                    queue.slice(index).forEach((f) => result.skipped.push({ userId: f.id, reason: 'you changed instance' }));
++                    addLog('warning', 'Invite batch stopped because you changed instance.');
++                    break;
++                }
++                try {
++                    await sendInviteToFriend(friend, worldName);
++                    result.sent += 1;
++                } catch (error) {
++                    const status = error?.status || error?.statusCode || error?.response?.status;
++                    const message = error?.error?.message || error?.message || 'Unknown invite error';
++                    result.failed.push({ userId: friend.id, reason: message });
++                    addLog('error', `Failed to invite ${friend.displayName}: ${message}`, { userId: friend.id });
++                    if (status === 429) {
++                        rateLimitBackoffUntil.value = Date.now() + 60000;
++                        queue.slice(index + 1).forEach((f) =>
++                            result.skipped.push({ userId: f.id, reason: 'VRChat rate limit — paused' })
++                        );
++                        addLog('warning', 'VRChat rate limit reached. Invites paused for 60 seconds.');
++                        break;
++                    }
++                }
++                if (index < queue.length - 1) await sleep(SEND_DELAY_MS);
++            }
++        } finally {
++            isManualInviting.value = false;
++        }
++        lastManualResult.value = { at: Date.now(), ...result };
++        const parts = [`${result.sent} sent`];
++        if (result.skipped.length) parts.push(`${result.skipped.length} skipped`);
++        if (result.failed.length) parts.push(`${result.failed.length} failed`);
++        if (result.failed.length && !result.sent) toast.error(`Invites: ${parts.join(' · ')}`);
++        else toast.success(`Invites: ${parts.join(' · ')}`);
++        return result;
++    }
++
+     async function setInviteScope(value) {
+         const normalized = INVITE_SCOPES.includes(value) ? value : 'selected';
+         inviteScope.value = normalized;
+@@ -398,8 +563,8 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+ 
+     async function sendInviteToFriend(friend, worldName) {
+         const location = currentParsedLocation.value;
+-        if (!location.isRealInstance || !location.groupId || !isCurrentGroupAllowed.value) {
+-            throw new Error('Group instance changed before invite could be sent.');
++        if (!location.isRealInstance || !canInviteHere.value) {
++            throw new Error(inviteBlockedReason.value || 'The instance changed before the invite could be sent.');
+         }
+         await notificationRequest.sendInvite(
+             {
+@@ -575,7 +740,11 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+         }
+         if (!canAutoInviteHere.value) {
+             if (source === 'manual') {
+-                toast.error('UWX Instance Inviter only runs in an allowed group instance.');
++                toast.error(
++                    canInviteHere.value
++                        ? 'Auto-invite is limited to approved group instances. Turn on "Auto-invite in any instance" to use it here, or use Invite now.'
++                        : inviteBlockedReason.value
++                );
+             }
+             return { sent: 0, skipped: 'not-allowed-instance' };
+         }
+@@ -735,6 +904,13 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+     return {
+         initialized,
+         autoInviteEnabled,
++        autoInviteAnywhere,
++        isManualInviting,
++        lastManualResult,
++        canInviteHere,
++        inviteBlockedReason,
++        setAutoInviteAnywhere,
++        inviteFriendsNow,
+         allowedGroupIds,
+         selectedUserIds,
+         excludedUserIds,
+diff --git a/src/stores/uwxGroupTools.js b/src/stores/uwxGroupTools.js
+new file mode 100644
+index 0000000..a404557
+--- /dev/null
++++ b/src/stores/uwxGroupTools.js
+@@ -0,0 +1,279 @@
++import { computed, reactive, ref } from 'vue';
++import { defineStore } from 'pinia';
++import { toast } from 'vue-sonner';
++
++import { groupRequest } from '../api';
++import configRepository from '../services/config';
++import { hasGroupModerationPermission, hasGroupPermission, parseLocation } from '../shared/utils';
++import { watchState } from '../services/watchState';
++import { showGroupMemberModerationDialog } from '../coordinators/groupCoordinator';
++import { useGroupStore } from './group';
++import { useLocationStore } from './location';
++import { useModalStore } from './modal';
++
++// UWX Group Tools: a dashboard over VRChat's real group moderation API.
++// Every action here maps to a VRChat endpoint VRCX already uses:
++//   kick   -> DELETE /groups/{groupId}/members/{userId}   (needs group-members-remove)
++//   ban    -> POST   /groups/{groupId}/bans               (needs group-bans-manage)
++//   unban  -> DELETE /groups/{groupId}/bans/{userId}      (needs group-bans-manage)
++// VRChat enforces these permissions server-side; UWX only hides buttons you can't use.
++
++const CONFIG = Object.freeze({
++    log: 'UWX_groupModerationLog'
++});
++const MAX_LOG = 300;
++const PERMISSION_TTL_MS = 10 * 60 * 1000;
++const PERMISSION_FETCH_GAP_MS = 400;
++
++export const GROUP_PERMS = Object.freeze({
++    kick: 'group-members-remove',
++    ban: 'group-bans-manage',
++    audit: 'group-audit-view',
++    invite: 'group-invites-manage'
++});
++
++const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
++const errorStatus = (error) => error?.status || error?.statusCode || error?.response?.status || 0;
++const errorMessage = (error) => error?.error?.message || error?.message || 'Unknown error';
++
++export const useUwxGroupToolsStore = defineStore('UwxGroupTools', () => {
++    const groupStore = useGroupStore();
++    const locationStore = useLocationStore();
++    const modalStore = useModalStore();
++
++    /** groupId -> { ref, loadedAt, error } */
++    const groupInfo = reactive(new Map());
++    const loadingPermissions = ref(false);
++    const moderationLog = ref([]);
++    const initialized = ref(false);
++    const busyAction = ref('');
++
++    const myGroups = computed(() =>
++        Array.from(groupStore.currentUserGroups.values())
++            .filter((group) => group && String(group.id || '').startsWith('grp_'))
++            .map((group) => {
++                const info = groupInfo.get(group.id);
++                const ref = info?.ref || group;
++                return {
++                    id: group.id,
++                    name: ref.name || group.name || group.id,
++                    iconUrl: ref.iconUrl || group.iconUrl || '',
++                    memberCount: ref.memberCount ?? group.memberCount ?? null,
++                    ref,
++                    permissionsLoaded: Boolean(info?.ref?.myMember),
++                    error: info?.error || ''
++                };
++            })
++            .sort((a, b) => a.name.localeCompare(b.name))
++    );
++
++    const moderatableGroups = computed(() =>
++        myGroups.value.filter((group) => group.permissionsLoaded && hasGroupModerationPermission(group.ref))
++    );
++
++    function can(groupId, action) {
++        const ref = groupInfo.get(groupId)?.ref;
++        return Boolean(ref && hasGroupPermission(ref, GROUP_PERMS[action]));
++    }
++
++    async function init() {
++        if (initialized.value) return;
++        const stored = await configRepository.getArray(CONFIG.log, []);
++        moderationLog.value = Array.isArray(stored) ? stored.slice(0, MAX_LOG) : [];
++        initialized.value = true;
++    }
++
++    async function addLog(entry) {
++        moderationLog.value = [{ id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, at: Date.now(), ...entry }, ...moderationLog.value].slice(0, MAX_LOG);
++        await configRepository.setArray(CONFIG.log, moderationLog.value);
++    }
++
++    async function clearLog() {
++        moderationLog.value = [];
++        await configRepository.setArray(CONFIG.log, []);
++    }
++
++    async function loadGroupPermissions(groupId, { force = false } = {}) {
++        const existing = groupInfo.get(groupId);
++        if (!force && existing?.ref?.myMember && Date.now() - existing.loadedAt < PERMISSION_TTL_MS) {
++            return existing.ref;
++        }
++        try {
++            const args = await groupRequest.getGroup({ groupId, includeRoles: true });
++            groupInfo.set(groupId, { ref: args.ref, loadedAt: Date.now(), error: '' });
++            return args.ref;
++        } catch (error) {
++            groupInfo.set(groupId, { ref: existing?.ref || null, loadedAt: Date.now(), error: errorMessage(error) });
++            if (errorStatus(error) === 429) throw error;
++            return null;
++        }
++    }
++
++    /** Fetch permissions for every group you're in, gently (one request at a time). */
++    async function loadAllPermissions({ force = false } = {}) {
++        if (loadingPermissions.value || !watchState.isLoggedIn) return;
++        loadingPermissions.value = true;
++        try {
++            for (const group of myGroups.value) {
++                const info = groupInfo.get(group.id);
++                if (!force && info?.ref?.myMember && Date.now() - info.loadedAt < PERMISSION_TTL_MS) continue;
++                try {
++                    await loadGroupPermissions(group.id, { force });
++                } catch (error) {
++                    if (errorStatus(error) === 429) {
++                        toast.error('VRChat rate limit while loading groups. Try again in a minute.');
++                        break;
++                    }
++                }
++                await sleep(PERMISSION_FETCH_GAP_MS);
++            }
++        } finally {
++            loadingPermissions.value = false;
++        }
++    }
++
++    function normalizeMember(json, fallbackUserId = '') {
++        if (!json) return null;
++        return {
++            userId: json.userId || json.user?.id || fallbackUserId,
++            displayName: json.user?.displayName || json.userId || fallbackUserId,
++            membershipStatus: json.membershipStatus || 'member',
++            roleIds: Array.isArray(json.roleIds) ? json.roleIds : [],
++            joinedAt: json.joinedAt || json.createdAt || null,
++            isRepresenting: Boolean(json.isRepresenting)
++        };
++    }
++
++    /**
++     * Look up someone in a group by VRChat user ID (usr_…) or by name.
++     * @returns {Promise<{ results: object[], note: string }>}
++     */
++    async function lookupMember(groupId, rawQuery) {
++        const query = String(rawQuery || '').trim();
++        if (!groupId || !query) return { results: [], note: 'Pick a group and type a name or usr_ ID.' };
++        const idMatch = query.match(/usr_[0-9a-f-]{36}/i);
++        if (idMatch) {
++            const userId = idMatch[0];
++            try {
++                const args = await groupRequest.getGroupMember({ groupId, userId });
++                const member = normalizeMember(args?.json, userId);
++                if (!member) {
++                    return { results: [{ userId, displayName: userId, membershipStatus: 'not a member', roleIds: [] }], note: '' };
++                }
++                return { results: [member], note: '' };
++            } catch (error) {
++                if (errorStatus(error) === 404) {
++                    return { results: [{ userId, displayName: userId, membershipStatus: 'not a member', roleIds: [] }], note: '' };
++                }
++                return { results: [], note: `Lookup failed: ${errorMessage(error)}` };
++            }
++        }
++        if (query.length < 2) return { results: [], note: 'Type at least 2 characters.' };
++        try {
++            const args = await groupRequest.getGroupMembersSearch({ groupId, query, n: 25, offset: 0 });
++            const results = (args?.json?.results || []).map((json) => normalizeMember(json)).filter(Boolean);
++            return { results, note: results.length ? '' : 'No members match that name. Search by usr_ ID to act on non-members.' };
++        } catch (error) {
++            return { results: [], note: `Search failed: ${errorMessage(error)}` };
++        }
++    }
++
++    const ACTIONS = {
++        kick: {
++            perm: 'kick',
++            title: 'Remove from group',
++            verb: 'removed from',
++            run: (groupId, userId) => groupRequest.kickGroupMember({ groupId, userId })
++        },
++        ban: {
++            perm: 'ban',
++            title: 'Ban from group',
++            verb: 'banned from',
++            run: (groupId, userId) => groupRequest.banGroupMember({ groupId, userId })
++        },
++        unban: {
++            perm: 'ban',
++            title: 'Unban',
++            verb: 'unbanned from',
++            run: (groupId, userId) => groupRequest.unbanGroupMember({ groupId, userId })
++        }
++    };
++
++    /**
++     * Run a moderation action after a confirmation prompt. Returns true if VRChat accepted it.
++     */
++    async function moderate(action, { groupId, groupName, userId, displayName }) {
++        const spec = ACTIONS[action];
++        if (!spec) return false;
++        if (!can(groupId, spec.perm)) {
++            toast.error(`Your role in ${groupName} doesn't have permission to ${action}.`);
++            return false;
++        }
++        const label = displayName || userId;
++        const { ok } = await modalStore.confirm({
++            title: `${spec.title}?`,
++            description: `${label} will be ${spec.verb} ${groupName}. This runs on VRChat immediately.`,
++            confirmText: spec.title,
++            destructive: action !== 'unban'
++        });
++        if (!ok) return false;
++        busyAction.value = `${action}:${userId}`;
++        try {
++            await spec.run(groupId, userId);
++            await addLog({ action, groupId, groupName, userId, displayName: label, result: 'ok' });
++            toast.success(`${label} ${spec.verb} ${groupName}.`);
++            return true;
++        } catch (error) {
++            const status = errorStatus(error);
++            const message =
++                status === 403
++                    ? 'VRChat refused: your group role lacks this permission, or the target outranks you.'
++                    : status === 404
++                      ? action === 'unban'
++                          ? 'That user is not banned from this group.'
++                          : 'That user is not a member of this group.'
++                      : status === 429
++                        ? 'VRChat rate limit — wait a minute and try again.'
++                        : errorMessage(error);
++            await addLog({ action, groupId, groupName, userId, displayName: label, result: 'failed', error: message });
++            toast.error(message);
++            return false;
++        } finally {
++            busyAction.value = '';
++        }
++    }
++
++    function openFullModeration(groupId, userId = '') {
++        showGroupMemberModerationDialog(groupId, userId);
++    }
++
++    const currentInstanceGroupId = computed(() => parseLocation(locationStore.lastLocation.location || '').groupId || '');
++
++    const instanceOccupants = computed(() =>
++        Array.from(locationStore.lastLocation.playerList?.values?.() || [])
++            .map((player) => ({
++                userId: String(player?.userId || ''),
++                displayName: player?.displayName || player?.userId || 'Unknown user'
++            }))
++            .filter((player) => player.userId.startsWith('usr_'))
++    );
++
++    return {
++        groupInfo,
++        loadingPermissions,
++        moderationLog,
++        busyAction,
++        myGroups,
++        moderatableGroups,
++        currentInstanceGroupId,
++        instanceOccupants,
++        init,
++        can,
++        clearLog,
++        loadGroupPermissions,
++        loadAllPermissions,
++        lookupMember,
++        moderate,
++        openFullModeration
++    };
++});
+diff --git a/src/styles/uwx-premium.css b/src/styles/uwx-premium.css
+index 58ad4dc..f52a648 100644
+--- a/src/styles/uwx-premium.css
++++ b/src/styles/uwx-premium.css
+@@ -246,3 +246,20 @@ select:focus-visible {
+     .uwx-skeleton::after { animation: none; opacity: .35; }
+     *, *::before, *::after { scroll-behavior: auto !important; }
+ }
++
++/* UWX rc10 — inviter + group tools */
++.uwx-invite-permission { display: flex; align-items: center; gap: 6px; font-size: 13px; }
++.uwx-invite-permission.ok { color: var(--uwx-accent, #3df514); }
++.uwx-invite-permission.blocked { color: #f2c14e; }
++.uwx-inline-toggle { display: flex; gap: 12px; align-items: flex-start; cursor: pointer; }
++.uwx-inline-toggle span { display: flex; flex-direction: column; gap: 2px; }
++.uwx-inline-toggle small { color: var(--muted-foreground, #8fa898); font-size: 12px; }
++.uwx-invite-result { border: 1px solid rgba(61, 245, 20, 0.18); border-radius: 6px; padding: 10px 12px; font-size: 13px; }
++.uwx-invite-result ul { margin: 6px 0 0; padding-left: 18px; color: var(--muted-foreground, #8fa898); }
++.uwx-group-tool-list, .uwx-member-results { display: flex; flex-direction: column; gap: 6px; }
++.uwx-group-tool-row, .uwx-member-row { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 6px; background: rgba(255, 255, 255, 0.02); }
++.uwx-group-tool-row { cursor: pointer; text-align: left; width: 100%; }
++.uwx-group-tool-row:hover { border-color: rgba(61, 245, 20, 0.3); }
++.uwx-group-tool-row.active { border-color: rgba(61, 245, 20, 0.6); background: rgba(61, 245, 20, 0.05); }
++.uwx-group-icon { width: 36px; height: 36px; border-radius: 6px; object-fit: cover; flex: none; }
++.uwx-group-icon-empty { display: flex; align-items: center; justify-content: center; background: rgba(255, 255, 255, 0.05); }
+diff --git a/src/views/UnderWeb/UnderWeb.vue b/src/views/UnderWeb/UnderWeb.vue
+index f5e39b7..1767361 100644
+--- a/src/views/UnderWeb/UnderWeb.vue
++++ b/src/views/UnderWeb/UnderWeb.vue
+@@ -83,6 +83,8 @@
+             <p>{{ activePanelMeta.description }}</p>
+         </div>
+ 
++        <UwxGroupTools v-if="activePanel === 'groups'" />
++
+         <div class="uwx-grid">
+             <Card v-show="activePanel === 'command'" class="uwx-card uwx-card-wide uwx-command-card">
+                 <CardHeader>
+@@ -176,7 +178,12 @@
+                                 <div class="uwx-section-label">INSTANCE INVITER</div>
+                                 <h3 class="uwx-control-title">Bring friends and UnderWeb roles into this lobby</h3>
+                                 <p class="text-sm text-muted-foreground mt-1">
+-                                    This is the old Auto Invite behavior, now named correctly so it is not confused with group recruiting.
++                                    Works in any instance VRChat lets you invite into — public, group, Friends+, Invite+, and your own.
++                                    The switch arms automatic invites; "Invite now" sends once.
++                                </p>
++                                <p class="uwx-invite-permission mt-2" :class="canInviteHere ? 'ok' : 'blocked'">
++                                    <i :class="canInviteHere ? 'ri-checkbox-circle-line' : 'ri-forbid-line'" />
++                                    {{ canInviteHere ? 'You can invite people into this instance.' : inviteBlockedReason }}
+                                 </p>
+                             </div>
+                             <Switch :model-value="autoInviteEnabled" @update:modelValue="setAutoInviteEnabled" />
+@@ -208,10 +215,30 @@
+                             </div>
+                         </div>
+ 
+-                        <Button class="mt-4" :disabled="isScanning || !canAutoInviteHere" variant="secondary" @click="inviteNow">
+-                            <i :class="isScanning ? 'ri-loader-4-line animate-spin' : 'ri-send-plane-2-line'" />
+-                            Invite selected audience into lobby
+-                        </Button>
++                        <label class="uwx-inline-toggle mt-4">
++                            <Switch :model-value="autoInviteAnywhere" @update:modelValue="setAutoInviteAnywhere" />
++                            <span>
++                                <strong>Auto-invite in any instance</strong>
++                                <small>Off: automatic invites only run in your approved group instances. Invite now always works where VRChat allows it.</small>
++                            </span>
++                        </label>
++
++                        <div class="flex flex-wrap items-center gap-2 mt-4">
++                            <Button :disabled="isManualInviting || !canInviteHere || !invitePoolFriends.length" @click="inviteNow">
++                                <i :class="isManualInviting ? 'ri-loader-4-line animate-spin' : 'ri-send-plane-2-line'" />
++                                Invite now ({{ invitePoolFriends.length }})
++                            </Button>
++                            <span class="text-xs text-muted-foreground">Sends to the audience above, one every 2.5s. Skips anyone already here.</span>
++                        </div>
++
++                        <div v-if="lastManualResult" class="uwx-invite-result mt-3">
++                            <strong>Last batch: {{ lastManualResult.sent }} sent · {{ lastManualResult.skipped.length }} skipped · {{ lastManualResult.failed.length }} failed</strong>
++                            <ul v-if="lastManualResult.skipped.length || lastManualResult.failed.length">
++                                <li v-for="item in [...lastManualResult.failed, ...lastManualResult.skipped].slice(0, 8)" :key="item.userId + item.reason">
++                                    {{ friendDisplayName(item.userId) }} — {{ item.reason }}
++                                </li>
++                            </ul>
++                        </div>
+                     </section>
+                 </CardContent>
+             </Card>
+@@ -949,6 +976,7 @@
+     import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+     import { Input } from '@/components/ui/input';
+     import { Switch } from '@/components/ui/switch';
++    import UwxGroupTools from './UwxGroupTools.vue';
+ 
+     import { UWX_VERSION } from '../../shared/constants/uwx';
+     import { openExternalLink, parseLocation } from '../../shared/utils';
+@@ -987,7 +1015,13 @@
+         canAutoInviteHere,
+         canRecruitHere,
+         eligibleLobbyRecruits,
+-        eligibleInviteFriends
++        eligibleInviteFriends,
++        autoInviteAnywhere,
++        isManualInviting,
++        lastManualResult,
++        canInviteHere,
++        inviteBlockedReason,
++        invitePoolFriends
+     } = storeToRefs(underWebStore);
+ 
+     const {
+@@ -1207,6 +1241,7 @@
+     const activePanel = ref('command');
+     const panelTabs = [
+         { id: 'command', label: 'Command', short: 'Live ops', icon: 'ri-dashboard-3-line' },
++        { id: 'groups', label: 'Groups', short: 'Moderation', icon: 'ri-shield-user-line' },
+         { id: 'osc', label: 'OSC Lab', short: 'Avatar + chatbox', icon: 'ri-pulse-line' },
+         { id: 'people', label: 'People', short: 'Roles + activity', icon: 'ri-team-line' },
+         { id: 'safety', label: 'Safety Intel', short: 'Shared warnings', icon: 'ri-shield-check-line' },
+@@ -1214,6 +1249,7 @@
+     ];
+     const panelMeta = {
+         command: { eyebrow: 'LIVE OPERATIONS', title: 'Command Center', description: 'Lobby recruiting, instance invites, Radar, events, and connected identity.' },
++        groups: { eyebrow: 'GROUP OPERATIONS', title: 'Group Tools', description: 'Look up members, remove, ban and unban in the VRChat groups your role can moderate.' },
+         osc: { eyebrow: 'REAL-TIME CONTROL', title: 'OSC Lab', description: 'Chatbox composition, heart rate, presets, and direct avatar parameter testing.' },
+         people: { eyebrow: 'NETWORK PEOPLE', title: 'People & Activity', description: 'Inspect roles, manage exclusions, and review what UWX did this session.' },
+         safety: { eyebrow: 'COMMUNITY AWARENESS', title: 'Safety Intel', description: 'Reviewed shared warnings for crashing, doxxing threats, harassment, malicious behavior, and other community risks.' },
+@@ -1504,7 +1540,16 @@
+     }
+ 
+     function inviteNow() {
+-        void scanAndInvite({ source: 'manual', force: true });
++        void underWebStore.inviteFriendsNow(invitePoolFriends.value.map((friend) => friend.id));
++    }
++
++    function setAutoInviteAnywhere(value) {
++        void underWebStore.setAutoInviteAnywhere(value);
++    }
++
++    function friendDisplayName(userId) {
++        const ctx = friendStore.friends.get(userId);
++        return ctx?.ref?.displayName || ctx?.name || userId;
+     }
+ 
+     function recruitNow() {
+diff --git a/src/views/UnderWeb/UwxGroupTools.vue b/src/views/UnderWeb/UwxGroupTools.vue
+new file mode 100644
+index 0000000..a9d1f4c
+--- /dev/null
++++ b/src/views/UnderWeb/UwxGroupTools.vue
+@@ -0,0 +1,249 @@
++<template>
++    <div class="uwx-grid">
++        <Card class="uwx-card uwx-card-wide">
++            <CardHeader>
++                <div class="flex items-start justify-between gap-4">
++                    <div>
++                        <CardTitle>Your groups</CardTitle>
++                        <CardDescription>
++                            Groups where your VRChat role can moderate. Permissions come straight from VRChat.
++                        </CardDescription>
++                    </div>
++                    <Button size="sm" variant="outline" :disabled="loadingPermissions" @click="refresh(true)">
++                        <i :class="loadingPermissions ? 'ri-loader-4-line animate-spin' : 'ri-refresh-line'" />
++                        Refresh
++                    </Button>
++                </div>
++            </CardHeader>
++            <CardContent>
++                <p v-if="!myGroups.length" class="text-sm text-muted-foreground">
++                    You're not in any VRChat groups yet, or your group list hasn't loaded.
++                </p>
++                <p v-else-if="loadingPermissions && !moderatableGroups.length" class="text-sm text-muted-foreground">
++                    Checking your role in {{ myGroups.length }} group{{ myGroups.length === 1 ? '' : 's' }}…
++                </p>
++                <p v-else-if="!moderatableGroups.length" class="text-sm text-muted-foreground">
++                    None of your groups give your role moderation permissions.
++                </p>
++                <div v-else class="uwx-group-tool-list">
++                    <button
++                        v-for="group in moderatableGroups"
++                        :key="group.id"
++                        type="button"
++                        class="uwx-group-tool-row"
++                        :class="{ active: selectedGroupId === group.id }"
++                        @click="selectGroup(group.id)">
++                        <img v-if="group.iconUrl" :src="group.iconUrl" alt="" class="uwx-group-icon" />
++                        <span v-else class="uwx-group-icon uwx-group-icon-empty"><i class="ri-group-line" /></span>
++                        <span class="min-w-0 flex-1 text-left">
++                            <strong class="block truncate">{{ group.name }}</strong>
++                            <small class="text-muted-foreground">
++                                {{ group.memberCount != null ? group.memberCount + ' members' : group.id }}
++                                <template v-if="currentInstanceGroupId === group.id"> · you're in its instance</template>
++                            </small>
++                        </span>
++                        <span class="flex flex-wrap gap-1 justify-end">
++                            <Badge v-if="can(group.id, 'kick')" variant="outline">REMOVE</Badge>
++                            <Badge v-if="can(group.id, 'ban')" variant="outline">BAN</Badge>
++                            <Badge v-if="can(group.id, 'audit')" variant="outline">AUDIT</Badge>
++                        </span>
++                    </button>
++                </div>
++            </CardContent>
++        </Card>
++
++        <Card v-if="selectedGroup" class="uwx-card uwx-card-wide">
++            <CardHeader>
++                <div class="flex items-start justify-between gap-4">
++                    <div>
++                        <CardTitle>{{ selectedGroup.name }}</CardTitle>
++                        <CardDescription>Look up a member by name, or anyone by their usr_ ID.</CardDescription>
++                    </div>
++                    <Button size="sm" variant="outline" @click="openFullModeration(selectedGroup.id)">
++                        <i class="ri-shield-user-line" />
++                        Full moderation (bans, invites, audit log)
++                    </Button>
++                </div>
++            </CardHeader>
++            <CardContent class="space-y-4">
++                <form class="flex gap-2" @submit.prevent="runLookup">
++                    <Input v-model="lookupQuery" placeholder="Display name or usr_xxxxxxxx-…" aria-label="Member name or VRChat user ID" />
++                    <Button type="submit" :disabled="lookingUp">
++                        <i :class="lookingUp ? 'ri-loader-4-line animate-spin' : 'ri-search-line'" />
++                        Look up
++                    </Button>
++                </form>
++                <p v-if="lookupNote" class="text-sm text-muted-foreground">{{ lookupNote }}</p>
++                <div v-if="lookupResults.length" class="uwx-member-results">
++                    <div v-for="member in lookupResults" :key="member.userId" class="uwx-member-row">
++                        <div class="min-w-0 flex-1">
++                            <strong class="block truncate">{{ member.displayName }}</strong>
++                            <small class="text-muted-foreground">{{ member.userId }} · {{ member.membershipStatus }}</small>
++                        </div>
++                        <div class="flex flex-wrap gap-2 justify-end">
++                            <Button size="sm" variant="ghost" @click="openFullModeration(selectedGroup.id, member.userId)">Details</Button>
++                            <Button
++                                v-if="member.membershipStatus === 'member' && can(selectedGroup.id, 'kick')"
++                                size="sm"
++                                variant="outline"
++                                :disabled="!!busyAction"
++                                @click="act('kick', member)">Remove</Button>
++                            <Button
++                                v-if="member.membershipStatus !== 'banned' && can(selectedGroup.id, 'ban')"
++                                size="sm"
++                                variant="destructive"
++                                :disabled="!!busyAction"
++                                @click="act('ban', member)">Ban</Button>
++                            <Button
++                                v-if="member.membershipStatus !== 'member' && can(selectedGroup.id, 'ban')"
++                                size="sm"
++                                variant="outline"
++                                :disabled="!!busyAction"
++                                @click="act('unban', member)">Unban</Button>
++                        </div>
++                    </div>
++                </div>
++
++                <div v-if="currentInstanceGroupId === selectedGroup.id && instanceOccupants.length">
++                    <div class="uwx-section-label">IN THIS GROUP INSTANCE NOW</div>
++                    <div class="uwx-member-results mt-2">
++                        <div v-for="player in instanceOccupants" :key="player.userId" class="uwx-member-row">
++                            <div class="min-w-0 flex-1">
++                                <strong class="block truncate">{{ player.displayName }}</strong>
++                                <small class="text-muted-foreground">{{ player.userId }}</small>
++                            </div>
++                            <div class="flex flex-wrap gap-2 justify-end">
++                                <Button size="sm" variant="ghost" @click="lookupPlayer(player)">Check</Button>
++                                <Button
++                                    v-if="can(selectedGroup.id, 'ban')"
++                                    size="sm"
++                                    variant="destructive"
++                                    :disabled="!!busyAction"
++                                    @click="act('ban', { userId: player.userId, displayName: player.displayName })">Ban</Button>
++                            </div>
++                        </div>
++                    </div>
++                    <p class="uwx-help mt-2">
++                        Banning removes them from the group. UWX doesn't kick people out of an instance — use VRChat's
++                        in-game group instance moderation for that.
++                    </p>
++                </div>
++            </CardContent>
++        </Card>
++
++        <Card class="uwx-card uwx-card-wide">
++            <CardHeader>
++                <div class="flex items-start justify-between gap-4">
++                    <div>
++                        <CardTitle>UWX moderation history</CardTitle>
++                        <CardDescription>
++                            Actions taken from this PC. VRChat's own audit log (all staff) is under Full moderation.
++                        </CardDescription>
++                    </div>
++                    <Button size="sm" variant="ghost" :disabled="!moderationLog.length" @click="clearLog">Clear</Button>
++                </div>
++            </CardHeader>
++            <CardContent>
++                <div v-if="moderationLog.length" class="uwx-log-list">
++                    <div v-for="entry in moderationLog.slice(0, 60)" :key="entry.id" class="uwx-log-row">
++                        <span class="uwx-log-time">{{ formatWhen(entry.at) }}</span>
++                        <Badge :variant="entry.result === 'ok' ? 'outline' : 'destructive'">{{ entry.action }}</Badge>
++                        <span class="min-w-0 break-words">
++                            {{ entry.displayName }} · {{ entry.groupName }}
++                            <template v-if="entry.result !== 'ok'"> — {{ entry.error }}</template>
++                        </span>
++                    </div>
++                </div>
++                <p v-else class="text-sm text-muted-foreground">No moderation actions yet.</p>
++            </CardContent>
++        </Card>
++    </div>
++</template>
++
++<script setup>
++    import { computed, onMounted, ref, watch } from 'vue';
++    import { storeToRefs } from 'pinia';
++    import { Badge } from '@/components/ui/badge';
++    import { Button } from '@/components/ui/button';
++    import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
++    import { Input } from '@/components/ui/input';
++
++    import { useUwxGroupToolsStore } from '../../stores/uwxGroupTools';
++
++    const store = useUwxGroupToolsStore();
++    const { loadingPermissions, moderationLog, busyAction, myGroups, moderatableGroups, currentInstanceGroupId, instanceOccupants } =
++        storeToRefs(store);
++    const { can, clearLog, lookupMember, moderate, openFullModeration, loadAllPermissions } = store;
++
++    const selectedGroupId = ref('');
++    const lookupQuery = ref('');
++    const lookupResults = ref([]);
++    const lookupNote = ref('');
++    const lookingUp = ref(false);
++
++    const selectedGroup = computed(() => moderatableGroups.value.find((group) => group.id === selectedGroupId.value) || null);
++
++    function selectGroup(groupId) {
++        if (selectedGroupId.value === groupId) return;
++        selectedGroupId.value = groupId;
++        lookupResults.value = [];
++        lookupNote.value = '';
++    }
++
++    async function refresh(force = false) {
++        await loadAllPermissions({ force });
++        if (!selectedGroupId.value) {
++            const inInstance = moderatableGroups.value.find((group) => group.id === currentInstanceGroupId.value);
++            selectedGroupId.value = (inInstance || moderatableGroups.value[0])?.id || '';
++        }
++    }
++
++    async function runLookup() {
++        if (!selectedGroup.value) return;
++        lookingUp.value = true;
++        try {
++            const { results, note } = await lookupMember(selectedGroup.value.id, lookupQuery.value);
++            lookupResults.value = results;
++            lookupNote.value = note;
++        } finally {
++            lookingUp.value = false;
++        }
++    }
++
++    function lookupPlayer(player) {
++        lookupQuery.value = player.userId;
++        void runLookup();
++    }
++
++    async function act(action, member) {
++        if (!selectedGroup.value) return;
++        const ok = await moderate(action, {
++            groupId: selectedGroup.value.id,
++            groupName: selectedGroup.value.name,
++            userId: member.userId,
++            displayName: member.displayName
++        });
++        if (ok && lookupResults.value.some((m) => m.userId === member.userId)) {
++            const next = action === 'ban' ? 'banned' : action === 'kick' ? 'not a member' : 'not a member';
++            lookupResults.value = lookupResults.value.map((m) => (m.userId === member.userId ? { ...m, membershipStatus: next } : m));
++        }
++    }
++
++    function formatWhen(at) {
++        const date = new Date(Number(at) || Date.now());
++        return date.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
++    }
++
++    onMounted(async () => {
++        await store.init();
++        await refresh(false);
++    });
++
++    // Groups load after VRChat login; pick them up when they arrive.
++    watch(
++        () => myGroups.value.length,
++        (count, previous) => {
++            if (count && count !== previous) void refresh(false);
++        }
++    );
++</script>
