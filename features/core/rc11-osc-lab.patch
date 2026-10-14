@@ -1,0 +1,2503 @@
+diff --git a/CHANGELOG_UWX.md b/CHANGELOG_UWX.md
+index 4fd1499..33dc685 100644
+--- a/CHANGELOG_UWX.md
++++ b/CHANGELOG_UWX.md
+@@ -1,5 +1,23 @@
+ # UnderWeb X changelog
+ 
++## 0.5.2-rc11 — OSC Lab 3: music, weather and statuses together
++
++Root causes fixed from 0.5.0:
++- Two senders ran at once (the old 4-second auto-broadcast and the OSC2 rotation), sending duplicate and conflicting chatbox messages. Now there is one scheduler.
++- Modules replaced each other (one screen at a time). Now every enabled module renders together, in the order you choose.
++- Statuses, queue, modes and weather settings were never saved, and weather was only fetched when you pressed the button. All settings now persist, and weather loads on startup and every 20 minutes.
++- OSC only started after opening the UnderWeb page, and its timers stopped when you left it. OSC Lab now starts with the app.
++- Music progress came from a stale Windows media timestamp. UWX now extrapolates from the time Windows last updated it, and prefers whatever app is actually playing (Spotify first).
++
++What you get:
++- Live preview showing exactly what VRChat will show, with character and line counts (144 / 9 limits).
++- Per-module on/off, ordering, and editable layouts with tokens ({artist}, {title}, {time}, {duration}, {temp}, {condition}…).
++- Statuses: add, edit order, star to rotate, sequential or random (no repeats until all have shown), rotation interval.
++- Sending rules: never more than once every 2.5s; sends right away when the track, status, weather or heart rate changes; music progress refresh every 10s (adjustable); keep-alive every 25s; one clear message when you turn it off. "Hide now" clears instantly.
++- "Sent to VRChat" log shows every message actually sent and why.
++- Privacy: ZIP stays on this PC and is never in the chatbox; weather service gets coordinates rounded to ~10 km. World name is off by default.
++- 19 new unit tests for the composer, scheduler, status rotation, media timeline and settings migration.
++
+ ## 0.5.1-rc10 — Group Tools + everyday Instance Inviter
+ 
+ - Instance Inviter now works in any instance VRChat lets you invite into (public, group, Friends+, Invite+, your own), not only approved group instances. Uses VRCX's own invite rules, so blocked instances show the reason instead of failing.
+diff --git a/Dotnet/AppApi/Common/AppApiCommon.cs b/Dotnet/AppApi/Common/AppApiCommon.cs
+index b522f50..99ebb81 100644
+--- a/Dotnet/AppApi/Common/AppApiCommon.cs
++++ b/Dotnet/AppApi/Common/AppApiCommon.cs
+@@ -199,17 +199,25 @@ namespace VRCX
+                 var manager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
+                 var sessions = manager.GetSessions();
+                 GlobalSystemMediaTransportControlsSession? session = null;
++                GlobalSystemMediaTransportControlsSession? playingSession = null;
++                GlobalSystemMediaTransportControlsSession? spotifySession = null;
+ 
++                // Prefer whatever is actually playing (Spotify first), so a paused
++                // Spotify window doesn't hide music playing in another app.
+                 foreach (var candidate in sessions)
+                 {
+-                    if ((candidate.SourceAppUserModelId ?? string.Empty).Contains("Spotify", StringComparison.OrdinalIgnoreCase))
++                    var isSpotify = (candidate.SourceAppUserModelId ?? string.Empty).Contains("Spotify", StringComparison.OrdinalIgnoreCase);
++                    var isPlaying = candidate.GetPlaybackInfo()?.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
++                    if (isSpotify && isPlaying)
+                     {
+                         session = candidate;
+                         break;
+                     }
++                    if (isPlaying && playingSession == null) playingSession = candidate;
++                    if (isSpotify && spotifySession == null) spotifySession = candidate;
+                 }
+ 
+-                session ??= manager.GetCurrentSession();
++                session ??= playingSession ?? spotifySession ?? manager.GetCurrentSession();
+                 if (session == null) return "{}";
+ 
+                 var properties = await session.TryGetMediaPropertiesAsync();
+@@ -225,7 +233,10 @@ namespace VRCX
+                     source = session.SourceAppUserModelId ?? string.Empty,
+                     status = playback?.PlaybackStatus.ToString() ?? string.Empty,
+                     positionSeconds,
+-                    durationSeconds
++                    durationSeconds,
++                    // Position is only correct as of LastUpdatedTime; UWX extrapolates from it.
++                    lastUpdatedUnixMs = timeline.LastUpdatedTime.ToUnixTimeMilliseconds(),
++                    playbackRate = playback?.PlaybackRate ?? 1.0
+                 });
+             }
+             catch (Exception ex)
+diff --git a/UWX_VERSION b/UWX_VERSION
+index f26adfb..59c7cf5 100644
+--- a/UWX_VERSION
++++ b/UWX_VERSION
+@@ -1 +1 @@
+-0.5.1-rc10
++0.5.2-rc11
+diff --git a/src/App.vue b/src/App.vue
+index b452f16..a99a0ac 100644
+--- a/src/App.vue
++++ b/src/App.vue
+@@ -78,6 +78,8 @@
+             store.auth.autoLoginAfterMounted();
+             store.vrcx.checkAutoBackupRestoreVrcRegistry();
+             await store.underWeb.initUnderWeb();
++            // OSC Lab runs for the whole session, not only while the UnderWeb page is open.
++            await store.oscLab.initOscLab();
+         }
+ 
+         runCheckVRChatDebugLoggingFlow();
+diff --git a/src/shared/constants/uwx.js b/src/shared/constants/uwx.js
+index 6f6d51b..00bea8a 100644
+--- a/src/shared/constants/uwx.js
++++ b/src/shared/constants/uwx.js
+@@ -1,2 +1,2 @@
+-export const UWX_VERSION = '0.5.1-rc10';
++export const UWX_VERSION = '0.5.2-rc11';
+ export const UWX_MANIFEST_URL = 'https://underweb.cloud/api/uwx/manifest';
+diff --git a/src/shared/utils/__tests__/uwxOsc.test.js b/src/shared/utils/__tests__/uwxOsc.test.js
+new file mode 100644
+index 0000000..5da260c
+--- /dev/null
++++ b/src/shared/utils/__tests__/uwxOsc.test.js
+@@ -0,0 +1,198 @@
++import { describe, expect, test } from 'vitest';
++
++import {
++    CHATBOX_MAX_CHARS,
++    createOscScheduler,
++    createStatusRotator,
++    describeWeather,
++    estimatePosition,
++    fitChatbox,
++    meaningfulKey,
++    migrateLegacySettings,
++    normalizeSettings,
++    renderModuleLines
++} from '../uwxOsc';
++
++const T0 = 1_000_000;
++
++function settings(overrides = {}) {
++    const s = normalizeSettings({});
++    s.modules.weather.enabled = true;
++    return { ...s, ...overrides };
++}
++
++const playing = (extra = {}) => ({
++    status: 'playing',
++    title: 'Song',
++    artist: 'Artist',
++    positionSeconds: 102,
++    durationSeconds: 208,
++    sampledAt: T0,
++    ...extra
++});
++
++describe('composer', () => {
++    test('music, weather and status all show together — none replaces another', () => {
++        const lines = renderModuleLines(
++            settings(),
++            { media: playing(), weather: { icon: '🌧️', temp: '54°F', condition: 'Cloudy' }, status: '🕸️ Lost somewhere in The UnderWeb' },
++            T0
++        );
++        expect(lines.map((l) => l.text)).toEqual([
++            '🎵 Artist — Song | 1:42 / 3:28',
++            '🌧️ 54°F | Cloudy',
++            '🕸️ Lost somewhere in The UnderWeb'
++        ]);
++    });
++
++    test('respects the user-chosen order and per-module switches', () => {
++        const s = settings({ order: ['status', 'music', 'weather', 'heart', 'world'] });
++        s.modules.weather.enabled = false;
++        const lines = renderModuleLines(s, { media: playing(), weather: { icon: 'x', temp: '1', condition: 'y' }, status: 'hi' }, T0);
++        expect(lines.map((l) => l.key)).toEqual(['status', 'music']);
++    });
++
++    test('missing artist or length leaves no dangling separators', () => {
++        const [line] = renderModuleLines(settings(), { media: playing({ artist: '', durationSeconds: 0 }) }, T0);
++        expect(line.text).toBe('🎵 Song');
++    });
++
++    test('paused music is hidden by default, or marked paused when the user keeps it', () => {
++        const paused = playing({ status: 'paused' });
++        expect(renderModuleLines(settings(), { media: paused }, T0)).toEqual([]);
++        const s = settings();
++        s.modules.music.hideWhenPaused = false;
++        expect(renderModuleLines(s, { media: paused }, T0)[0].text).toContain('⏸ Song');
++    });
++
++    test('fits VRChat limits by dropping the lowest-priority line first', () => {
++        const long = 'x'.repeat(100);
++        const { text, keys, dropped } = fitChatbox([
++            { key: 'music', text: 'a'.repeat(40) },
++            { key: 'weather', text: 'b'.repeat(20) },
++            { key: 'status', text: long }
++        ]);
++        expect(keys).toEqual(['music', 'weather']);
++        expect(dropped).toBe(1);
++        expect(Array.from(text).length).toBeLessThanOrEqual(CHATBOX_MAX_CHARS);
++    });
++
++    test('a single over-long line is truncated with an ellipsis', () => {
++        const { text } = fitChatbox([{ key: 'status', text: 'y'.repeat(300) }]);
++        expect(Array.from(text).length).toBe(CHATBOX_MAX_CHARS);
++        expect(text.endsWith('…')).toBe(true);
++    });
++
++    test('progress ticking does not change the meaningful key; a new track does', () => {
++        const s = settings();
++        const a = meaningfulKey(s, { media: playing(), status: 'x' });
++        const b = meaningfulKey(s, { media: playing({ positionSeconds: 150, sampledAt: T0 + 48000 }), status: 'x' });
++        const c = meaningfulKey(s, { media: playing({ title: 'Other' }), status: 'x' });
++        expect(a).toBe(b);
++        expect(a).not.toBe(c);
++    });
++
++    test('weather output never contains the ZIP code', () => {
++        const s = settings();
++        s.modules.weather.zip = '48226';
++        const w = describeWeather({ temperature_2m: 53.6, weather_code: 3 }, 'F');
++        const text = renderModuleLines(s, { weather: w }, T0).map((l) => l.text).join('\n');
++        expect(text).toBe('☁️ 54°F | Cloudy');
++        expect(text).not.toContain('48226');
++    });
++});
++
++describe('media timeline', () => {
++    test('extrapolates while playing and clamps to the track length', () => {
++        expect(estimatePosition(playing(), T0 + 5000)).toBeCloseTo(107);
++        expect(estimatePosition(playing(), T0 + 500_000)).toBe(208);
++    });
++    test('does not move while paused', () => {
++        expect(estimatePosition(playing({ status: 'paused' }), T0 + 5000)).toBe(102);
++    });
++});
++
++describe('scheduler (the "sending too many messages" fix)', () => {
++    test('a 1-second render loop for 60s sends only a handful of messages', () => {
++        const sched = createOscScheduler();
++        const s = settings();
++        let sends = 0;
++        for (let t = 0; t <= 60_000; t += 1000) {
++            const data = { media: playing({ positionSeconds: 102 + t / 1000, sampledAt: T0 + t }), status: 'hello' };
++            const { text } = fitChatbox(renderModuleLines(s, data, T0 + t));
++            const out = sched.decide({ now: T0 + t, text, key: meaningfulKey(s, data), progressIntervalMs: 10_000 });
++            if (out.send) sends += 1;
++        }
++        // first send + one progress refresh every 10s
++        expect(sends).toBe(7);
++    });
++
++    test('never sends twice within the minimum interval, even if content changes', () => {
++        const sched = createOscScheduler({ minIntervalMs: 2500 });
++        expect(sched.decide({ now: 0, text: 'a', key: 'a' }).send).toBe(true);
++        expect(sched.decide({ now: 1000, text: 'b', key: 'b' }).send).toBe(false);
++        expect(sched.decide({ now: 2500, text: 'b', key: 'b' })).toMatchObject({ send: true, reason: 'changed' });
++    });
++
++    test('identical output is not resent until the keep-alive', () => {
++        const sched = createOscScheduler({ keepAliveMs: 25_000 });
++        sched.decide({ now: 0, text: 'same', key: 'same' });
++        expect(sched.decide({ now: 20_000, text: 'same', key: 'same' }).send).toBe(false);
++        expect(sched.decide({ now: 25_000, text: 'same', key: 'same' })).toMatchObject({ send: true, reason: 'keepalive' });
++    });
++
++    test('turning output off sends one clear message, then nothing', () => {
++        const sched = createOscScheduler();
++        sched.decide({ now: 0, text: 'x', key: 'x' });
++        expect(sched.decide({ now: 3000, text: '', key: '' })).toMatchObject({ send: true, text: '' });
++        expect(sched.decide({ now: 9000, text: '', key: '' }).send).toBe(false);
++    });
++});
++
++describe('statuses', () => {
++    const list = [
++        { id: 'a', text: 'A', favorite: true },
++        { id: 'b', text: 'B', favorite: false },
++        { id: 'c', text: 'C', favorite: true }
++    ];
++
++    test('sequential rotation follows list order over favorites only', () => {
++        const r = createStatusRotator();
++        expect([r.next(list), r.next(list), r.next(list)].map((s) => s.id)).toEqual(['a', 'c', 'a']);
++    });
++
++    test('random rotation shows every favorite before repeating', () => {
++        const r = createStatusRotator();
++        const many = Array.from({ length: 6 }, (_, i) => ({ id: String(i), text: String(i), favorite: true }));
++        const firstRound = new Set(Array.from({ length: 6 }, () => r.next(many, 'random').id));
++        expect(firstRound.size).toBe(6);
++    });
++
++    test('no favorites → no status line', () => {
++        expect(createStatusRotator().next([{ id: 'x', text: 'x', favorite: false }])).toBeNull();
++    });
++});
++
++describe('settings persistence', () => {
++    test('normalize drops junk and keeps valid values', () => {
++        const s = normalizeSettings({
++            enabled: 1,
++            order: ['weather', 'bogus', 'weather'],
++            modules: { weather: { zip: 'abc', unit: 'C' }, status: { rotateSeconds: 2 } },
++            statuses: [{ id: '1', text: '  hi  ' }, { text: '' }, null]
++        });
++        expect(s.enabled).toBe(true);
++        expect(s.order).toEqual(['weather', 'music', 'status', 'heart', 'world']);
++        expect(s.modules.weather).toMatchObject({ zip: '', unit: 'C' });
++        expect(s.modules.status.rotateSeconds).toBe(10);
++        expect(s.statuses).toEqual([{ id: '1', text: 'hi', favorite: true }]);
++    });
++
++    test('migrates old custom status and turns world name off for privacy', () => {
++        const s = migrateLegacySettings({ enabled: true, customStatus: 'AFK', showNowPlaying: true, weatherZip: '48226' });
++        expect(s.enabled).toBe(true);
++        expect(s.statuses.map((x) => x.text)).toEqual(['AFK']);
++        expect(s.modules.weather).toMatchObject({ enabled: true, zip: '48226' });
++        expect(s.modules.world.enabled).toBe(false);
++    });
++});
+diff --git a/src/shared/utils/uwxOsc.js b/src/shared/utils/uwxOsc.js
+new file mode 100644
+index 0000000..b53a2f0
+--- /dev/null
++++ b/src/shared/utils/uwxOsc.js
+@@ -0,0 +1,341 @@
++// UWX OSC Lab engine — pure logic, no Vue, no I/O. Everything here is unit-tested.
++//
++// Design:
++//  * One composer builds the whole chatbox from every enabled module at once
++//    (music + weather + status + …), so modules never replace each other.
++//  * One scheduler decides when that text is actually sent to VRChat. The app can
++//    re-render every second (live progress in the UI) while OSC only goes out when
++//    something meaningful changes, plus a slow progress refresh and a keep-alive.
++
++export const CHATBOX_MAX_CHARS = 144;
++export const CHATBOX_MAX_LINES = 9;
++
++export const OSC_MODULES = Object.freeze(['music', 'weather', 'status', 'heart', 'world']);
++
++export const DEFAULT_TEMPLATES = Object.freeze({
++    music: '🎵 {artist} — {title} | {time} / {duration}',
++    weather: '{icon} {temp} | {condition}',
++    status: '{status}',
++    heart: '❤️ {bpm} BPM',
++    world: '🌎 {world}'
++});
++
++export const TEMPLATE_TOKENS = Object.freeze({
++    music: ['title', 'artist', 'time', 'duration', 'remaining', 'bar'],
++    weather: ['icon', 'temp', 'condition'],
++    status: ['status'],
++    heart: ['bpm'],
++    world: ['world']
++});
++
++export const DEFAULT_SETTINGS = Object.freeze({
++    version: 3,
++    enabled: false,
++    order: ['music', 'weather', 'status', 'heart', 'world'],
++    modules: {
++        music: { enabled: true, template: DEFAULT_TEMPLATES.music, hideWhenPaused: true },
++        weather: { enabled: false, template: DEFAULT_TEMPLATES.weather, zip: '', unit: 'F' },
++        status: { enabled: true, template: DEFAULT_TEMPLATES.status, rotateSeconds: 20, order: 'sequential' },
++        heart: { enabled: false, template: DEFAULT_TEMPLATES.heart },
++        world: { enabled: false, template: DEFAULT_TEMPLATES.world }
++    },
++    statuses: [],
++    progressRefreshSeconds: 10
++});
++
++const clampInt = (value, min, max, fallback) => {
++    const n = Math.round(Number(value));
++    return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
++};
++
++/** Merge stored settings over defaults, dropping anything malformed. */
++export function normalizeSettings(raw) {
++    const input = raw && typeof raw === 'object' ? raw : {};
++    const out = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
++    out.enabled = Boolean(input.enabled);
++    if (Array.isArray(input.order)) {
++        const valid = input.order.filter((key, i, arr) => OSC_MODULES.includes(key) && arr.indexOf(key) === i);
++        out.order = [...valid, ...OSC_MODULES.filter((key) => !valid.includes(key))];
++    }
++    for (const key of OSC_MODULES) {
++        const m = input.modules?.[key];
++        if (!m || typeof m !== 'object') continue;
++        const target = out.modules[key];
++        target.enabled = m.enabled === undefined ? target.enabled : Boolean(m.enabled);
++        if (typeof m.template === 'string' && m.template.trim()) target.template = m.template.slice(0, 144);
++        if (key === 'music' && m.hideWhenPaused !== undefined) target.hideWhenPaused = Boolean(m.hideWhenPaused);
++        if (key === 'weather') {
++            target.zip = /^\d{5}$/.test(String(m.zip || '')) ? String(m.zip) : '';
++            target.unit = m.unit === 'C' ? 'C' : 'F';
++        }
++        if (key === 'status') {
++            target.rotateSeconds = clampInt(m.rotateSeconds, 10, 600, 20);
++            target.order = m.order === 'random' ? 'random' : 'sequential';
++        }
++    }
++    if (Array.isArray(input.statuses)) {
++        const seen = new Set();
++        out.statuses = input.statuses
++            .filter((s) => s && typeof s.text === 'string' && s.text.trim())
++            .map((s) => ({
++                id: String(s.id || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`),
++                text: s.text.trim().slice(0, 144),
++                favorite: s.favorite !== false
++            }))
++            .filter((s) => (seen.has(s.id) ? false : (seen.add(s.id), true)));
++    }
++    out.progressRefreshSeconds = clampInt(input.progressRefreshSeconds, 5, 60, 10);
++    return out;
++}
++
++/** Build v3 settings from the pre-0.5.2 scattered config keys. */
++export function migrateLegacySettings(legacy) {
++    const statuses = [];
++    if (Array.isArray(legacy?.osc2Statuses)) {
++        legacy.osc2Statuses.forEach((s) => s?.text && statuses.push({ id: s.id, text: s.text, favorite: s.favorite !== false }));
++    }
++    if (typeof legacy?.customStatus === 'string' && legacy.customStatus.trim() && !statuses.some((s) => s.text === legacy.customStatus.trim())) {
++        statuses.push({ id: 'legacy-custom', text: legacy.customStatus.trim(), favorite: true });
++    }
++    return normalizeSettings({
++        enabled: Boolean(legacy?.enabled),
++        modules: {
++            music: { enabled: legacy?.showNowPlaying !== false },
++            weather: { enabled: Boolean(legacy?.weatherZip), zip: legacy?.weatherZip || '' },
++            status: { enabled: true },
++            heart: { enabled: Boolean(legacy?.showHeartRate) },
++            // World name is off after migration: it tells everyone where you are.
++            world: { enabled: false }
++        },
++        statuses
++    });
++}
++
++export function formatClock(seconds) {
++    const total = Math.max(0, Math.floor(Number(seconds) || 0));
++    const h = Math.floor(total / 3600);
++    const m = Math.floor((total % 3600) / 60);
++    const s = total % 60;
++    return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${m}:${String(s).padStart(2, '0')}`;
++}
++
++export function progressBar(position, duration, width = 10) {
++    if (!duration || duration <= 0) return '';
++    const ratio = Math.max(0, Math.min(1, position / duration));
++    const filled = Math.round(ratio * width);
++    return '▰'.repeat(filled) + '▱'.repeat(width - filled);
++}
++
++/**
++ * Windows media sessions (and Spotify in particular) only report a new position
++ * occasionally. Extrapolate from the last report while playing so progress moves
++ * smoothly, and clamp to the track length.
++ * @param {{ status?: string, positionSeconds?: number, durationSeconds?: number, sampledAt?: number, playbackRate?: number }} media
++ */
++export function estimatePosition(media, now) {
++    const base = Math.max(0, Number(media?.positionSeconds) || 0);
++    const duration = Math.max(0, Number(media?.durationSeconds) || 0);
++    if (String(media?.status || '').toLowerCase() !== 'playing' || !media?.sampledAt) return duration ? Math.min(base, duration) : base;
++    const rate = Number(media.playbackRate) > 0 ? Number(media.playbackRate) : 1;
++    const pos = base + Math.max(0, (now - media.sampledAt) / 1000) * rate;
++    return duration ? Math.min(pos, duration) : pos;
++}
++
++const WEATHER_CODES = Object.freeze({
++    0: ['Clear', '☀️'], 1: ['Mostly clear', '🌤️'], 2: ['Partly cloudy', '⛅'], 3: ['Cloudy', '☁️'],
++    45: ['Fog', '🌫️'], 48: ['Fog', '🌫️'],
++    51: ['Drizzle', '🌦️'], 53: ['Drizzle', '🌦️'], 55: ['Drizzle', '🌦️'], 56: ['Freezing drizzle', '🌧️'], 57: ['Freezing drizzle', '🌧️'],
++    61: ['Rain', '🌧️'], 63: ['Rain', '🌧️'], 65: ['Heavy rain', '🌧️'], 66: ['Freezing rain', '🌧️'], 67: ['Freezing rain', '🌧️'],
++    71: ['Snow', '🌨️'], 73: ['Snow', '🌨️'], 75: ['Heavy snow', '❄️'], 77: ['Snow grains', '🌨️'],
++    80: ['Showers', '🌦️'], 81: ['Showers', '🌧️'], 82: ['Heavy showers', '⛈️'], 85: ['Snow showers', '🌨️'], 86: ['Snow showers', '❄️'],
++    95: ['Thunderstorm', '⛈️'], 96: ['Thunderstorm', '⛈️'], 99: ['Thunderstorm', '⛈️']
++});
++
++/** Turn an Open-Meteo `current` block into display-only weather (no location data). */
++export function describeWeather(current, unit = 'F') {
++    const temp = Number(current?.temperature_2m);
++    if (!Number.isFinite(temp)) return null;
++    const [condition, icon] = WEATHER_CODES[Number(current?.weather_code)] || ['Current conditions', '🌡️'];
++    return { temp: `${Math.round(temp)}°${unit === 'C' ? 'C' : 'F'}`, condition, icon };
++}
++
++const SEP = '(?:—|–|-|\\||/|·)';
++
++function fill(template, values) {
++    let out = String(template || '');
++    // Remove empty tokens together with one neighbouring separator so a missing
++    // artist or track length doesn't leave "— " or "| /" behind.
++    for (const [, key] of out.matchAll(/\{(\w+)\}/g)) {
++        const value = values[key];
++        if (value !== undefined && value !== null && String(value) !== '') continue;
++        const after = new RegExp(`\\{${key}\\}\\s*${SEP}\\s*`);
++        const before = new RegExp(`\\s*${SEP}?\\s*\\{${key}\\}`);
++        out = after.test(out) ? out.replace(after, '') : out.replace(before, '');
++    }
++    return out.replace(/\{(\w+)\}/g, (_, key) => String(values[key] ?? ''));
++}
++
++function cleanLine(line) {
++    // Tidy separators left dangling when a token was empty, e.g. "🎵  — Song | /".
++    return line
++        .replace(/\s+/g, ' ')
++        .replace(/(\s[|—-]\s?)+$/u, '')
++        .replace(/^\s*[|—-]\s/u, '')
++        .replace(/\s\|\s\/\s*$/, '')
++        .trim();
++}
++
++const charCount = (text) => Array.from(text).length;
++
++/**
++ * Render each enabled module that has data into one line.
++ * @returns {Array<{ key: string, text: string }>}
++ */
++export function renderModuleLines(settings, data, now = Date.now()) {
++    const lines = [];
++    for (const key of settings.order) {
++        const mod = settings.modules[key];
++        if (!mod?.enabled) continue;
++        let values = null;
++        if (key === 'music') {
++            const media = data.media;
++            const playing = String(media?.status || '').toLowerCase() === 'playing';
++            if (media?.title && (playing || !mod.hideWhenPaused)) {
++                const position = estimatePosition(media, now);
++                const duration = Number(media.durationSeconds) || 0;
++                values = {
++                    title: media.title,
++                    artist: media.artist || '',
++                    time: duration ? formatClock(position) : '',
++                    duration: duration ? formatClock(duration) : '',
++                    remaining: duration ? `-${formatClock(duration - position)}` : '',
++                    bar: progressBar(position, duration)
++                };
++                if (!playing) values.title = `⏸ ${values.title}`;
++            }
++        } else if (key === 'weather' && data.weather) {
++            values = data.weather;
++        } else if (key === 'status' && data.status) {
++            values = { status: data.status };
++        } else if (key === 'heart' && Number(data.heartRate) > 0) {
++            values = { bpm: Math.round(Number(data.heartRate)) };
++        } else if (key === 'world' && data.world) {
++            values = { world: data.world };
++        }
++        if (!values) continue;
++        const text = cleanLine(fill(mod.template, values));
++        if (text) lines.push({ key, text });
++    }
++    return lines;
++}
++
++/**
++ * Fit lines into VRChat's chatbox (144 characters, 9 lines). Drops the lowest
++ * priority module (last in order) first, and only truncates if one line alone is too long.
++ */
++export function fitChatbox(lines) {
++    const kept = lines.slice(0, CHATBOX_MAX_LINES);
++    while (kept.length > 1 && charCount(kept.map((l) => l.text).join('\n')) > CHATBOX_MAX_CHARS) kept.pop();
++    let text = kept.map((l) => l.text).join('\n');
++    if (charCount(text) > CHATBOX_MAX_CHARS) text = Array.from(text).slice(0, CHATBOX_MAX_CHARS - 1).join('') + '…';
++    return { text, keys: kept.map((l) => l.key), dropped: lines.length - kept.length };
++}
++
++/**
++ * A stable "what changed" key: the chatbox with moving music time stripped out.
++ * Track, pause state, status, weather or heart rate changing → new key → send soon.
++ * Only the clock moving → same key → wait for the slow progress refresh.
++ */
++export function meaningfulKey(settings, data) {
++    const frozen = data.media ? { ...data.media, positionSeconds: 0, sampledAt: 0 } : data.media;
++    return renderModuleLines(settings, { ...data, media: frozen }, 0)
++        .map((l) => l.text)
++        .join('\n');
++}
++
++/**
++ * Decides when to actually transmit. Pure state machine: pass in `now`.
++ *  - never sends faster than minIntervalMs (VRChat throttles fast senders and
++ *    shows "sending too many messages" — others stop seeing your chatbox)
++ *  - sends when the meaningful content changes
++ *  - sends music progress at most every progressIntervalMs
++ *  - re-sends unchanged text every keepAliveMs so it stays up
++ *  - sends one empty message when output turns off so the chatbox clears
++ */
++export function createOscScheduler({ minIntervalMs = 2500, keepAliveMs = 25000 } = {}) {
++    let lastText = '';
++    let lastKey = '';
++    let lastSentAt = -Infinity;
++    return {
++        /** @returns {{ send: boolean, text?: string, reason?: string }} */
++        decide({ now, text, key, progressIntervalMs = 10000 }) {
++            const since = now - lastSentAt;
++            if (!text) {
++                if (lastText && since >= minIntervalMs) {
++                    lastText = '';
++                    lastKey = '';
++                    lastSentAt = now;
++                    return { send: true, text: '', reason: 'clear' };
++                }
++                return { send: false };
++            }
++            if (since < minIntervalMs) return { send: false, reason: 'throttled' };
++            let reason = '';
++            if (key !== lastKey) reason = 'changed';
++            else if (text !== lastText && since >= progressIntervalMs) reason = 'progress';
++            else if (since >= keepAliveMs) reason = 'keepalive';
++            if (!reason) return { send: false };
++            lastText = text;
++            lastKey = key;
++            lastSentAt = now;
++            return { send: true, text, reason };
++        },
++        reset() {
++            lastText = '';
++            lastKey = '';
++            lastSentAt = -Infinity;
++        },
++        get lastSentAt() {
++            return lastSentAt;
++        }
++    };
++}
++
++/**
++ * Status rotation. Sequential walks favorites in list order; random shuffles a
++ * bag so every favorite shows once before any repeats.
++ */
++export function createStatusRotator() {
++    let bag = [];
++    let index = -1;
++    let currentId = '';
++    return {
++        next(statuses, order) {
++            const pool = statuses.filter((s) => s.favorite);
++            if (!pool.length) {
++                currentId = '';
++                return null;
++            }
++            if (order === 'random') {
++                bag = bag.filter((id) => pool.some((s) => s.id === id));
++                if (!bag.length) {
++                    bag = pool.map((s) => s.id);
++                    for (let i = bag.length - 1; i > 0; i -= 1) {
++                        const j = Math.floor(Math.random() * (i + 1));
++                        [bag[i], bag[j]] = [bag[j], bag[i]];
++                    }
++                    if (bag.length > 1 && bag[0] === currentId) bag.push(bag.shift());
++                }
++                currentId = bag.shift();
++            } else {
++                const pos = pool.findIndex((s) => s.id === currentId);
++                index = pos >= 0 ? (pos + 1) % pool.length : (index + 1) % pool.length;
++                currentId = pool[index].id;
++            }
++            return pool.find((s) => s.id === currentId) || null;
++        },
++        current(statuses) {
++            return statuses.find((s) => s.id === currentId && s.favorite) || null;
++        }
++    };
++}
+diff --git a/src/stores/oscLab.js b/src/stores/oscLab.js
+index 45447bd..784bb00 100644
+--- a/src/stores/oscLab.js
++++ b/src/stores/oscLab.js
+@@ -1,576 +1,417 @@
+-import { computed, ref } from 'vue';
++import { computed, reactive, ref, watch } from 'vue';
+ import { defineStore } from 'pinia';
+ import { toast } from 'vue-sonner';
+ 
+ import configRepository from '../services/config';
+-import { useUnderWebNetworkStore } from './underwebNetwork';
+ import { useLocationStore } from './location';
+-
+-const CONFIG = Object.freeze({
++import {
++    OSC_MODULES,
++    TEMPLATE_TOKENS,
++    DEFAULT_TEMPLATES,
++    createOscScheduler,
++    createStatusRotator,
++    describeWeather,
++    fitChatbox,
++    meaningfulKey,
++    migrateLegacySettings,
++    normalizeSettings,
++    renderModuleLines
++} from '../shared/utils/uwxOsc';
++
++// OSC Lab 3 — one engine that runs for the whole app session (not just while the
++// UnderWeb page is open). Music, weather and statuses render together; a single
++// scheduler decides when VRChat actually gets a message.
++
++const SETTINGS_KEY = 'UWX_oscLab_v3';
++const LEGACY = Object.freeze({
+     enabled: 'UWX_oscEnabled',
+     customStatus: 'UWX_oscCustomStatus',
+-    showWorld: 'UWX_oscShowWorld',
+-    showEvent: 'UWX_oscShowEvent',
+-    showHeartRate: 'UWX_oscShowHeartRate',
+     showNowPlaying: 'UWX_oscShowNowPlaying',
+-    showPopulation: 'UWX_oscShowPopulation',
+-    autoBroadcast: 'UWX_oscAutoBroadcast',
+-    autoMedia: 'UWX_oscAutoMedia',
+-    signatureMode: 'UWX_oscSignatureMode',
+-    blockOrder: 'UWX_oscBlockOrder',
+-    osc2Mode: 'UWX_osc2Mode',
+-    osc2Theme: 'UWX_osc2Theme',
+-    osc2Queue: 'UWX_osc2Queue',
+-    osc2Enabled: 'UWX_osc2Enabled',
+-    osc2Durations: 'UWX_osc2Durations',
+-    osc2PinnedModule: 'UWX_osc2PinnedModule',
+-    osc2Statuses: 'UWX_osc2Statuses',
+-    nowPlayingTitle: 'UWX_oscNowPlayingTitle',
+-    nowPlayingArtist: 'UWX_oscNowPlayingArtist',
+-    pulsoidToken: 'UWX_pulsoidToken',
+-    pulseAvatarParameter: 'UWX_pulseAvatarParameter',
+-    bpmAvatarParameter: 'UWX_bpmAvatarParameter',
+-    preset: 'UWX_oscPreset'
++    showHeartRate: 'UWX_oscShowHeartRate'
+ });
+-
+-const PRESETS = Object.freeze({
+-    normal: { customStatus: '', showWorld: true, showEvent: false, showHeartRate: false, showNowPlaying: false, showPopulation: true },
+-    music: { customStatus: '', showWorld: true, showEvent: false, showHeartRate: false, showNowPlaying: true, showPopulation: true },
+-    event: { customStatus: 'UNDERWEB // EVENT LIVE', showWorld: true, showEvent: true, showHeartRate: true, showNowPlaying: true, showPopulation: true },
+-    afk: { customStatus: 'AFK', showWorld: true, showEvent: false, showHeartRate: false, showNowPlaying: false, showPopulation: true }
++const PULSOID = Object.freeze({
++    token: 'UWX_pulsoidToken',
++    pulseParam: 'UWX_pulseAvatarParameter',
++    bpmParam: 'UWX_bpmAvatarParameter'
+ });
+ 
+-const DEFAULT_BLOCK_ORDER = Object.freeze(['signature', 'music', 'world', 'population', 'heart', 'event', 'status']);
+-
+-const OSC2_QUEUE = Object.freeze(['music', 'status', 'weather', 'heart', 'world', 'custom', 'uwx']);
+-const OSC2_THEMES = Object.freeze(['underweb', 'minimal', 'void', 'cyber', 'horror']);
+-const OSC2_DEFAULT_ENABLED = Object.freeze({ music: true, status: true, weather: false, heart: false, world: false, custom: false, uwx: true });
+-const OSC2_DEFAULT_DURATIONS = Object.freeze(Object.fromEntries(OSC2_QUEUE.map((key) => [key, 10])));
+-
+-const osc2ProgressBar = (position, duration, width = 9) => {
+-    if (!duration || duration <= 0) return '━━━━━━━━━';
+-    const ratio = Math.max(0, Math.min(1, position / duration));
+-    const marker = Math.min(width - 1, Math.floor(ratio * width));
+-    return Array.from({ length: width }, (_, index) => (index === marker ? '○' : '━')).join('');
+-};
+-
+-const normalizeOscSafetyText = (input) =>
+-    String(input || '').normalize('NFKC').toLowerCase()
+-        .replace(/[\u200B-\u200D\u2060\uFEFF]/g, '')
+-        .replace(/[@4]/g, 'a').replace(/3/g, 'e').replace(/[1!|]/g, 'i')
+-        .replace(/0/g, 'o').replace(/[$5]/g, 's').replace(/7/g, 't')
+-        .replace(/(.)\1{2,}/g, '$1$1');
+-
+-// Internal-only denylist. Keep UI error messages generic and never expose matching details.
+-const OSC2_BLOCKED_TERMS = Object.freeze([]);
+-const validateOsc2Text = (input) => {
+-    const normalized = normalizeOscSafetyText(input);
+-    const compact = normalized.replace(/[^\p{L}\p{N}]+/gu, '');
+-    const blocked = OSC2_BLOCKED_TERMS.some((term) => normalized.includes(term) || compact.includes(term.replace(/[^\p{L}\p{N}]+/gu, '')));
+-    return blocked ? { ok: false, reason: 'This status contains language blocked by UWX.' } : { ok: true };
+-};
+-
+-const clampChatbox = (text) => Array.from(String(text || '')).slice(0, 144).join('');
++const TICK_MS = 1000;
++const MEDIA_POLL_MS = 2000;
++const WEATHER_REFRESH_MS = 20 * 60 * 1000;
++const MAX_STATUSES = 50;
++
++const cleanStatusText = (input) =>
++    String(input || '')
++        .normalize('NFKC')
++        .replace(/[\u0000-\u001F\u007F​-‍⁠﻿]/g, ' ')
++        .replace(/\s+/g, ' ')
++        .trim()
++        .slice(0, 144);
+ 
+ export const useOscLabStore = defineStore('OscLab', () => {
+-    const networkStore = useUnderWebNetworkStore();
+     const locationStore = useLocationStore();
+ 
+     const initialized = ref(false);
+-    const enabled = ref(false);
+-    const customStatus = ref('');
+-    const showWorld = ref(true);
+-    const showEvent = ref(true);
+-    const showHeartRate = ref(false);
+-    const showNowPlaying = ref(false);
+-    const showPopulation = ref(true);
+-    const autoBroadcast = ref(true);
+-    const autoMedia = ref(true);
+-    const signatureMode = ref('short');
+-    const blockOrder = ref([...DEFAULT_BLOCK_ORDER]);
+-    const nowPlayingTitle = ref('');
+-    const nowPlayingArtist = ref('');
+-    const pulsoidToken = ref('');
++    const settings = reactive(normalizeSettings({}));
++    const now = ref(Date.now());
++
++    const media = ref(null);
++    const mediaState = ref('idle');
++    const weather = ref(null);
++    const weatherState = ref('');
++    const weatherUpdatedAt = ref(0);
++    const currentStatus = ref('');
+     const heartRate = ref(0);
+     const heartRateState = ref('offline');
++    const pulsoidToken = ref('');
+     const pulseAvatarParameter = ref('isHRBeat');
+     const bpmAvatarParameter = ref('HR');
+-    const preset = ref('normal');
+-    const lastSentAt = ref(0);
++
+     const lastError = ref('');
+-    const mediaState = ref('idle');
+-    const mediaSource = ref('');
+-    const mediaPositionSeconds = ref(0);
+-    const mediaDurationSeconds = ref(0);
++    const lastSentAt = ref(0);
+     const outputLog = ref([]);
+-    const osc2Mode = ref('rotate');
+-    const osc2Theme = ref('underweb');
+-    const osc2Queue = ref([...OSC2_QUEUE]);
+-    const osc2Enabled = ref({ ...OSC2_DEFAULT_ENABLED });
+-    const osc2Durations = ref({ ...OSC2_DEFAULT_DURATIONS });
+-    const osc2CurrentIndex = ref(0);
+-    const osc2PreviousKey = ref('');
+-    const osc2PinnedModule = ref('');
+-    const osc2Statuses = ref([]);
+-    const osc2StatusBag = ref([]);
+-    const osc2ActiveStatus = ref('');
+-    const osc2Weather = ref({ temperature: '', condition: '' });
+-    const osc2Interrupt = ref(null);
+-    let osc2ResumeMode = 'rotate';
++    const sendsLastMinute = ref(0);
+ 
++    const scheduler = createOscScheduler({ minIntervalMs: 2500, keepAliveMs: 25000 });
++    const rotator = createStatusRotator();
++    let tickTimer = null;
++    let mediaTimer = null;
++    let weatherTimer = null;
++    let lastStatusSwitch = 0;
++    let saveTimer = null;
+     let pulsoidSocket = null;
+     let reconnectTimer = null;
+-    let broadcastTimer = null;
+-    let mediaTimer = null;
+-
+-    const worldName = computed(() => locationStore.lastLocation.name || 'VRChat');
+-    const activeEvent = computed(() => networkStore.activeEvent);
+-    const playerCount = computed(() => locationStore.lastLocation.playerList?.size || 0);
+-
+-    function formatMediaTime(seconds) {
+-        const total = Math.max(0, Math.floor(Number(seconds) || 0));
+-        const hours = Math.floor(total / 3600);
+-        const minutes = Math.floor((total % 3600) / 60);
+-        const secs = total % 60;
+-        if (hours > 0) return `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+-        return `${minutes}:${String(secs).padStart(2, '0')}`;
+-    }
+-
+-    const chatboxParts = computed(() => {
+-        const signature = signatureMode.value === 'full' ? 'UNDERWEB X' : signatureMode.value === 'short' ? '🕷 UWX' : '';
+-        const timeline =
+-            mediaDurationSeconds.value > 0
+-                ? ` ${formatMediaTime(mediaPositionSeconds.value)}/${formatMediaTime(mediaDurationSeconds.value)}`
+-                : '';
+-        const blocks = {
+-            signature,
+-            music:
+-                showNowPlaying.value && nowPlayingTitle.value.trim()
+-                    ? `🎵 ${nowPlayingTitle.value.trim()}${nowPlayingArtist.value.trim() ? ` — ${nowPlayingArtist.value.trim()}` : ''}${timeline}`
+-                    : '',
+-            world: showWorld.value && worldName.value ? `🌎 ${worldName.value}` : '',
+-            population: showPopulation.value && playerCount.value > 0 ? `👥 ${playerCount.value} here` : '',
+-            heart: showHeartRate.value && heartRate.value > 0 ? `♥ ${heartRate.value} BPM` : '',
+-            event: showEvent.value && activeEvent.value?.title ? `🕷 ${activeEvent.value.title}` : '',
+-            status: customStatus.value.trim()
++    const sendTimes = [];
++
++    const worldName = computed(() => locationStore.lastLocation.name || '');
++
++    const liveData = computed(() => ({
++        media: settings.modules.music.enabled ? media.value : null,
++        weather: settings.modules.weather.enabled ? weather.value : null,
++        status: settings.modules.status.enabled ? currentStatus.value : '',
++        heartRate: settings.modules.heart.enabled ? heartRate.value : 0,
++        world: settings.modules.world.enabled ? worldName.value : ''
++    }));
++
++    /** What VRChat would show right now (updates every second for the live preview). */
++    const preview = computed(() => {
++        const lines = renderModuleLines(settings, liveData.value, now.value);
++        const fitted = fitChatbox(lines);
++        return {
++            ...fitted,
++            chars: Array.from(fitted.text).length,
++            lines: fitted.text ? fitted.text.split('\n').length : 0
+         };
+-        return blockOrder.value.map((key) => blocks[key]).filter(Boolean);
+     });
+ 
+-    const chatboxPreview = computed(() => {
+-        const preferred = chatboxParts.value.join(' · ');
+-        if (preferred.length <= 144) return preferred;
+-        // Drop lower-priority trailing blocks before hard truncation.
+-        const priority = [...chatboxParts.value];
+-        while (priority.length > 1 && priority.join(' · ').length > 144) priority.pop();
+-        return clampChatbox(priority.join(' · '));
+-    });
+-
+-    const previewLength = computed(() => Array.from(chatboxPreview.value).length);
+-    const mediaProgressPercent = computed(() =>
+-        mediaDurationSeconds.value > 0 ? Math.min(100, Math.max(0, (mediaPositionSeconds.value / mediaDurationSeconds.value) * 100)) : 0
+-    );
+-    const mediaTimeLabel = computed(() =>
+-        mediaDurationSeconds.value > 0
+-            ? `${formatMediaTime(mediaPositionSeconds.value)}/${formatMediaTime(mediaDurationSeconds.value)}`
+-            : '0:00/0:00'
+-    );
+-
++    // ---------- persistence ----------
+     async function loadSettings() {
+-        const [
+-            storedEnabled,
+-            storedStatus,
+-            storedWorld,
+-            storedEvent,
+-            storedHeartRate,
+-            storedNowPlaying,
+-            storedPopulation,
+-            storedAutoBroadcast,
+-            storedAutoMedia,
+-            storedSignatureMode,
+-            storedBlockOrder,
+-            storedTitle,
+-            storedArtist,
+-            storedToken,
+-            storedPulseParam,
+-            storedBpmParam,
+-            storedPreset
+-        ] = await Promise.all([
+-            configRepository.getBool(CONFIG.enabled, false),
+-            configRepository.getString(CONFIG.customStatus, ''),
+-            configRepository.getBool(CONFIG.showWorld, true),
+-            configRepository.getBool(CONFIG.showEvent, true),
+-            configRepository.getBool(CONFIG.showHeartRate, false),
+-            configRepository.getBool(CONFIG.showNowPlaying, false),
+-            configRepository.getBool(CONFIG.showPopulation, true),
+-            configRepository.getBool(CONFIG.autoBroadcast, true),
+-            configRepository.getBool(CONFIG.autoMedia, true),
+-            configRepository.getString(CONFIG.signatureMode, 'short'),
+-            configRepository.getString(CONFIG.blockOrder, JSON.stringify(DEFAULT_BLOCK_ORDER)),
+-            configRepository.getString(CONFIG.nowPlayingTitle, ''),
+-            configRepository.getString(CONFIG.nowPlayingArtist, ''),
+-            configRepository.getString(CONFIG.pulsoidToken, ''),
+-            configRepository.getString(CONFIG.pulseAvatarParameter, 'isHRBeat'),
+-            configRepository.getString(CONFIG.bpmAvatarParameter, 'HR'),
+-            configRepository.getString(CONFIG.preset, 'normal')
++        const raw = await configRepository.getString(SETTINGS_KEY, '');
++        let parsed = null;
++        if (raw) {
++            try {
++                parsed = normalizeSettings(JSON.parse(raw));
++            } catch {
++                parsed = null;
++            }
++        }
++        if (!parsed) {
++            const [enabled, customStatus, showNowPlaying, showHeartRate] = await Promise.all([
++                configRepository.getBool(LEGACY.enabled, false),
++                configRepository.getString(LEGACY.customStatus, ''),
++                configRepository.getBool(LEGACY.showNowPlaying, true),
++                configRepository.getBool(LEGACY.showHeartRate, false)
++            ]);
++            let weatherZip = '';
++            try {
++                weatherZip = window.localStorage.getItem('UWX_osc2WeatherZip') || '';
++            } catch {
++                weatherZip = '';
++            }
++            parsed = migrateLegacySettings({ enabled, customStatus, showNowPlaying, showHeartRate, weatherZip });
++            await configRepository.setString(SETTINGS_KEY, JSON.stringify(parsed));
++        }
++        Object.assign(settings, parsed);
++        const [token, pulseParam, bpmParam] = await Promise.all([
++            configRepository.getString(PULSOID.token, ''),
++            configRepository.getString(PULSOID.pulseParam, 'isHRBeat'),
++            configRepository.getString(PULSOID.bpmParam, 'HR')
+         ]);
+-        enabled.value = Boolean(storedEnabled);
+-        customStatus.value = storedStatus || '';
+-        showWorld.value = Boolean(storedWorld);
+-        showEvent.value = Boolean(storedEvent);
+-        showHeartRate.value = Boolean(storedHeartRate);
+-        showNowPlaying.value = Boolean(storedNowPlaying);
+-        showPopulation.value = Boolean(storedPopulation);
+-        autoBroadcast.value = Boolean(storedAutoBroadcast);
+-        autoMedia.value = Boolean(storedAutoMedia);
+-        signatureMode.value = ['off', 'short', 'full'].includes(storedSignatureMode) ? storedSignatureMode : 'short';
+-        try {
+-            const parsedOrder = JSON.parse(storedBlockOrder || '[]');
+-            const valid = parsedOrder.filter((key) => DEFAULT_BLOCK_ORDER.includes(key));
+-            const missing = DEFAULT_BLOCK_ORDER.filter((key) => !valid.includes(key));
+-            blockOrder.value = [...valid, ...missing];
+-        } catch {
+-            blockOrder.value = [...DEFAULT_BLOCK_ORDER];
++        pulsoidToken.value = token || '';
++        pulseAvatarParameter.value = pulseParam || 'isHRBeat';
++        bpmAvatarParameter.value = bpmParam || 'HR';
++    }
++
++    function persistSoon() {
++        if (saveTimer) clearTimeout(saveTimer);
++        saveTimer = setTimeout(() => {
++            saveTimer = null;
++            void configRepository.setString(SETTINGS_KEY, JSON.stringify(normalizeSettings(settings)));
++        }, 300);
++    }
++
++    // ---------- the engine ----------
++    function rotateStatusIfDue(force = false) {
++        const due = Date.now() - lastStatusSwitch >= settings.modules.status.rotateSeconds * 1000;
++        const current = rotator.current(settings.statuses);
++        if (force || due || !current) {
++            const next = rotator.next(settings.statuses, settings.modules.status.order);
++            currentStatus.value = next?.text || '';
++            lastStatusSwitch = Date.now();
++        } else {
++            currentStatus.value = current.text;
+         }
+-        nowPlayingTitle.value = storedTitle || '';
+-        nowPlayingArtist.value = storedArtist || '';
+-        pulsoidToken.value = storedToken || '';
+-        pulseAvatarParameter.value = storedPulseParam || 'isHRBeat';
+-        bpmAvatarParameter.value = storedBpmParam || 'HR';
+-        preset.value = PRESETS[storedPreset] ? storedPreset : 'normal';
+-    }
+-
+-    async function initOscLab() {
+-        if (initialized.value) return;
+-        await loadSettings();
+-        initialized.value = true;
+-        if (showHeartRate.value && pulsoidToken.value) connectPulsoid();
+-        if (autoMedia.value) startMediaPolling();
+-        if (enabled.value && autoBroadcast.value) startAutoBroadcast();
+-    }
+-
+-    async function persistBool(key, value) {
+-        await configRepository.setBool(key, Boolean(value));
+-    }
+-
+-    async function setEnabled(value) {
+-        enabled.value = Boolean(value);
+-        await persistBool(CONFIG.enabled, enabled.value);
+-        if (enabled.value && autoBroadcast.value) startAutoBroadcast();
+-        else stopAutoBroadcast();
+-    }
+-
+-    async function setCustomStatus(value) {
+-        customStatus.value = String(value || '').slice(0, 144);
+-        await configRepository.setString(CONFIG.customStatus, customStatus.value);
+     }
+ 
+-    async function setShowWorld(value) {
+-        showWorld.value = Boolean(value);
+-        await persistBool(CONFIG.showWorld, showWorld.value);
+-    }
+-
+-    async function setShowEvent(value) {
+-        showEvent.value = Boolean(value);
+-        await persistBool(CONFIG.showEvent, showEvent.value);
+-    }
+-
+-    async function setShowHeartRate(value) {
+-        showHeartRate.value = Boolean(value);
+-        await persistBool(CONFIG.showHeartRate, showHeartRate.value);
+-        if (showHeartRate.value && pulsoidToken.value) connectPulsoid();
+-        if (!showHeartRate.value) disconnectPulsoid();
+-    }
+-
+-    async function setShowNowPlaying(value) {
+-        showNowPlaying.value = Boolean(value);
+-        await persistBool(CONFIG.showNowPlaying, showNowPlaying.value);
+-    }
+-
+-    async function setShowPopulation(value) {
+-        showPopulation.value = Boolean(value);
+-        await persistBool(CONFIG.showPopulation, showPopulation.value);
+-    }
+-
+-    async function setAutoBroadcast(value) {
+-        autoBroadcast.value = Boolean(value);
+-        await persistBool(CONFIG.autoBroadcast, autoBroadcast.value);
+-        if (enabled.value && autoBroadcast.value) startAutoBroadcast();
+-        else stopAutoBroadcast();
+-    }
+-
+-    async function setAutoMedia(value) {
+-        autoMedia.value = Boolean(value);
+-        await persistBool(CONFIG.autoMedia, autoMedia.value);
+-        if (autoMedia.value) startMediaPolling();
+-        else stopMediaPolling();
+-    }
+-
+-    async function setSignatureMode(value) {
+-        signatureMode.value = ['off', 'short', 'full'].includes(value) ? value : 'short';
+-        await configRepository.setString(CONFIG.signatureMode, signatureMode.value);
+-    }
+-
+-    async function moveBlock(key, direction) {
+-        const current = [...blockOrder.value];
+-        const index = current.indexOf(key);
+-        const target = index + Number(direction || 0);
+-        if (index < 0 || target < 0 || target >= current.length) return;
+-        const [item] = current.splice(index, 1);
+-        current.splice(target, 0, item);
+-        blockOrder.value = current;
+-        await configRepository.setString(CONFIG.blockOrder, JSON.stringify(current));
+-    }
+-
+-    async function setNowPlayingTitle(value) {
+-        nowPlayingTitle.value = String(value || '').slice(0, 80);
+-        await configRepository.setString(CONFIG.nowPlayingTitle, nowPlayingTitle.value);
+-    }
+-
+-    async function setNowPlayingArtist(value) {
+-        nowPlayingArtist.value = String(value || '').slice(0, 80);
+-        await configRepository.setString(CONFIG.nowPlayingArtist, nowPlayingArtist.value);
+-    }
+-
+-    async function setPulsoidToken(value) {
+-        pulsoidToken.value = String(value || '').trim();
+-        await configRepository.setString(CONFIG.pulsoidToken, pulsoidToken.value);
+-        if (showHeartRate.value && pulsoidToken.value) connectPulsoid();
+-        else disconnectPulsoid();
+-    }
+-
+-    async function setPulseAvatarParameter(value) {
+-        pulseAvatarParameter.value = String(value || '').trim() || 'isHRBeat';
+-        await configRepository.setString(CONFIG.pulseAvatarParameter, pulseAvatarParameter.value);
++    async function transmit(text, reason) {
++        try {
++            await AppApi.SendOscChatbox(text, true, false);
++            const at = Date.now();
++            lastSentAt.value = at;
++            lastError.value = '';
++            sendTimes.push(at);
++            outputLog.value = [{ at, text: text || '(cleared)', reason }, ...outputLog.value].slice(0, 30);
++        } catch (error) {
++            lastError.value = error?.message || 'OSC send failed.';
++        }
+     }
+ 
+-    async function setBpmAvatarParameter(value) {
+-        bpmAvatarParameter.value = String(value || '').trim() || 'HR';
+-        await configRepository.setString(CONFIG.bpmAvatarParameter, bpmAvatarParameter.value);
+-    }
+-
+-    async function applyPreset(name) {
+-        const next = PRESETS[name] || PRESETS.normal;
+-        preset.value = PRESETS[name] ? name : 'normal';
+-        customStatus.value = next.customStatus;
+-        showWorld.value = next.showWorld;
+-        showEvent.value = next.showEvent;
+-        showHeartRate.value = next.showHeartRate;
+-        showNowPlaying.value = next.showNowPlaying;
+-        showPopulation.value = next.showPopulation;
+-        await Promise.all([
+-            configRepository.setString(CONFIG.preset, preset.value),
+-            configRepository.setString(CONFIG.customStatus, customStatus.value),
+-            persistBool(CONFIG.showWorld, showWorld.value),
+-            persistBool(CONFIG.showEvent, showEvent.value),
+-            persistBool(CONFIG.showHeartRate, showHeartRate.value),
+-            persistBool(CONFIG.showNowPlaying, showNowPlaying.value),
+-            persistBool(CONFIG.showPopulation, showPopulation.value)
+-        ]);
+-        if (showHeartRate.value && pulsoidToken.value) connectPulsoid();
+-        else disconnectPulsoid();
++    function tick() {
++        now.value = Date.now();
++        while (sendTimes.length && now.value - sendTimes[0] > 60000) sendTimes.shift();
++        sendsLastMinute.value = sendTimes.length;
++        if (settings.modules.status.enabled) rotateStatusIfDue();
++        const text = settings.enabled ? preview.value.text : '';
++        const key = settings.enabled ? meaningfulKey(settings, liveData.value) : '';
++        const decision = scheduler.decide({
++            now: now.value,
++            text,
++            key,
++            progressIntervalMs: settings.progressRefreshSeconds * 1000
++        });
++        if (decision.send) void transmit(decision.text, decision.reason);
++    }
++
++    async function refreshMedia() {
++        if (!settings.modules.music.enabled) return;
++        try {
++            const raw = await AppApi.GetSystemMediaInfo();
++            const data = raw ? JSON.parse(raw) : {};
++            if (!data?.title) {
++                media.value = null;
++                mediaState.value = 'nothing playing';
++                return;
++            }
++            const reportedAt = Number(data.lastUpdatedUnixMs);
++            const fetchedAt = Date.now();
++            media.value = {
++                title: String(data.title).slice(0, 80),
++                artist: String(data.artist || '').slice(0, 80),
++                status: String(data.status || '').toLowerCase(),
++                source: String(data.source || ''),
++                positionSeconds: Math.max(0, Number(data.positionSeconds) || 0),
++                durationSeconds: Math.max(0, Number(data.durationSeconds) || 0),
++                playbackRate: Number(data.playbackRate) || 1,
++                // Older builds don't report lastUpdatedUnixMs; fall back to fetch time.
++                sampledAt: Number.isFinite(reportedAt) && reportedAt > 0 && reportedAt <= fetchedAt ? reportedAt : fetchedAt
++            };
++            mediaState.value = media.value.status || 'unknown';
++        } catch (error) {
++            mediaState.value = 'unavailable';
++            lastError.value = error?.message || lastError.value;
++        }
+     }
+ 
+-    async function sendChatbox(text = chatboxPreview.value) {
+-        if (!enabled.value) {
+-            toast.error('Enable OSC Lab before sending to VRChat.');
++    async function refreshWeather() {
++        const zip = settings.modules.weather.zip;
++        if (!settings.modules.weather.enabled || !/^\d{5}$/.test(zip)) {
++            weather.value = null;
++            weatherState.value = settings.modules.weather.enabled ? 'Enter a 5-digit US ZIP code.' : '';
+             return false;
+         }
+-        const message = clampChatbox(text);
+-        if (!message) return false;
++        weatherState.value = 'Loading…';
+         try {
+-            await AppApi.SendOscChatbox(message, true, false);
+-            lastSentAt.value = Date.now();
+-            lastError.value = '';
+-            outputLog.value = [{ at: Date.now(), text: message }, ...outputLog.value].slice(0, 20);
++            // The ZIP goes only to the lookup service; Open-Meteo gets coordinates rounded to
++            // ~10 km, and nothing location-related is ever put into the chatbox.
++            const place = await fetch(`https://api.zippopotam.us/us/${encodeURIComponent(zip)}`);
++            if (!place.ok) throw new Error('ZIP not found');
++            const placeData = await place.json();
++            const p = placeData?.places?.[0];
++            const lat = Math.round(Number(p?.latitude) * 10) / 10;
++            const lon = Math.round(Number(p?.longitude) * 10) / 10;
++            if (!Number.isFinite(lat) || !Number.isFinite(lon)) throw new Error('ZIP not found');
++            const unit = settings.modules.weather.unit === 'C' ? 'celsius' : 'fahrenheit';
++            const res = await fetch(
++                `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,weather_code&temperature_unit=${unit}`
++            );
++            if (!res.ok) throw new Error('Weather service unavailable');
++            const json = await res.json();
++            const described = describeWeather(json?.current, settings.modules.weather.unit);
++            if (!described) throw new Error('Weather unavailable');
++            weather.value = described;
++            weatherUpdatedAt.value = Date.now();
++            weatherState.value = '';
+             return true;
+         } catch (error) {
+-            lastError.value = error?.message || 'OSC send failed.';
+-            toast.error(lastError.value);
++            weatherState.value = `Couldn't load weather: ${error?.message || 'unknown error'}. Will retry.`;
+             return false;
+         }
+     }
+ 
+-    function clearOutputLog() {
+-        outputLog.value = [];
++    function startTimers() {
++        stopTimers();
++        tickTimer = setInterval(tick, TICK_MS);
++        mediaTimer = setInterval(() => void refreshMedia(), MEDIA_POLL_MS);
++        weatherTimer = setInterval(() => void refreshWeather(), WEATHER_REFRESH_MS);
++        void refreshMedia();
++        void refreshWeather();
++        tick();
+     }
+ 
+-    function osc2AvailableQueue() {
+-        return osc2Queue.value.filter((key) => osc2Enabled.value[key] && osc2ModuleHasData(key));
++    function stopTimers() {
++        if (tickTimer) clearInterval(tickTimer);
++        if (mediaTimer) clearInterval(mediaTimer);
++        if (weatherTimer) clearInterval(weatherTimer);
++        tickTimer = mediaTimer = weatherTimer = null;
+     }
+ 
+-    function osc2ModuleHasData(key) {
+-        if (key === 'music') return Boolean(nowPlayingTitle.value.trim());
+-        if (key === 'status') return osc2Statuses.value.some((status) => status.favorite);
+-        if (key === 'weather') return Boolean(osc2Weather.value.temperature || osc2Weather.value.condition);
+-        if (key === 'heart') return heartRate.value > 0;
+-        if (key === 'world') return Boolean(worldName.value);
+-        if (key === 'custom') return Boolean(customStatus.value.trim());
+-        return key === 'uwx';
++    async function initOscLab() {
++        if (initialized.value) return;
++        await loadSettings();
++        initialized.value = true;
++        rotateStatusIfDue(true);
++        if (settings.modules.heart.enabled && pulsoidToken.value) connectPulsoid();
++        startTimers();
++    }
++
++    // ---------- settings actions (all persist) ----------
++    function setEnabled(value) {
++        settings.enabled = Boolean(value);
++        persistSoon();
++        tick();
++    }
++
++    function setModuleEnabled(key, value) {
++        if (!OSC_MODULES.includes(key)) return;
++        settings.modules[key].enabled = Boolean(value);
++        persistSoon();
++        if (key === 'weather') void refreshWeather();
++        if (key === 'music') void refreshMedia();
++        if (key === 'heart') {
++            if (value && pulsoidToken.value) connectPulsoid();
++            else disconnectPulsoid();
++        }
+     }
+ 
+-    function osc2RefillStatusBag() {
+-        const ids = osc2Statuses.value.filter((status) => status.favorite).map((status) => status.id);
+-        for (let index = ids.length - 1; index > 0; index -= 1) {
+-            const target = Math.floor(Math.random() * (index + 1));
+-            [ids[index], ids[target]] = [ids[target], ids[index]];
+-        }
+-        osc2StatusBag.value = ids;
++    function setModuleOption(key, option, value) {
++        if (!OSC_MODULES.includes(key)) return;
++        settings.modules[key][option] = value;
++        Object.assign(settings, normalizeSettings(settings));
++        persistSoon();
+     }
+ 
+-    function osc2NextStatus() {
+-        if (!osc2StatusBag.value.length) osc2RefillStatusBag();
+-        const id = osc2StatusBag.value.shift();
+-        osc2ActiveStatus.value = osc2Statuses.value.find((status) => status.id === id)?.text || '';
+-        return osc2ActiveStatus.value;
++    function setTemplate(key, template) {
++        if (!OSC_MODULES.includes(key)) return;
++        settings.modules[key].template = String(template || '').slice(0, 144) || DEFAULT_TEMPLATES[key];
++        persistSoon();
+     }
+ 
+-    function osc2EnsureActiveStatus() {
+-        if (!osc2ActiveStatus.value || !osc2Statuses.value.some((status) => status.favorite && status.text === osc2ActiveStatus.value)) {
+-            osc2NextStatus();
+-        }
+-        return osc2ActiveStatus.value;
++    function resetTemplate(key) {
++        setTemplate(key, DEFAULT_TEMPLATES[key]);
+     }
+ 
+-    async function osc2Step(direction = 1) {
+-        const queue = osc2AvailableQueue();
+-        if (!queue.length || osc2Mode.value !== 'rotate') return false;
+-        const currentKey = osc2CurrentKey.value;
+-        const currentIndex = Math.max(0, queue.indexOf(currentKey));
+-        osc2PreviousKey.value = currentKey || '';
+-        osc2CurrentIndex.value = (currentIndex + Number(direction || 0) + queue.length) % queue.length;
+-        await sendOsc2Current();
+-        return true;
++    function moveModule(key, direction) {
++        const order = [...settings.order];
++        const i = order.indexOf(key);
++        const j = i + Number(direction || 0);
++        if (i < 0 || j < 0 || j >= order.length) return;
++        [order[i], order[j]] = [order[j], order[i]];
++        settings.order = order;
++        persistSoon();
+     }
+ 
+-    async function osc2SetMode(mode, pinnedModule = '') {
+-        if (!['rotate', 'pin', 'stealth'].includes(mode)) return;
+-        if (mode === 'stealth') {
+-            if (osc2Mode.value !== 'stealth') osc2ResumeMode = osc2Mode.value;
+-            osc2Mode.value = 'stealth';
+-            osc2Interrupt.value = null;
+-            await configRepository.setString(CONFIG.osc2Mode, 'stealth');
+-            await AppApi.SendOscChatbox('', true, false);
+-            return;
++    async function setWeatherZip(zip) {
++        const clean = String(zip || '').trim();
++        if (clean && !/^\d{5}$/.test(clean)) {
++            weatherState.value = 'Enter a 5-digit US ZIP code.';
++            return false;
+         }
+-        osc2Mode.value = mode;
+-        if (mode === 'pin') osc2PinnedModule.value = pinnedModule || osc2AvailableQueue()[osc2CurrentIndex.value] || 'uwx';
+-        await configRepository.setString(CONFIG.osc2Mode, mode);
+-        await configRepository.setString(CONFIG.osc2PinnedModule, osc2PinnedModule.value);
++        settings.modules.weather.zip = clean;
++        persistSoon();
++        return refreshWeather();
+     }
+ 
+-    async function osc2RestoreFromStealth() {
+-        await osc2SetMode(osc2ResumeMode === 'pin' ? 'pin' : 'rotate', osc2PinnedModule.value);
++    function setProgressRefreshSeconds(value) {
++        settings.progressRefreshSeconds = value;
++        Object.assign(settings, normalizeSettings(settings));
++        persistSoon();
+     }
+ 
+-    function osc2Render(key, statusText = '') {
+-        const music = {
+-            title: nowPlayingTitle.value.trim(), artist: nowPlayingArtist.value.trim(),
+-            time: mediaDurationSeconds.value > 0 ? `${formatMediaTime(mediaPositionSeconds.value)}/${formatMediaTime(mediaDurationSeconds.value)}` : '',
+-            progress: osc2ProgressBar(mediaPositionSeconds.value, mediaDurationSeconds.value)
+-        };
+-        const data = {
+-            music, status: { text: statusText }, weather: osc2Weather.value,
+-            heart: { bpm: heartRate.value }, world: { world: worldName.value },
+-            custom: { text: customStatus.value.trim() }
+-        };
+-        const d = data[key] || {};
+-        const theme = osc2Theme.value;
+-        if (key === 'music') {
+-            const statusLine = osc2Enabled.value.status ? osc2EnsureActiveStatus() : '';
+-            const minimalMusic = `♫ ${d.title} — ${d.artist} · ${d.time}`;
+-            const themedMusic = `🕷 SIGNAL // AUDIO\n${d.title}${d.artist ? ' — ' + d.artist : ''}\n${d.progress} ${d.time}`;
+-            return statusLine ? `${statusLine}\n${theme === 'minimal' ? minimalMusic : themedMusic}` : (theme === 'minimal' ? minimalMusic : themedMusic);
+-        }
+-        if (key === 'status') return theme === 'minimal' ? d.text : `🕷 STATUS // SIGNAL\n${d.text}`;
+-        if (key === 'weather') return theme === 'minimal' ? `${d.temperature} · ${d.condition}` : `🕷 SIGNAL // WEATHER\n${d.temperature} · ${d.condition}`;
+-        if (key === 'heart') return theme === 'minimal' ? `♥ ${d.bpm} BPM` : `🕷 SIGNAL // VITALS\n♥ ${d.bpm} BPM`;
+-        if (key === 'world') return theme === 'minimal' ? d.world : `🕷 SIGNAL // WORLD\n${d.world}`;
+-        if (key === 'custom') return theme === 'minimal' ? d.text : `🕷 SIGNAL // STATUS\n${d.text}`;
+-        return theme === 'minimal' ? 'UWX // CONNECTED' : '🕷 UNDERWEB X // CONNECTED';
+-    }
+-
+-    const osc2CurrentKey = computed(() => {
+-        if (osc2Mode.value === 'pin' && osc2PinnedModule.value) return osc2PinnedModule.value;
+-        const queue = osc2AvailableQueue();
+-        return queue.length ? queue[osc2CurrentIndex.value % queue.length] : 'uwx';
+-    });
+-
+-    const osc2CurrentScreen = computed(() => {
+-        if (osc2Mode.value === 'stealth') return '';
+-        if (osc2Interrupt.value?.text) return clampChatbox(osc2Interrupt.value.text);
+-        const key = osc2CurrentKey.value;
+-        const status = key === 'status' ? osc2EnsureActiveStatus() : '';
+-        return clampChatbox(osc2Render(key, status));
+-    });
+-
+-    async function sendOsc2Current() {
+-        if (osc2Mode.value === 'stealth') return false;
+-        const key = osc2CurrentKey.value;
+-        const status = key === 'status' ? osc2EnsureActiveStatus() : '';
+-        const message = osc2Interrupt.value?.text || osc2Render(key, status);
+-        const safe = validateOsc2Text(message);
+-        if (!safe.ok) {
+-            lastError.value = 'UWX blocked unsafe OSC output.';
++    function addStatus(text) {
++        const clean = cleanStatusText(text);
++        if (!clean) return false;
++        if (settings.statuses.length >= MAX_STATUSES) {
++            toast.error(`You can keep up to ${MAX_STATUSES} statuses.`);
+             return false;
+         }
+-        const clamped = clampChatbox(message);
+-        if (!clamped) return false;
+-        await AppApi.SendOscChatbox(clamped, true, false);
+-        lastSentAt.value = Date.now();
+-        outputLog.value = [{ at: Date.now(), text: clamped }, ...outputLog.value].slice(0, 20);
++        settings.statuses = [...settings.statuses, { id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, text: clean, favorite: true }];
++        persistSoon();
++        if (!currentStatus.value) rotateStatusIfDue(true);
+         return true;
+     }
+ 
+-    function stopAutoBroadcast() {
+-        if (broadcastTimer) window.clearInterval(broadcastTimer);
+-        broadcastTimer = null;
++    function updateStatus(id, text) {
++        const clean = cleanStatusText(text);
++        if (!clean) return;
++        settings.statuses = settings.statuses.map((s) => (s.id === id ? { ...s, text: clean } : s));
++        persistSoon();
++        rotateStatusIfDue(false);
+     }
+ 
+-    function startAutoBroadcast() {
+-        stopAutoBroadcast();
+-        if (!enabled.value || !autoBroadcast.value) return;
+-        void sendChatbox();
+-        broadcastTimer = window.setInterval(() => {
+-            if (enabled.value && autoBroadcast.value && chatboxPreview.value) void sendChatbox();
+-        }, 4000);
++    function toggleStatusFavorite(id) {
++        settings.statuses = settings.statuses.map((s) => (s.id === id ? { ...s, favorite: !s.favorite } : s));
++        persistSoon();
++        rotateStatusIfDue(false);
+     }
+ 
+-    async function refreshSystemMedia() {
+-        if (!autoMedia.value) return;
+-        try {
+-            const raw = await AppApi.GetSystemMediaInfo();
+-            const data = raw ? JSON.parse(raw) : {};
+-            mediaState.value = String(data?.status || 'idle').toLowerCase();
+-            mediaSource.value = String(data?.source || '');
+-            mediaPositionSeconds.value = Math.max(0, Number(data?.positionSeconds) || 0);
+-            mediaDurationSeconds.value = Math.max(0, Number(data?.durationSeconds) || 0);
+-            if (data?.title) nowPlayingTitle.value = String(data.title).slice(0, 80);
+-            if (data?.artist) nowPlayingArtist.value = String(data.artist).slice(0, 80);
+-            if (!data?.title && mediaState.value === 'idle') {
+-                mediaState.value = 'nothing playing';
+-            }
+-        } catch (error) {
+-            mediaState.value = 'unavailable';
+-            lastError.value = error?.message || lastError.value;
+-        }
++    function deleteStatus(id) {
++        settings.statuses = settings.statuses.filter((s) => s.id !== id);
++        persistSoon();
++        rotateStatusIfDue(false);
++    }
++
++    function moveStatus(id, direction) {
++        const list = [...settings.statuses];
++        const i = list.findIndex((s) => s.id === id);
++        const j = i + Number(direction || 0);
++        if (i < 0 || j < 0 || j >= list.length) return;
++        [list[i], list[j]] = [list[j], list[i]];
++        settings.statuses = list;
++        persistSoon();
++    }
++
++    function nextStatusNow() {
++        rotateStatusIfDue(true);
++        tick();
+     }
+ 
+-    function stopMediaPolling() {
+-        if (mediaTimer) window.clearInterval(mediaTimer);
+-        mediaTimer = null;
+-        mediaState.value = 'manual';
++    /** Clear the chatbox immediately and stop sending. */
++    async function hideNow() {
++        settings.enabled = false;
++        persistSoon();
++        scheduler.reset();
++        await transmit('', 'hidden');
+     }
+ 
+-    function startMediaPolling() {
+-        stopMediaPolling();
+-        if (!autoMedia.value) return;
+-        void refreshSystemMedia();
+-        mediaTimer = window.setInterval(() => void refreshSystemMedia(), 1000);
++    // Old export name kept for the System panel "Disarm" button.
++    const enabled = computed(() => settings.enabled);
++
++    function clearOutputLog() {
++        outputLog.value = [];
+     }
+ 
++    // ---------- avatar parameters + Pulsoid (unchanged behaviour) ----------
+     async function sendAvatarParameter(name, type, value) {
+-        if (!enabled.value) throw new Error('OSC Lab is disabled.');
+         const parameter = String(name || '').trim();
+         if (!parameter) throw new Error('Avatar parameter name is required.');
+         if (type === 'bool') return AppApi.SendOscAvatarBool(parameter, Boolean(value));
+@@ -578,23 +419,38 @@ export const useOscLabStore = defineStore('OscLab', () => {
+         return AppApi.SendOscAvatarFloat(parameter, Number(value) || 0);
+     }
+ 
++    async function setPulsoidToken(value) {
++        pulsoidToken.value = String(value || '').trim();
++        await configRepository.setString(PULSOID.token, pulsoidToken.value);
++        if (settings.modules.heart.enabled && pulsoidToken.value) connectPulsoid();
++        else disconnectPulsoid();
++    }
++
++    async function setPulseAvatarParameter(value) {
++        pulseAvatarParameter.value = String(value || '').trim() || 'isHRBeat';
++        await configRepository.setString(PULSOID.pulseParam, pulseAvatarParameter.value);
++    }
++
++    async function setBpmAvatarParameter(value) {
++        bpmAvatarParameter.value = String(value || '').trim() || 'HR';
++        await configRepository.setString(PULSOID.bpmParam, bpmAvatarParameter.value);
++    }
++
+     async function pushHeartRateToAvatar() {
+-        if (!enabled.value || heartRate.value <= 0) return;
++        if (heartRate.value <= 0) return;
+         try {
+             await Promise.all([
+                 sendAvatarParameter(bpmAvatarParameter.value, 'int', heartRate.value),
+                 sendAvatarParameter(pulseAvatarParameter.value, 'bool', true)
+             ]);
+-            window.setTimeout(() => {
+-                if (enabled.value) void sendAvatarParameter(pulseAvatarParameter.value, 'bool', false);
+-            }, 150);
++            setTimeout(() => void sendAvatarParameter(pulseAvatarParameter.value, 'bool', false).catch(() => {}), 150);
+         } catch {
+-            // Do not turn a transient OSC issue into a noisy toast every heartbeat.
++            // transient OSC errors are ignored for avatar heartbeat pulses
+         }
+     }
+ 
+     function disconnectPulsoid() {
+-        if (reconnectTimer) window.clearTimeout(reconnectTimer);
++        if (reconnectTimer) clearTimeout(reconnectTimer);
+         reconnectTimer = null;
+         if (pulsoidSocket) {
+             pulsoidSocket.onclose = null;
+@@ -604,37 +460,26 @@ export const useOscLabStore = defineStore('OscLab', () => {
+         heartRateState.value = 'offline';
+     }
+ 
+-    function scheduleReconnect() {
+-        if (!showHeartRate.value || !pulsoidToken.value || reconnectTimer) return;
+-        reconnectTimer = window.setTimeout(() => {
+-            reconnectTimer = null;
+-            connectPulsoid();
+-        }, 5000);
+-    }
+-
+     function connectPulsoid() {
+         disconnectPulsoid();
+-        if (!showHeartRate.value || !pulsoidToken.value) return;
++        if (!settings.modules.heart.enabled || !pulsoidToken.value) return;
+         try {
+             heartRateState.value = 'connecting';
+-            const url = `wss://dev.pulsoid.net/api/v1/data/real_time?access_token=${encodeURIComponent(pulsoidToken.value)}`;
+-            pulsoidSocket = new WebSocket(url);
++            pulsoidSocket = new WebSocket(`wss://dev.pulsoid.net/api/v1/data/real_time?access_token=${encodeURIComponent(pulsoidToken.value)}`);
+             pulsoidSocket.onopen = () => {
+                 heartRateState.value = 'online';
+-                lastError.value = '';
+             };
+             pulsoidSocket.onmessage = (event) => {
++                let bpm = 0;
+                 try {
+-                    const payload = JSON.parse(event.data);
+-                    const bpm = Number(payload?.data?.heart_rate || 0);
+-                    if (bpm > 0) {
+-                        heartRate.value = Math.round(bpm);
+-                        heartRateState.value = 'online';
+-                        void pushHeartRateToAvatar();
+-                    }
++                    bpm = Number(JSON.parse(event.data)?.data?.heart_rate || 0);
+                 } catch {
+-                    const bpm = Number(event.data);
+-                    if (bpm > 0) heartRate.value = Math.round(bpm);
++                    bpm = Number(event.data) || 0;
++                }
++                if (bpm > 0) {
++                    heartRate.value = Math.round(bpm);
++                    heartRateState.value = 'online';
++                    void pushHeartRateToAvatar();
+                 }
+             };
+             pulsoidSocket.onerror = () => {
+@@ -643,87 +488,68 @@ export const useOscLabStore = defineStore('OscLab', () => {
+             pulsoidSocket.onclose = () => {
+                 pulsoidSocket = null;
+                 heartRateState.value = 'offline';
+-                scheduleReconnect();
++                if (settings.modules.heart.enabled && pulsoidToken.value && !reconnectTimer) {
++                    reconnectTimer = setTimeout(() => {
++                        reconnectTimer = null;
++                        connectPulsoid();
++                    }, 5000);
++                }
+             };
+         } catch (error) {
+             lastError.value = error?.message || 'Pulsoid connection failed.';
+             heartRateState.value = 'error';
+-            scheduleReconnect();
+         }
+     }
+ 
++    // Re-render immediately when the user edits something, so the preview never lags.
++    watch(
++        () => [settings.order.join(), JSON.stringify(settings.modules)],
++        () => tick()
++    );
++
+     return {
+         initialized,
++        settings,
+         enabled,
+-        customStatus,
+-        showWorld,
+-        showEvent,
+-        showHeartRate,
+-        showNowPlaying,
+-        showPopulation,
+-        autoBroadcast,
+-        autoMedia,
+-        signatureMode,
+-        blockOrder,
+-        playerCount,
+-        nowPlayingTitle,
+-        nowPlayingArtist,
+-        pulsoidToken,
++        preview,
++        media,
++        mediaState,
++        weather,
++        weatherState,
++        weatherUpdatedAt,
++        currentStatus,
+         heartRate,
+         heartRateState,
++        pulsoidToken,
+         pulseAvatarParameter,
+         bpmAvatarParameter,
+-        preset,
+-        lastSentAt,
+         lastError,
+-        mediaState,
+-        mediaSource,
+-        mediaPositionSeconds,
+-        mediaDurationSeconds,
+-        mediaProgressPercent,
+-        mediaTimeLabel,
++        lastSentAt,
+         outputLog,
+-        chatboxPreview,
+-        previewLength,
++        sendsLastMinute,
++        templateTokens: TEMPLATE_TOKENS,
+         initOscLab,
+         setEnabled,
+-        setCustomStatus,
+-        setShowWorld,
+-        setShowEvent,
+-        setShowHeartRate,
+-        setShowNowPlaying,
+-        setShowPopulation,
+-        setAutoBroadcast,
+-        setAutoMedia,
+-        setSignatureMode,
+-        moveBlock,
+-        setNowPlayingTitle,
+-        setNowPlayingArtist,
++        setModuleEnabled,
++        setModuleOption,
++        setTemplate,
++        resetTemplate,
++        moveModule,
++        setWeatherZip,
++        refreshWeather,
++        setProgressRefreshSeconds,
++        addStatus,
++        updateStatus,
++        toggleStatusFavorite,
++        deleteStatus,
++        moveStatus,
++        nextStatusNow,
++        hideNow,
++        clearOutputLog,
++        sendAvatarParameter,
+         setPulsoidToken,
+         setPulseAvatarParameter,
+         setBpmAvatarParameter,
+-        applyPreset,
+-        sendChatbox,
+-        clearOutputLog,
+-        osc2Mode,
+-        osc2Theme,
+-        osc2Queue,
+-        osc2Enabled,
+-        osc2Durations,
+-        osc2PinnedModule,
+-        osc2Statuses,
+-        osc2ActiveStatus,
+-        osc2NextStatus,
+-        osc2Weather,
+-        osc2Interrupt,
+-        osc2CurrentKey,
+-        osc2CurrentScreen,
+-        osc2Step,
+-        osc2SetMode,
+-        osc2RestoreFromStealth,
+-        sendOsc2Current,
+-        refreshSystemMedia,
+-        sendAvatarParameter,
+         connectPulsoid,
+         disconnectPulsoid
+     };
+diff --git a/src/stores/uwxGroupTools.js b/src/stores/uwxGroupTools.js
+index a404557..3feb5e1 100644
+--- a/src/stores/uwxGroupTools.js
++++ b/src/stores/uwxGroupTools.js
+@@ -99,9 +99,11 @@ export const useUwxGroupToolsStore = defineStore('UwxGroupTools', () => {
+             return existing.ref;
+         }
+         try {
+-            const args = await groupRequest.getGroup({ groupId, includeRoles: true });
+-            groupInfo.set(groupId, { ref: args.ref, loadedAt: Date.now(), error: '' });
+-            return args.ref;
++            // getGroup() also returns the normalized group as `ref` (see api/group.js).
++            const args = /** @type {any} */ (await groupRequest.getGroup({ groupId, includeRoles: true }));
++            const ref = args.ref || args.json;
++            groupInfo.set(groupId, { ref, loadedAt: Date.now(), error: '' });
++            return ref;
+         } catch (error) {
+             groupInfo.set(groupId, { ref: existing?.ref || null, loadedAt: Date.now(), error: errorMessage(error) });
+             if (errorStatus(error) === 429) throw error;
+diff --git a/src/views/UnderWeb/UnderWeb.vue b/src/views/UnderWeb/UnderWeb.vue
+index 1767361..60098a3 100644
+--- a/src/views/UnderWeb/UnderWeb.vue
++++ b/src/views/UnderWeb/UnderWeb.vue
+@@ -84,6 +84,7 @@
+         </div>
+ 
+         <UwxGroupTools v-if="activePanel === 'groups'" />
++        <UwxOscLab v-if="activePanel === 'osc'" />
+ 
+         <div class="uwx-grid">
+             <Card v-show="activePanel === 'command'" class="uwx-card uwx-card-wide uwx-command-card">
+@@ -390,152 +391,6 @@
+                 </CardContent>
+             </Card>
+ 
+-            <Card v-show="activePanel === 'osc'" class="uwx-card uwx-card-wide uwx-osc-card uwx-osc-premium">
+-                <CardHeader>
+-                    <div class="uwx-osc-head">
+-                        <div>
+-                            <div class="uwx-section-label">REAL-TIME STATUS</div>
+-                            <CardTitle>OSC Lab</CardTitle>
+-                            <CardDescription>Broadcast a polished live status to VRChat with music, world, population, Pulsoid, and UWX.</CardDescription>
+-                        </div>
+-                        <Badge :variant="oscEnabled ? 'default' : 'outline'">{{ oscEnabled ? 'OSC LIVE' : 'OSC STANDBY' }}</Badge>
+-                    </div>
+-                </CardHeader>
+-                <CardContent class="space-y-4">
+-                    <div class="uwx-health-strip">
+-                        <div class="uwx-health-card"><i class="ri-radar-line" /><div><span>VRChat OSC</span><strong :class="{ online: oscEnabled }">{{ oscEnabled ? 'Connected' : 'Off' }}</strong></div></div>
+-                        <div class="uwx-health-card"><i class="ri-spotify-fill" /><div><span>Spotify / Media</span><strong :class="{ online: oscAutoMedia && oscMediaState !== 'unavailable' }">{{ oscAutoMedia ? oscMediaState : 'Manual' }}</strong></div></div>
+-                        <div class="uwx-health-card"><i class="ri-global-line" /><div><span>World Sync</span><strong class="online">{{ currentWorldName ? 'Active' : 'Idle' }}</strong></div></div>
+-                        <div class="uwx-health-card"><i class="ri-heart-pulse-line" /><div><span>Pulsoid</span><strong :class="{ online: oscHeartRateState === 'online' }">{{ oscHeartRateState }}</strong></div></div>
+-                        <div class="uwx-health-card"><i class="ri-message-3-line" /><div><span>Chatbox</span><strong :class="{ online: oscEnabled && oscAutoBroadcast }">{{ oscEnabled && oscAutoBroadcast ? 'Broadcasting' : 'Manual' }}</strong></div></div>
+-                    </div>
+-
+-                    <div class="uwx-osc-premium-grid">
+-                        <section class="uwx-premium-panel uwx-broadcast-panel">
+-                            <div class="uwx-panel-title"><div><i class="ri-broadcast-line" /><div><strong>Broadcast Control</strong><span>Enable or disable live OSC chatbox output.</span></div></div></div>
+-                            <label class="uwx-osc-live-box">
+-                                <div><i class="ri-radar-line" /><div><strong>OSC {{ oscEnabled ? 'LIVE' : 'STANDBY' }}</strong><span>{{ oscEnabled ? 'Sending updates to VRChat' : 'Ready when you are' }}</span></div></div>
+-                                <Switch :model-value="oscEnabled" @update:modelValue="setOscEnabled" />
+-                            </label>
+-                            <div class="uwx-broadcast-options">
+-                                <label><Switch :model-value="oscAutoBroadcast" @update:modelValue="setOscAutoBroadcast" /><div><strong>Keep visible</strong><span>Re-send automatically while armed</span></div></label>
+-                                <div class="uwx-refresh-pill"><span>Refresh</span><strong>4 sec</strong></div>
+-                            </div>
+-                            <Button class="w-full mt-3" :disabled="!oscEnabled || !oscChatboxPreview" @click="sendOscChatbox()"><i class="ri-send-plane-fill mr-2" />Send test message</Button>
+-                        </section>
+-
+-                        <section class="uwx-premium-panel uwx-now-playing-panel">
+-                            <div class="uwx-panel-title"><div><i class="ri-music-2-fill" /><div><strong>Now Playing</strong><span>Live track info from your active Windows media session.</span></div></div><Badge variant="outline">{{ oscAutoMedia ? 'Auto' : 'Manual' }}</Badge></div>
+-                            <div class="uwx-media-card">
+-                                <div class="uwx-media-art"><i class="ri-music-2-fill" /></div>
+-                                <div class="uwx-media-copy">
+-                                    <div class="flex items-start justify-between gap-3"><div class="min-w-0"><strong class="uwx-track-title">{{ oscNowPlayingTitle || 'Nothing playing' }}</strong><span class="uwx-track-artist">{{ oscNowPlayingArtist || 'Waiting for media' }}</span></div><Badge variant="outline">{{ oscMediaState }}</Badge></div>
+-                                    <div class="uwx-media-time"><i class="ri-time-line" />{{ oscMediaTimeLabel }}</div>
+-                                    <div class="uwx-media-progress"><span :style="{ width: `${oscMediaProgressPercent}%` }" /></div>
+-                                </div>
+-                            </div>
+-                            <label class="uwx-toggle-row compact mt-3"><div><strong>Auto-detect Windows media</strong><span>Prefers Spotify when available</span></div><Switch :model-value="oscAutoMedia" @update:modelValue="setOscAutoMedia" /></label>
+-                            <div class="flex items-center gap-2 mt-3">
+-                                <Button size="sm" variant="outline" :disabled="!oscAutoMedia" @click="refreshOscSystemMedia">Refresh media</Button>
+-                                <span v-if="oscMediaSource" class="uwx-help truncate">{{ oscMediaSource }}</span>
+-                            </div>
+-                        </section>
+-
+-                        <section class="uwx-premium-panel uwx-builder-panel">
+-                            <div class="uwx-panel-title"><div><i class="ri-stack-line" /><div><strong>Screen Queue</strong><span>UWX rotates one enabled screen at a time.</span></div></div><Badge variant="outline">OSC 2.0</Badge></div>
+-                            <div class="uwx-builder-list uwx-osc2-queue">
+-                                <div v-for="(key, index) in osc2Queue" :key="key" class="uwx-builder-item">
+-                                    <span class="uwx-builder-handle">≡</span>
+-                                    <div class="uwx-builder-main"><i :class="osc2ModuleIcons[key]" /><strong>{{ osc2ModuleLabels[key] }}</strong><small>{{ osc2Durations[key] }}s</small></div>
+-                                    <Switch :model-value="osc2Enabled[key]" @update:modelValue="setOsc2ModuleEnabled(key, $event)" />
+-                                </div>
+-                            </div>
+-                            <div class="uwx-builder-controls mt-3">
+-                                <div class="uwx-osc2-themes"><Button v-for="theme in osc2Themes" :key="theme" size="sm" :variant="osc2Theme === theme ? 'default' : 'outline'" @click="setOsc2Theme(theme)">{{ theme.toUpperCase() }}</Button></div>
+-                                <p class="uwx-help mt-2">Queue settings stay inside UWX. VRChat only receives the current rendered screen.</p>
+-                            </div>
+-                        </section>
+-
+-                        <section class="uwx-premium-panel uwx-osc2-status">
+-                            <div class="uwx-panel-title"><div><i class="ri-chat-3-line" /><div><strong>Status Pool</strong><span>Starred statuses rotate without repeating until the pool is exhausted.</span></div></div></div>
+-                            <div class="flex gap-2"><Input v-model="osc2StatusDraft" placeholder="Add a saved status..." /><Button size="sm" @click="addOsc2Status">Add</Button></div>
+-                            <div class="uwx-osc2-status-list mt-3"><div v-for="item in osc2Statuses" :key="item.id"><button type="button" @click="toggleOsc2StatusFavorite(item.id)">{{ item.favorite ? '★' : '☆' }}</button><span>{{ item.text }}</span><button type="button" @click="deleteOsc2Status(item.id)">×</button></div></div>
+-                        </section>
+-
+-                        <section class="uwx-premium-panel uwx-osc2-weather">
+-                            <div class="uwx-panel-title"><div><i class="ri-cloudy-line" /><div><strong>Weather</strong><span>ZIP stays local. OSC only receives temperature and conditions.</span></div></div></div>
+-                            <div class="flex gap-2"><Input v-model="osc2WeatherZip" inputmode="numeric" maxlength="5" placeholder="ZIP code" /><Button size="sm" :disabled="osc2WeatherLoading" @click="refreshOsc2Weather">{{ osc2WeatherLoading ? 'Loading…' : 'Save & Refresh' }}</Button></div>
+-                            <p class="uwx-help mt-2">{{ osc2WeatherMessage || (osc2Weather.temperature ? (osc2Weather.temperature + ' · ' + osc2Weather.condition) : 'Weather is not configured yet.') }}</p>
+-                        </section>
+-
+-                        <section class="uwx-premium-panel uwx-osc2-interrupts">
+-                            <div class="uwx-panel-title"><div><i class="ri-flashlight-line" /><div><strong>Smart Interrupts</strong><span>Briefly take over, then return to your queue.</span></div></div></div>
+-                            <label class="uwx-toggle-row compact"><div><strong>New Track</strong><span>Show a new song immediately</span></div><Switch :model-value="osc2TrackInterrupt" @update:modelValue="osc2TrackInterrupt = $event" /></label>
+-                            <label class="uwx-toggle-row compact"><div><strong>Heart Rate Spike</strong><span>Show a meaningful BPM spike</span></div><Switch :model-value="osc2HeartInterrupt" @update:modelValue="osc2HeartInterrupt = $event" /></label>
+-                            <p class="uwx-help mt-2">Weather output is restricted to temperature and conditions. UWX never puts your weather location into OSC.</p>
+-                        </section>
+-
+-                        <section v-if="false" class="uwx-premium-panel uwx-builder-panel">
+-                            <div class="uwx-builder-list">
+-                                <div v-for="(key, index) in oscBlockOrder" :key="key" class="uwx-builder-item">
+-                                    <span class="uwx-builder-handle">{{ index + 1 }}</span>
+-                                    <div class="uwx-builder-main"><i :class="oscBlockIcons[key] || 'ri-checkbox-blank-circle-line'" /><strong>{{ oscBlockLabels[key] || key }}</strong></div>
+-                                    <div class="uwx-builder-actions"><Button size="sm" variant="ghost" :disabled="index === 0" @click="moveOscBlock(key, -1)">↑</Button><Button size="sm" variant="ghost" :disabled="index === oscBlockOrder.length - 1" @click="moveOscBlock(key, 1)">↓</Button></div>
+-                                </div>
+-                            </div>
+-                            <div class="uwx-builder-controls mt-3">
+-                                <Input :model-value="oscCustomStatus" placeholder="Custom text..." @change="setOscCustomStatus($event.target.value)" />
+-                                <div class="uwx-osc-toggle-grid">
+-                                    <label class="uwx-toggle-row compact"><div><strong>World</strong><span>Current world</span></div><Switch :model-value="oscShowWorld" @update:modelValue="setOscShowWorld" /></label>
+-                                    <label class="uwx-toggle-row compact"><div><strong>Player count</strong><span>{{ oscPlayerCount }} here</span></div><Switch :model-value="oscShowPopulation" @update:modelValue="setOscShowPopulation" /></label>
+-                                    <label class="uwx-toggle-row compact"><div><strong>Now playing</strong><span>Track + time</span></div><Switch :model-value="oscShowNowPlaying" @update:modelValue="setOscShowNowPlaying" /></label>
+-                                    <label class="uwx-toggle-row compact"><div><strong>Heart rate</strong><span>{{ oscHeartRate || '--' }} BPM</span></div><Switch :model-value="oscShowHeartRate" @update:modelValue="setOscShowHeartRate" /></label>
+-                                    <label class="uwx-toggle-row compact"><div><strong>Event</strong><span>UnderWeb event</span></div><Switch :model-value="oscShowEvent" @update:modelValue="setOscShowEvent" /></label>
+-                                </div>
+-                            </div>
+-                            <div class="uwx-signature-control mt-3"><div><strong>UWX signature</strong><span>Brand the front of your status.</span></div><div class="flex gap-2"><Button size="sm" :variant="oscSignatureMode === 'off' ? 'default' : 'outline'" @click="setOscSignatureMode('off')">Off</Button><Button size="sm" :variant="oscSignatureMode === 'short' ? 'default' : 'outline'" @click="setOscSignatureMode('short')">🕷 UWX</Button><Button size="sm" :variant="oscSignatureMode === 'full' ? 'default' : 'outline'" @click="setOscSignatureMode('full')">UNDERWEB X</Button></div></div>
+-                        </section>
+-
+-                        <section class="uwx-premium-panel uwx-preview-panel uwx-osc2-current">
+-                            <div class="uwx-panel-title">
+-                                <div><i class="ri-broadcast-fill" /><div><strong>Current Screen</strong><span>Exactly what UWX is broadcasting to VRChat.</span></div></div>
+-                                <Badge :variant="osc2Mode === 'stealth' ? 'outline' : 'default'">{{ osc2Mode === 'pin' ? 'PINNED' : osc2Mode.toUpperCase() }}</Badge>
+-                            </div>
+-                            <div class="uwx-live-preview uwx-osc2-screen"><p>{{ osc2Mode === 'stealth' ? 'UWX output hidden' : (osc2CurrentScreen || 'Waiting for an enabled screen...') }}</p></div>
+-                            <div class="uwx-osc2-meta"><span>PREV: {{ osc2PreviousLabel }}</span><span>NEXT: {{ osc2NextLabel }}</span></div>
+-                            <div class="uwx-osc2-controls">
+-                                <Button size="sm" variant="outline" :disabled="osc2Mode === 'stealth'" @click="osc2Step(-1)">◀</Button>
+-                                <Button size="sm" :variant="osc2Mode === 'pin' ? 'default' : 'outline'" :disabled="osc2Mode === 'stealth'" @click="toggleOsc2Pin">{{ osc2Mode === 'pin' ? 'UNPIN' : 'PIN' }}</Button>
+-                                <Button size="sm" variant="outline" :disabled="osc2Mode === 'stealth'" @click="osc2Step(1)">▶</Button>
+-                                <Button size="sm" :variant="osc2Mode === 'stealth' ? 'default' : 'destructive'" @click="toggleOsc2Stealth">{{ osc2Mode === 'stealth' ? 'RESTORE' : 'HIDE' }}</Button>
+-                            </div>
+-                        </section>
+-
+-                        <section class="uwx-premium-panel uwx-presets-panel">
+-                            <div class="uwx-panel-title"><div><i class="ri-bookmark-3-line" /><div><strong>Presets</strong><span>Quick setup templates for different situations.</span></div></div></div>
+-                            <div class="uwx-preset-cards">
+-                                <button v-for="presetCard in oscPresetCards" :key="presetCard.id" type="button" :class="{ active: oscPreset === presetCard.id }" @click="applyOscPreset(presetCard.id)"><i :class="presetCard.icon" /><strong>{{ presetCard.label }}</strong><span>{{ presetCard.description }}</span></button>
+-                            </div>
+-                        </section>
+-
+-                        <section class="uwx-premium-panel uwx-pulsoid-panel">
+-                            <div class="uwx-panel-title"><div><i class="ri-heart-pulse-line" /><div><strong>Pulsoid</strong><span>Optional heart-rate status source.</span></div></div><Badge variant="outline">{{ oscHeartRateState }}</Badge></div>
+-                            <div class="uwx-bpm-display"><strong>{{ oscHeartRate || '--' }}</strong><span>BPM</span></div>
+-                            <Input :model-value="oscPulsoidToken" type="password" class="mt-3" placeholder="Pulsoid access token" @change="setOscPulsoidToken($event.target.value)" />
+-                            <p class="uwx-help mt-2">Your token stays in local UWX config.</p>
+-                        </section>
+-
+-                        <section class="uwx-premium-panel uwx-log-panel">
+-                            <div class="uwx-panel-title"><div><i class="ri-file-list-3-line" /><div><strong>Output Log</strong><span>Recent OSC chatbox messages sent by UWX.</span></div></div><Button size="sm" variant="outline" :disabled="!oscOutputLog.length" @click="clearOscOutputLog">Clear log</Button></div>
+-                            <div v-if="oscOutputLog.length" class="uwx-output-log">
+-                                <div v-for="entry in oscOutputLog" :key="`${entry.at}-${entry.text}`"><time>{{ formatOscLogTime(entry.at) }}</time><span>[SEND]</span><p>{{ entry.text }}</p></div>
+-                            </div>
+-                            <div v-else class="uwx-log-empty">No messages sent this session yet.</div>
+-                        </section>
+-                    </div>
+-                </CardContent>
+-            </Card>
+-
+             <Card v-show="activePanel === 'safety'" class="uwx-card uwx-card-wide">
+                 <CardHeader>
+                     <div class="flex items-start justify-between gap-4">
+@@ -977,6 +832,7 @@
+     import { Input } from '@/components/ui/input';
+     import { Switch } from '@/components/ui/switch';
+     import UwxGroupTools from './UwxGroupTools.vue';
++    import UwxOscLab from './UwxOscLab.vue';
+ 
+     import { UWX_VERSION } from '../../shared/constants/uwx';
+     import { openExternalLink, parseLocation } from '../../shared/utils';
+@@ -1039,188 +895,8 @@
+         partnerUserIds
+     } = storeToRefs(networkStore);
+ 
+-    const {
+-        enabled: oscEnabled,
+-        customStatus: oscCustomStatus,
+-        showWorld: oscShowWorld,
+-        showEvent: oscShowEvent,
+-        showHeartRate: oscShowHeartRate,
+-        showNowPlaying: oscShowNowPlaying,
+-        showPopulation: oscShowPopulation,
+-        autoBroadcast: oscAutoBroadcast,
+-        autoMedia: oscAutoMedia,
+-        signatureMode: oscSignatureMode,
+-        blockOrder: oscBlockOrder,
+-        playerCount: oscPlayerCount,
+-        nowPlayingTitle: oscNowPlayingTitle,
+-        nowPlayingArtist: oscNowPlayingArtist,
+-        pulsoidToken: oscPulsoidToken,
+-        heartRate: oscHeartRate,
+-        heartRateState: oscHeartRateState,
+-        mediaState: oscMediaState,
+-        mediaSource: oscMediaSource,
+-        mediaProgressPercent: oscMediaProgressPercent,
+-        mediaTimeLabel: oscMediaTimeLabel,
+-        outputLog: oscOutputLog,
+-        osc2Mode,
+-        osc2Theme,
+-        osc2Queue,
+-        osc2Enabled,
+-        osc2Durations,
+-        osc2Statuses,
+-        osc2ActiveStatus,
+-        osc2Weather,
+-        osc2CurrentKey,
+-        osc2CurrentScreen,
+-        pulseAvatarParameter: oscPulseAvatarParameter,
+-        bpmAvatarParameter: oscBpmAvatarParameter,
+-        preset: oscPreset,
+-        chatboxPreview: oscChatboxPreview,
+-        previewLength: oscPreviewLength
+-    } = storeToRefs(oscLabStore);
+-
+-    const {
+-        initOscLab,
+-        setEnabled: setOscEnabled,
+-        setCustomStatus: setOscCustomStatus,
+-        setShowWorld: setOscShowWorld,
+-        setShowEvent: setOscShowEvent,
+-        setShowHeartRate: setOscShowHeartRate,
+-        setShowNowPlaying: setOscShowNowPlaying,
+-        setShowPopulation: setOscShowPopulation,
+-        setAutoBroadcast: setOscAutoBroadcast,
+-        setAutoMedia: setOscAutoMedia,
+-        setSignatureMode: setOscSignatureMode,
+-        moveBlock: moveOscBlock,
+-        setNowPlayingTitle: setOscNowPlayingTitle,
+-        setNowPlayingArtist: setOscNowPlayingArtist,
+-        setPulsoidToken: setOscPulsoidToken,
+-        setPulseAvatarParameter: setOscPulseAvatarParameter,
+-        setBpmAvatarParameter: setOscBpmAvatarParameter,
+-        applyPreset: applyOscPreset,
+-        sendChatbox: sendOscChatbox,
+-        clearOutputLog: clearOscOutputLog,
+-        osc2Step,
+-        osc2SetMode,
+-        osc2RestoreFromStealth,
+-        osc2NextStatus,
+-        sendOsc2Current,
+-        refreshSystemMedia: refreshOscSystemMedia,
+-        sendAvatarParameter: sendOscAvatarParameter
+-    } = oscLabStore;
+-
+-    void initOscLab();
+-
+-    const oscBlockLabels = {
+-        signature: 'UWX Signature',
+-        music: 'Now Playing',
+-        world: 'World Name',
+-        population: 'Player Count',
+-        heart: 'Heart Rate',
+-        event: 'UnderWeb Event',
+-        status: 'Custom Text'
+-    };
+-    const oscBlockIcons = {
+-        signature: 'ri-links-line',
+-        music: 'ri-music-2-fill',
+-        world: 'ri-global-line',
+-        population: 'ri-group-line',
+-        heart: 'ri-heart-pulse-fill',
+-        event: 'ri-calendar-event-line',
+-        status: 'ri-text'
+-    };
+-    const osc2WeatherZip = ref(window.localStorage.getItem('UWX_osc2WeatherZip') || '');
+-    const osc2WeatherLoading = ref(false);
+-    const osc2WeatherMessage = ref('');
+-    const osc2WeatherCodes = { 0: 'Clear', 1: 'Mostly clear', 2: 'Partly cloudy', 3: 'Cloudy', 45: 'Fog', 48: 'Fog', 51: 'Drizzle', 53: 'Drizzle', 55: 'Drizzle', 61: 'Rain', 63: 'Rain', 65: 'Heavy rain', 71: 'Snow', 73: 'Snow', 75: 'Heavy snow', 80: 'Showers', 81: 'Showers', 82: 'Heavy showers', 95: 'Thunderstorm', 96: 'Thunderstorm', 99: 'Thunderstorm' };
+-    async function refreshOsc2Weather() {
+-        const zip = osc2WeatherZip.value.trim();
+-        if (!/^\d{5}$/.test(zip)) { osc2WeatherMessage.value = 'Enter a valid 5-digit ZIP code.'; return; }
+-        osc2WeatherLoading.value = true;
+-        osc2WeatherMessage.value = '';
+-        try {
+-            const placeResponse = await fetch('https://api.zippopotam.us/us/' + encodeURIComponent(zip));
+-            if (!placeResponse.ok) throw new Error('ZIP lookup failed');
+-            const placeData = await placeResponse.json();
+-            const place = placeData.places?.[0];
+-            if (!place) throw new Error('ZIP not found');
+-            const latitude = Number(place.latitude);
+-            const longitude = Number(place.longitude);
+-            const weatherResponse = await fetch('https://api.open-meteo.com/v1/forecast?latitude=' + latitude + '&longitude=' + longitude + '&current=temperature_2m,weather_code&temperature_unit=fahrenheit');
+-            if (!weatherResponse.ok) throw new Error('Weather lookup failed');
+-            const weatherData = await weatherResponse.json();
+-            const temp = Number(weatherData.current?.temperature_2m);
+-            const code = Number(weatherData.current?.weather_code);
+-            if (!Number.isFinite(temp)) throw new Error('Weather unavailable');
+-            window.localStorage.setItem('UWX_osc2WeatherZip', zip);
+-            osc2Weather.value = { temperature: Math.round(temp) + '°F', condition: osc2WeatherCodes[code] || 'Current conditions' };
+-            osc2WeatherMessage.value = osc2Weather.value.temperature + ' · ' + osc2Weather.value.condition;
+-        } catch (error) {
+-            osc2WeatherMessage.value = 'Could not load weather for that ZIP.';
+-        } finally {
+-            osc2WeatherLoading.value = false;
+-        }
+-    }
+-    const osc2Themes = ['underweb', 'minimal', 'void', 'cyber', 'horror'];
+-    const osc2ModuleLabels = { music: 'Music', status: 'Status', weather: 'Weather', heart: 'Heart Rate', world: 'World', custom: 'Custom', uwx: 'UWX' };
+-    const osc2ModuleIcons = { music: 'ri-music-2-fill', status: 'ri-chat-3-line', weather: 'ri-cloudy-line', heart: 'ri-heart-pulse-fill', world: 'ri-global-line', custom: 'ri-text', uwx: 'ri-spider-line' };
+-    const osc2StatusDraft = ref('');
+-    const osc2TrackInterrupt = ref(true);
+-    const osc2HeartInterrupt = ref(true);
+-    let osc2StatusRotationTimer = null;
+-    let osc2MusicRefreshTimer = null;
+-    let osc2QueueRotationTimer = null;
+-    const osc2PreviousLabel = computed(() => '—');
+-    const osc2NextLabel = computed(() => {
+-        const queue = osc2Queue.value.filter((key) => osc2Enabled.value[key]);
+-        if (!queue.length) return '—';
+-        const index = Math.max(0, queue.indexOf(osc2CurrentKey.value));
+-        return osc2ModuleLabels[queue[(index + 1) % queue.length]] || '—';
+-    });
+-    function toggleOsc2Pin() { void osc2SetMode(osc2Mode.value === 'pin' ? 'rotate' : 'pin', osc2CurrentKey.value); }
+-    function toggleOsc2Stealth() { void (osc2Mode.value === 'stealth' ? osc2RestoreFromStealth() : osc2SetMode('stealth')); }
+-    function setOsc2ModuleEnabled(key, value) { osc2Enabled.value = { ...osc2Enabled.value, [key]: Boolean(value) }; }
+-    function setOsc2Theme(theme) { if (osc2Themes.includes(theme)) osc2Theme.value = theme; }
+-    function addOsc2Status() {
+-        const text = osc2StatusDraft.value.trim();
+-        if (!text) return;
+-        osc2Statuses.value = [...osc2Statuses.value, { id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, text, favorite: true, createdAt: Date.now() }];
+-        osc2StatusDraft.value = '';
+-    }
+-    function toggleOsc2StatusFavorite(id) { osc2Statuses.value = osc2Statuses.value.map((item) => item.id === id ? { ...item, favorite: !item.favorite } : item); }
+-    function deleteOsc2Status(id) { osc2Statuses.value = osc2Statuses.value.filter((item) => item.id !== id); }
+-    function rotateOsc2Status() { if (osc2Enabled.value.status && osc2Statuses.value.some((item) => item.favorite)) osc2NextStatus(); }
+-    osc2StatusRotationTimer = window.setInterval(rotateOsc2Status, 10000);
+-    // Keep the local music/progress UI reactive, but do not transmit OSC every second.
+-    // Queue transitions and explicit interrupts are responsible for chatbox sends.
+-    osc2MusicRefreshTimer = window.setInterval(() => {
+-        if (osc2Enabled.value.music && osc2Mode.value !== 'stealth') {
+-            void osc2CurrentScreen.value;
+-        }
+-    }, 1000);
+-    let osc2LastQueueKey = '';
+-    let osc2QueueElapsed = 0;
+-    osc2QueueRotationTimer = window.setInterval(() => {
+-        if (osc2Mode.value !== 'rotate') { osc2QueueElapsed = 0; osc2LastQueueKey = ''; return; }
+-        const key = osc2CurrentKey.value;
+-        if (key !== osc2LastQueueKey) { osc2LastQueueKey = key; osc2QueueElapsed = 0; return; }
+-        osc2QueueElapsed += 1;
+-        const duration = Math.max(1, Number(osc2Durations.value[key] || 10));
+-        if (osc2QueueElapsed >= duration) { osc2QueueElapsed = 0; void osc2Step(1); }
+-    }, 1000);
+-    onBeforeUnmount(() => { window.clearInterval(osc2StatusRotationTimer); window.clearInterval(osc2MusicRefreshTimer); window.clearInterval(osc2QueueRotationTimer); });
+-
+-    const oscPresetCards = [
+-        { id: 'normal', label: 'Normal', description: 'Balanced info', icon: 'ri-user-smile-line' },
+-        { id: 'music', label: 'Music', description: 'Focus on music', icon: 'ri-music-2-fill' },
+-        { id: 'event', label: 'Event', description: 'World + players', icon: 'ri-calendar-event-line' },
+-        { id: 'afk', label: 'AFK', description: 'Minimal info', icon: 'ri-moon-line' }
+-    ];
+-
+-    function formatOscLogTime(timestamp) {
+-        const date = new Date(Number(timestamp) || Date.now());
+-        return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+-    }
++    const { enabled: oscEnabled } = storeToRefs(oscLabStore);
++    const { setEnabled: setOscEnabled } = oscLabStore;
+ 
+     const {
+         setAutoInviteEnabled,
+@@ -1272,9 +948,6 @@
+     const reportWorld = ref('');
+     const reportEvidence = ref('');
+     const reportSummary = ref('');
+-    const oscTestParameter = ref('');
+-    const oscTestType = ref('bool');
+-    const oscTestValue = ref('true');
+     const radarFilters = [
+         { id: 'all', label: 'All' },
+         { id: 'underweb', label: 'UnderWeb' },
+@@ -1336,7 +1009,6 @@
+         return latest !== UWX_VERSION;
+     });
+ 
+-    const oscPreviewPercent = computed(() => Math.min(100, Math.round((oscPreviewLength.value / 144) * 100)));
+ 
+     function includeInRadar(friend) {
+         if (radarFilter.value === 'underweb') return networkStore.memberByVrchatId.has(friend.id);
+@@ -1609,18 +1281,6 @@
+         toast.success('UWX automation and OSC are disarmed.');
+     }
+ 
+-    async function sendOscTestParameter() {
+-        try {
+-            let value = oscTestValue.value;
+-            if (oscTestType.value === 'bool') value = ['true', '1', 'on', 'yes'].includes(String(value).toLowerCase());
+-            if (oscTestType.value === 'int') value = Math.round(Number(value) || 0);
+-            if (oscTestType.value === 'float') value = Number(value) || 0;
+-            await sendOscAvatarParameter(oscTestParameter.value, oscTestType.value, value);
+-            toast.success(`Sent ${oscTestParameter.value}.`);
+-        } catch (error) {
+-            toast.error(error?.message || 'OSC parameter send failed.');
+-        }
+-    }
+ 
+     function formatEventTime(event) {
+         if (!event?.startAt) return 'Schedule pending';
+diff --git a/src/views/UnderWeb/UwxOscLab.vue b/src/views/UnderWeb/UwxOscLab.vue
+new file mode 100644
+index 0000000..02633ee
+--- /dev/null
++++ b/src/views/UnderWeb/UwxOscLab.vue
+@@ -0,0 +1,290 @@
++<template>
++    <div class="uwx-grid">
++        <Card class="uwx-card uwx-card-wide uwx-osc3">
++            <CardHeader>
++                <div class="flex flex-wrap items-start justify-between gap-4">
++                    <div>
++                        <CardTitle>Chatbox output</CardTitle>
++                        <CardDescription>
++                            Everything you turn on below shows together. UWX only sends when something changes, refreshes music
++                            progress every {{ settings.progressRefreshSeconds }}s, and never sends faster than once every 2.5s.
++                        </CardDescription>
++                    </div>
++                    <div class="flex items-center gap-3">
++                        <Button v-if="settings.enabled" size="sm" variant="outline" @click="hideNow">Hide now</Button>
++                        <label class="flex items-center gap-2 text-sm font-medium">
++                            <Switch :model-value="settings.enabled" @update:modelValue="setEnabled" />
++                            {{ settings.enabled ? 'Sending to VRChat' : 'Off' }}
++                        </label>
++                    </div>
++                </div>
++            </CardHeader>
++            <CardContent>
++                <div class="uwx-osc3-preview" :class="{ off: !settings.enabled }">
++                    <div class="uwx-osc3-bubble" aria-live="polite">
++                        <template v-if="preview.text">{{ preview.text }}</template>
++                        <span v-else class="text-muted-foreground">Nothing to show — turn on a module and add some data.</span>
++                    </div>
++                    <div class="uwx-osc3-meta">
++                        <span :class="{ warn: preview.chars > 130 }">{{ preview.chars }}/144 characters · {{ preview.lines }}/9 lines</span>
++                        <span v-if="preview.dropped" class="warn">{{ preview.dropped }} line{{ preview.dropped === 1 ? '' : 's' }} didn't fit — reorder or shorten</span>
++                        <span>{{ sendsLastMinute }} sent in the last minute</span>
++                        <span v-if="lastError" class="warn">{{ lastError }}</span>
++                    </div>
++                </div>
++            </CardContent>
++        </Card>
++
++        <Card class="uwx-card uwx-card-wide">
++            <CardHeader>
++                <CardTitle>Modules</CardTitle>
++                <CardDescription>Turn each one on or off, set its order, and edit its layout. Tokens in braces are filled in live.</CardDescription>
++            </CardHeader>
++            <CardContent class="space-y-3">
++                <div v-for="(key, index) in settings.order" :key="key" class="uwx-osc3-module" :class="{ disabled: !settings.modules[key].enabled }">
++                    <div class="uwx-osc3-module-head">
++                        <Switch :model-value="settings.modules[key].enabled" :aria-label="'Show ' + labels[key]" @update:modelValue="(v) => setModuleEnabled(key, v)" />
++                        <strong>{{ labels[key] }}</strong>
++                        <span class="uwx-osc3-module-state">{{ moduleState(key) }}</span>
++                        <span class="ml-auto flex gap-1">
++                            <Button size="icon" variant="ghost" :disabled="index === 0" :aria-label="'Move ' + labels[key] + ' up'" @click="moveModule(key, -1)"><i class="ri-arrow-up-s-line" /></Button>
++                            <Button size="icon" variant="ghost" :disabled="index === settings.order.length - 1" :aria-label="'Move ' + labels[key] + ' down'" @click="moveModule(key, 1)"><i class="ri-arrow-down-s-line" /></Button>
++                        </span>
++                    </div>
++                    <div v-if="settings.modules[key].enabled" class="uwx-osc3-module-body">
++                        <div class="flex gap-2">
++                            <Input
++                                :model-value="settings.modules[key].template"
++                                :aria-label="labels[key] + ' layout'"
++                                @change="(e) => setTemplate(key, e.target.value)" />
++                            <Button size="sm" variant="ghost" @click="resetTemplate(key)">Reset</Button>
++                        </div>
++                        <div class="uwx-osc3-tokens">
++                            <span v-for="token in templateTokens[key]" :key="token">{{ '{' + token + '}' }}</span>
++                        </div>
++
++                        <template v-if="key === 'music'">
++                            <label class="uwx-osc3-check">
++                                <Switch :model-value="settings.modules.music.hideWhenPaused" @update:modelValue="(v) => setModuleOption('music', 'hideWhenPaused', v)" />
++                                Hide when paused
++                            </label>
++                            <p class="uwx-help">
++                                Reads Spotify and any app using Windows media controls.
++                                <template v-if="media">Now: {{ media.title }}<template v-if="media.artist"> — {{ media.artist }}</template> ({{ mediaState }})</template>
++                                <template v-else>{{ mediaState }}</template>
++                            </p>
++                        </template>
++
++                        <template v-if="key === 'weather'">
++                            <form class="flex flex-wrap gap-2" @submit.prevent="saveZip">
++                                <Input v-model="zipDraft" inputmode="numeric" maxlength="5" placeholder="ZIP code" aria-label="ZIP code for weather" class="max-w-[140px]" />
++                                <Button size="sm" variant="outline" :class="{ active: settings.modules.weather.unit === 'F' }" type="button" @click="setModuleOption('weather', 'unit', 'F'); refreshWeather()">°F</Button>
++                                <Button size="sm" variant="outline" :class="{ active: settings.modules.weather.unit === 'C' }" type="button" @click="setModuleOption('weather', 'unit', 'C'); refreshWeather()">°C</Button>
++                                <Button size="sm" type="submit">Save</Button>
++                            </form>
++                            <p class="uwx-help">
++                                {{ weatherState || (weather ? `${weather.temp} · ${weather.condition}` : '') }}
++                                Your ZIP stays on this PC and is never shown in the chatbox. Updates every 20 minutes.
++                            </p>
++                        </template>
++
++                        <template v-if="key === 'status'">
++                            <div class="flex flex-wrap items-center gap-2">
++                                <span class="text-sm">Rotate every</span>
++                                <Input
++                                    type="number"
++                                    min="10"
++                                    max="600"
++                                    class="max-w-[90px]"
++                                    aria-label="Seconds between statuses"
++                                    :model-value="settings.modules.status.rotateSeconds"
++                                    @change="(e) => setModuleOption('status', 'rotateSeconds', e.target.value)" />
++                                <span class="text-sm">seconds,</span>
++                                <Button size="sm" :variant="settings.modules.status.order === 'sequential' ? 'default' : 'outline'" @click="setModuleOption('status', 'order', 'sequential')">In order</Button>
++                                <Button size="sm" :variant="settings.modules.status.order === 'random' ? 'default' : 'outline'" @click="setModuleOption('status', 'order', 'random')">Random</Button>
++                                <Button size="sm" variant="ghost" @click="nextStatusNow">Next now</Button>
++                            </div>
++                            <form class="flex gap-2" @submit.prevent="submitStatus">
++                                <Input v-model="statusDraft" maxlength="144" placeholder="Add a status, e.g. 🕸️ Lost somewhere in The UnderWeb" aria-label="New status" />
++                                <Button type="submit" :disabled="!statusDraft.trim()">Add</Button>
++                            </form>
++                            <p v-if="!settings.statuses.length" class="uwx-help">No statuses yet. Starred statuses rotate; unstarred ones are saved but skipped.</p>
++                            <ul class="uwx-osc3-status-list">
++                                <li v-for="(status, sIndex) in settings.statuses" :key="status.id" :class="{ current: status.text === currentStatus && status.favorite }">
++                                    <Button size="icon" variant="ghost" :aria-label="status.favorite ? 'Stop rotating this status' : 'Rotate this status'" @click="toggleStatusFavorite(status.id)">
++                                        <i :class="status.favorite ? 'ri-star-fill' : 'ri-star-line'" />
++                                    </Button>
++                                    <span class="min-w-0 flex-1 break-words">{{ status.text }}</span>
++                                    <Button size="icon" variant="ghost" :disabled="sIndex === 0" aria-label="Move up" @click="moveStatus(status.id, -1)"><i class="ri-arrow-up-s-line" /></Button>
++                                    <Button size="icon" variant="ghost" :disabled="sIndex === settings.statuses.length - 1" aria-label="Move down" @click="moveStatus(status.id, 1)"><i class="ri-arrow-down-s-line" /></Button>
++                                    <Button size="icon" variant="ghost" aria-label="Delete status" @click="deleteStatus(status.id)"><i class="ri-delete-bin-line" /></Button>
++                                </li>
++                            </ul>
++                        </template>
++
++                        <template v-if="key === 'heart'">
++                            <div class="flex flex-wrap gap-2">
++                                <Input type="password" :model-value="pulsoidToken" placeholder="Pulsoid access token" aria-label="Pulsoid access token" @change="(e) => setPulsoidToken(e.target.value)" />
++                            </div>
++                            <p class="uwx-help">Pulsoid: {{ heartRateState }}<template v-if="heartRate"> · {{ heartRate }} BPM</template>. Also sends {{ bpmAvatarParameter }} / {{ pulseAvatarParameter }} to your avatar.</p>
++                        </template>
++
++                        <template v-if="key === 'world'">
++                            <p class="uwx-help warn">This tells everyone in your instance which world you're in. Off by default.</p>
++                        </template>
++                    </div>
++                </div>
++
++                <div class="flex flex-wrap items-center gap-2 pt-2">
++                    <span class="text-sm">Refresh music progress every</span>
++                    <Input
++                        type="number"
++                        min="5"
++                        max="60"
++                        class="max-w-[90px]"
++                        aria-label="Seconds between progress updates"
++                        :model-value="settings.progressRefreshSeconds"
++                        @change="(e) => setProgressRefreshSeconds(e.target.value)" />
++                    <span class="text-sm">seconds (track changes still show right away).</span>
++                </div>
++            </CardContent>
++        </Card>
++
++        <Card class="uwx-card">
++            <CardHeader>
++                <div class="flex items-start justify-between gap-4">
++                    <div>
++                        <CardTitle>Sent to VRChat</CardTitle>
++                        <CardDescription>Every message UWX actually sent, and why.</CardDescription>
++                    </div>
++                    <Button size="sm" variant="ghost" @click="clearOutputLog">Clear</Button>
++                </div>
++            </CardHeader>
++            <CardContent>
++                <div v-if="outputLog.length" class="uwx-log-list">
++                    <div v-for="entry in outputLog" :key="entry.at + entry.reason" class="uwx-log-row">
++                        <span class="uwx-log-time">{{ time(entry.at) }}</span>
++                        <Badge variant="outline">{{ entry.reason }}</Badge>
++                        <span class="min-w-0 break-words whitespace-pre-line">{{ entry.text }}</span>
++                    </div>
++                </div>
++                <p v-else class="text-sm text-muted-foreground">Nothing sent yet.</p>
++            </CardContent>
++        </Card>
++
++        <Card class="uwx-card">
++            <CardHeader>
++                <CardTitle>Avatar parameter test</CardTitle>
++                <CardDescription>Send one OSC value to your current avatar.</CardDescription>
++            </CardHeader>
++            <CardContent class="space-y-2">
++                <Input v-model="testParam" placeholder="Parameter name" aria-label="Avatar parameter name" />
++                <div class="flex gap-2">
++                    <Button v-for="type in ['bool', 'int', 'float']" :key="type" size="sm" :variant="testType === type ? 'default' : 'outline'" @click="testType = type">{{ type }}</Button>
++                    <Input v-model="testValue" aria-label="Value" class="max-w-[120px]" />
++                    <Button size="sm" :disabled="!testParam.trim()" @click="sendTest">Send</Button>
++                </div>
++            </CardContent>
++        </Card>
++    </div>
++</template>
++
++<script setup>
++    import { ref, watch } from 'vue';
++    import { storeToRefs } from 'pinia';
++    import { toast } from 'vue-sonner';
++    import { Badge } from '@/components/ui/badge';
++    import { Button } from '@/components/ui/button';
++    import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
++    import { Input } from '@/components/ui/input';
++    import { Switch } from '@/components/ui/switch';
++
++    import { useOscLabStore } from '../../stores';
++
++    const store = useOscLabStore();
++    const {
++        settings,
++        preview,
++        media,
++        mediaState,
++        weather,
++        weatherState,
++        currentStatus,
++        heartRate,
++        heartRateState,
++        pulsoidToken,
++        pulseAvatarParameter,
++        bpmAvatarParameter,
++        lastError,
++        outputLog,
++        sendsLastMinute
++    } = storeToRefs(store);
++    const {
++        templateTokens,
++        setEnabled,
++        setModuleEnabled,
++        setModuleOption,
++        setTemplate,
++        resetTemplate,
++        moveModule,
++        setWeatherZip,
++        refreshWeather,
++        setProgressRefreshSeconds,
++        addStatus,
++        toggleStatusFavorite,
++        deleteStatus,
++        moveStatus,
++        nextStatusNow,
++        hideNow,
++        clearOutputLog,
++        sendAvatarParameter,
++        setPulsoidToken
++    } = store;
++
++    const labels = { music: 'Now playing', weather: 'Weather', status: 'Statuses', heart: 'Heart rate', world: 'World name' };
++
++    const zipDraft = ref(settings.value.modules.weather.zip);
++    watch(
++        () => settings.value.modules.weather.zip,
++        (zip) => {
++            zipDraft.value = zip;
++        }
++    );
++    const statusDraft = ref('');
++    const testParam = ref('');
++    const testType = ref('bool');
++    const testValue = ref('true');
++
++    function moduleState(key) {
++        if (!settings.value.modules[key].enabled) return 'off';
++        if (key === 'music') return media.value ? mediaState.value : 'nothing playing';
++        if (key === 'weather') return weather.value ? `${weather.value.temp}` : 'no data yet';
++        if (key === 'status') return `${settings.value.statuses.filter((s) => s.favorite).length} rotating`;
++        if (key === 'heart') return heartRate.value ? `${heartRate.value} BPM` : heartRateState.value;
++        return '';
++    }
++
++    async function saveZip() {
++        const ok = await setWeatherZip(zipDraft.value);
++        if (ok) toast.success('Weather updated.');
++    }
++
++    function submitStatus() {
++        if (addStatus(statusDraft.value)) statusDraft.value = '';
++    }
++
++    async function sendTest() {
++        try {
++            const raw = testValue.value;
++            const value = testType.value === 'bool' ? ['true', '1', 'on', 'yes'].includes(String(raw).toLowerCase()) : Number(raw) || 0;
++            await sendAvatarParameter(testParam.value, testType.value, value);
++            toast.success(`Sent ${testParam.value}.`);
++        } catch (error) {
++            toast.error(error?.message || 'Could not send parameter.');
++        }
++    }
++
++    function time(at) {
++        return new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
++    }
++</script>
