@@ -1,0 +1,1591 @@
+diff --git a/CHANGELOG_UWX.md b/CHANGELOG_UWX.md
+index 29b97b1..dbaee06 100644
+--- a/CHANGELOG_UWX.md
++++ b/CHANGELOG_UWX.md
+@@ -1,5 +1,14 @@
+ # UnderWeb X changelog
+ 
++## 0.5.6-rc15 — Bad news labels (synced) + UnderWeb sign-in
++
++- **Lobby Guard**: everyone in your instance is checked automatically against the shared, staff-reviewed labels (crashers, doxxers, malicious clients, harassers, scammers, ban evaders…) as they join. You get a private pop-up; nobody is kicked, blocked or told. Choose every label / caution and up / high risk only, or turn it off. Only VRChat user IDs are looked up.
++- Labeled people show on the Command overview ("1 labeled here"), in Safety Intel, and in the Groups tab's instance list.
++- Report anyone in your instance in two clicks ("Everyone else here → Report").
++- **UnderWeb sign-in in UWX** (System tab): email + code, the same as underweb.cloud. Never your VRChat login. The session is kept on this PC only.
++- **Staff (safety reviewers)**: publish a label for everyone straight from the report form, review the queue of reports from UWX and the website (approve with a public note, risk level and duration up to 1 year, or reject with a private reason), and remove labels. The server enforces who can do this.
++- Labels are synced through UnderWeb: once published, every UWX user sees them.
++
+ ## 0.5.5-rc14 — Event Mode
+ 
+ Command → **Event Mode**: pick an event type and press Start.
+diff --git a/UWX_VERSION b/UWX_VERSION
+index d1517bc..e90d14b 100644
+--- a/UWX_VERSION
++++ b/UWX_VERSION
+@@ -1 +1 @@
+-0.5.5-rc14
++0.5.6-rc15
+diff --git a/src/App.vue b/src/App.vue
+index f2fcfdc..371049c 100644
+--- a/src/App.vue
++++ b/src/App.vue
+@@ -34,6 +34,8 @@
+     import { TooltipProvider } from './components/ui/tooltip';
+     import { createGlobalStores } from './stores';
+     import { useUwxEventModeStore } from './stores/uwxEventMode';
++    import { useUwxLobbyGuardStore } from './stores/uwxLobbyGuard';
++    import { useUwxAccountStore } from './stores/uwxAccount';
+     import { initNoty } from './plugins/noty';
+ 
+     import AlertDialogModal from './components/ui/alert-dialog/AlertDialogModal.vue';
+@@ -83,6 +85,10 @@
+             await store.oscLab.initOscLab();
+             // Event Mode resumes a running event and keeps tracking it in the background.
+             await useUwxEventModeStore().init();
++            // Lobby Guard checks people joining your instance against the shared labels.
++            await useUwxLobbyGuardStore().init();
++            // Resume the UnderWeb sign-in (staff tools) if you signed in before.
++            void useUwxAccountStore().init();
+         }
+ 
+         runCheckVRChatDebugLoggingFlow();
+diff --git a/src/shared/constants/uwx.js b/src/shared/constants/uwx.js
+index 0d72c43..444713b 100644
+--- a/src/shared/constants/uwx.js
++++ b/src/shared/constants/uwx.js
+@@ -1,2 +1,2 @@
+-export const UWX_VERSION = '0.5.5-rc14';
++export const UWX_VERSION = '0.5.6-rc15';
+ export const UWX_MANIFEST_URL = 'https://underweb.cloud/api/uwx/manifest';
+diff --git a/src/shared/utils/uwxSafety.js b/src/shared/utils/uwxSafety.js
+new file mode 100644
+index 0000000..f88e4ed
+--- /dev/null
++++ b/src/shared/utils/uwxSafety.js
+@@ -0,0 +1,52 @@
++// Shared "bad news" labels (UWX Safety Intel): labels, risk ordering and alert decisions.
++
++export const LABEL_CATEGORIES = Object.freeze([
++    { id: 'crashing', label: 'Crasher', icon: 'ri-flashlight-line' },
++    { id: 'doxxing_privacy_threat', label: 'Doxxer / privacy threat', icon: 'ri-spy-line' },
++    { id: 'malicious_client_behavior', label: 'Malicious client', icon: 'ri-bug-line' },
++    { id: 'harassment', label: 'Harasser', icon: 'ri-chat-off-line' },
++    { id: 'scam_impersonation', label: 'Scammer / impersonator', icon: 'ri-mask-line' },
++    { id: 'ban_evasion', label: 'Ban evader', icon: 'ri-door-lock-line' },
++    { id: 'other', label: 'Other bad news', icon: 'ri-error-warning-line' }
++]);
++
++const RISK_ORDER = { info: 1, caution: 2, high: 3 };
++
++export function categoryLabel(id) {
++    return LABEL_CATEGORIES.find((c) => c.id === id)?.label || String(id || '').replaceAll('_', ' ');
++}
++
++export function riskLabel(level) {
++    if (level === 'high') return 'High risk';
++    if (level === 'caution') return 'Caution';
++    return 'Heads up';
++}
++
++export function riskRank(level) {
++    return RISK_ORDER[level] || 0;
++}
++
++/** Short one-line label, e.g. "Crasher · Malicious client". */
++export function labelSummary(intel) {
++    const flags = Array.isArray(intel?.verified_flags) ? intel.verified_flags : [];
++    return flags.length ? flags.map(categoryLabel).join(' · ') : riskLabel(intel?.risk_level);
++}
++
++/**
++ * Which labeled people in the lobby we haven't warned about yet.
++ * @param {Array<{userId:string, displayName:string}>} players
++ * @param {(id:string) => object|null} getIntel
++ * @param {Set<string>} alreadyAlerted  userIds already warned about for this instance
++ * @param {string} minLevel  'info' | 'caution' | 'high'
++ */
++export function pendingAlerts(players, getIntel, alreadyAlerted, minLevel = 'info') {
++    const min = riskRank(minLevel);
++    const out = [];
++    for (const player of players || []) {
++        const intel = getIntel(player.userId);
++        if (!intel || alreadyAlerted.has(player.userId)) continue;
++        if (riskRank(intel.risk_level) < min) continue;
++        out.push({ ...player, intel });
++    }
++    return out.sort((a, b) => riskRank(b.intel.risk_level) - riskRank(a.intel.risk_level));
++}
+diff --git a/src/stores/__tests__/uwxAccountLabels.test.js b/src/stores/__tests__/uwxAccountLabels.test.js
+new file mode 100644
+index 0000000..2ef6147
+--- /dev/null
++++ b/src/stores/__tests__/uwxAccountLabels.test.js
+@@ -0,0 +1,148 @@
++import { beforeEach, describe, expect, test, vi } from 'vitest';
++import { createPinia, setActivePinia } from 'pinia';
++
++const config = {};
++vi.mock('../../services/config', () => ({
++    default: {
++        getString: vi.fn(async (k, d) => (k in config ? config[k] : d)),
++        setString: vi.fn(async (k, v) => (config[k] = v))
++    }
++}));
++vi.mock('vue-sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
++const safety = { lookupUser: vi.fn(async () => null) };
++vi.mock('../safetyIntel', () => ({ useSafetyIntelStore: () => safety }));
++
++const { useUwxAccountStore } = await import('../uwxAccount');
++const { useUwxLabelsStore, validateLabel } = await import('../uwxLabels');
++const { toast } = await import('vue-sonner');
++
++const BAD = 'usr_11111111-2222-3333-4444-555555555555';
++let calls;
++let routes;
++function json(status, body) {
++    return { ok: status >= 200 && status < 300, status, json: async () => body, text: async () => (body === undefined ? '' : JSON.stringify(body)) };
++}
++global.fetch = vi.fn(async (url, init = {}) => {
++    const path = url.replace('https://pxipclkptxpqukefwexh.supabase.co', '');
++    const entry = { path, method: init.method || 'GET', auth: init.headers?.Authorization || '', body: init.body ? JSON.parse(init.body) : null };
++    calls.push(entry);
++    for (const [match, handler] of routes) if (path.startsWith(match)) return handler(entry);
++    return json(404, { message: 'no route ' + path });
++});
++
++const session = (n = 1) => ({ access_token: `access-${n}`, refresh_token: `refresh-${n}`, expires_in: 3600, user: { id: 'uid-darko', email: 'darko@example.com' } });
++
++describe('UnderWeb sign-in in UWX', () => {
++    beforeEach(() => {
++        setActivePinia(createPinia());
++        for (const k of Object.keys(config)) delete config[k];
++        calls = [];
++        routes = [
++            ['/auth/v1/otp', () => json(200, {})],
++            ['/auth/v1/verify', () => json(200, session(1))],
++            ['/auth/v1/token', () => json(200, session(2))],
++            ['/auth/v1/logout', () => json(204)],
++            ['/rest/v1/rpc/uwx_is_underweb_staff', () => json(200, true)],
++            ['/rest/v1/rpc/uwx_can_review_safety', () => json(200, true)]
++        ];
++        toast.error.mockClear();
++    });
++
++    test('email code sign-in never creates accounts, keeps only the refresh token, and loads staff permissions', async () => {
++        const account = useUwxAccountStore();
++        expect(await account.requestCode('Darko@Example.com')).toBe(true);
++        expect(calls[0]).toMatchObject({ path: '/auth/v1/otp', body: { email: 'darko@example.com', create_user: false } });
++        expect(await account.verifyCode('123 456')).toBe(true);
++        expect(calls[1].body).toEqual({ type: 'email', email: 'darko@example.com', token: '123456' });
++        expect(account.signedIn).toBe(true);
++        expect(account.isStaff).toBe(true);
++        expect(account.canReviewSafety).toBe(true);
++        expect(config.UWX_underwebRefreshToken).toBe('refresh-1');
++        expect(Object.values(config).join(' ')).not.toContain('access-1');
++    });
++
++    test('resumes from the saved refresh token, and retries once after a 401', async () => {
++        config.UWX_underwebRefreshToken = 'refresh-0';
++        const account = useUwxAccountStore();
++        await account.init();
++        expect(account.signedIn).toBe(true);
++        let first = true;
++        routes.unshift(['/rest/v1/thing', (e) => (first ? ((first = false), json(401, { message: 'JWT expired' })) : json(200, [{ ok: e.auth }]))]);
++        const rows = await account.api('thing');
++        expect(rows[0].ok).toBe('Bearer access-2');
++    });
++
++    test('a revoked refresh token signs you out locally', async () => {
++        config.UWX_underwebRefreshToken = 'revoked';
++        routes.unshift(['/auth/v1/token', () => json(400, { error: 'invalid_grant' })]);
++        const account = useUwxAccountStore();
++        await account.init();
++        expect(account.signedIn).toBe(false);
++        expect(config.UWX_underwebRefreshToken).toBe('');
++    });
++});
++
++describe('Staff labels', () => {
++    const good = {
++        vrchatUserId: BAD,
++        displayName: 'BadActor',
++        category: 'crashing',
++        riskLevel: 'high',
++        publicSummary: 'Crashed two UnderWeb events with a modded client.',
++        reason: 'Crashed MVN twice, see clips in staff chat.',
++        days: 180
++    };
++
++    beforeEach(async () => {
++        setActivePinia(createPinia());
++        calls = [];
++        routes = [
++            ['/auth/v1/verify', () => json(200, session(1))],
++            ['/auth/v1/otp', () => json(200, {})],
++            ['/rest/v1/rpc/uwx_is_underweb_staff', () => json(200, true)],
++            ['/rest/v1/rpc/uwx_can_review_safety', () => json(200, true)],
++            ['/rest/v1/uwx_safety_reports?select=id&vrchat_user_id', () => json(200, [{ id: 'r1' }, { id: 'r2' }])],
++            ['/rest/v1/uwx_safety_reports', () => json(201, [{ id: 'report-1' }])],
++            ['/rest/v1/rpc/uwx_review_safety_report', () => json(200, [{ report_id: 'report-1', report_status: 'verified', public_record_active: true }])]
++        ];
++        const account = useUwxAccountStore();
++        await account.requestCode('darko@example.com');
++        await account.verifyCode('123456');
++        calls = [];
++        toast.error.mockClear();
++    });
++
++    test('validates the same rules the database enforces', () => {
++        expect(validateLabel(good)).toBe('');
++        expect(validateLabel({ ...good, publicSummary: 'too short' })).toMatch(/20–500/);
++        expect(validateLabel({ ...good, days: 999 })).toMatch(/how long/);
++        expect(validateLabel({ ...good, vrchatUserId: 'Bob' })).toMatch(/usr_/);
++    });
++
++    test('label now: creates the report as you, verifies it, and refreshes the shared label', async () => {
++        const labels = useUwxLabelsStore();
++        expect(await labels.labelNow(good)).toBe(true);
++        const [insert, verify] = calls;
++        expect(insert).toMatchObject({ path: '/rest/v1/uwx_safety_reports?select=id', method: 'POST', auth: 'Bearer access-1' });
++        expect(insert.body).toMatchObject({ vrchat_user_id: BAD, category: 'crashing', status: 'pending', source: 'uwx' });
++        expect(verify.path).toBe('/rest/v1/rpc/uwx_review_safety_report');
++        expect(verify.body).toMatchObject({ p_report_id: 'report-1', p_decision: 'verified', p_risk_level: 'high', p_public_summary: good.publicSummary });
++        const days = (Date.parse(verify.body.p_expires_at) - Date.now()) / 86400000;
++        expect(Math.round(days)).toBe(180);
++        expect(safety.lookupUser).toHaveBeenCalledWith(BAD, { force: true });
++    });
++
++    test('non-reviewers cannot publish from UWX', async () => {
++        useUwxAccountStore().canReviewSafety = false;
++        const labels = useUwxLabelsStore();
++        expect(await labels.labelNow(good)).toBe(false);
++        expect(calls).toHaveLength(0);
++    });
++
++    test('remove label expires every verified report for that person', async () => {
++        const labels = useUwxLabelsStore();
++        expect(await labels.removeLabel(BAD, 'Appeal accepted by staff vote.')).toBe(true);
++        const reviews = calls.filter((c) => c.path === '/rest/v1/rpc/uwx_review_safety_report');
++        expect(reviews.map((c) => [c.body.p_report_id, c.body.p_decision])).toEqual([['r1', 'expired'], ['r2', 'expired']]);
++    });
++});
+diff --git a/src/stores/__tests__/uwxLobbyGuard.test.js b/src/stores/__tests__/uwxLobbyGuard.test.js
+new file mode 100644
+index 0000000..6413d72
+--- /dev/null
++++ b/src/stores/__tests__/uwxLobbyGuard.test.js
+@@ -0,0 +1,90 @@
++import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
++import { createPinia, setActivePinia } from 'pinia';
++import { reactive } from 'vue';
++
++const config = {};
++vi.mock('../../services/config', () => ({
++    default: {
++        getBool: vi.fn(async (k, d) => (k in config ? config[k] : d)),
++        setBool: vi.fn(async (k, v) => (config[k] = v)),
++        getString: vi.fn(async (k, d) => (k in config ? config[k] : d)),
++        setString: vi.fn(async (k, v) => (config[k] = v))
++    }
++}));
++const toast = { error: vi.fn(), warning: vi.fn() };
++vi.mock('vue-sonner', () => ({ toast }));
++
++const ME = 'usr_00000000-0000-0000-0000-000000000000';
++const CRASHER = 'usr_11111111-0000-0000-0000-000000000000';
++const MINOR = 'usr_22222222-0000-0000-0000-000000000000';
++const FINE = 'usr_33333333-0000-0000-0000-000000000000';
++const labels = {
++    [CRASHER]: { vrchat_user_id: CRASHER, risk_level: 'high', verified_flags: ['crashing', 'malicious_client_behavior'], verified_report_count: 3, public_summary: 'Crashed two UnderWeb events with a modded client.' },
++    [MINOR]: { vrchat_user_id: MINOR, risk_level: 'info', verified_flags: ['other'], verified_report_count: 1, public_summary: '' }
++};
++const safety = { getIntel: (id) => labels[id] || null, batchLookup: vi.fn(async () => []) };
++vi.mock('../safetyIntel', () => ({ useSafetyIntelStore: () => safety }));
++const locationStore = reactive({ lastLocation: { location: 'wrld_a:1', playerList: new Map() } });
++vi.mock('../location', () => ({ useLocationStore: () => locationStore }));
++vi.mock('../user', () => ({ useUserStore: () => ({ currentUser: { id: ME } }) }));
++
++const { useUwxLobbyGuardStore } = await import('../uwxLobbyGuard');
++
++function lobby(...people) {
++    locationStore.lastLocation.playerList = new Map(people.map(([id, name]) => [id, { userId: id, displayName: name }]));
++}
++
++describe('UWX Lobby Guard', () => {
++    afterEach(() => useUwxLobbyGuardStore().dispose());
++    beforeEach(() => {
++        vi.useFakeTimers();
++        setActivePinia(createPinia());
++        for (const k of Object.keys(config)) delete config[k];
++        toast.error.mockReset();
++        toast.warning.mockReset();
++        safety.batchLookup.mockClear();
++        locationStore.lastLocation.location = 'wrld_a:1';
++        lobby([ME, 'Darko'], [FINE, 'Friendly']);
++    });
++
++    test('warns privately when a labeled person joins, once per instance', async () => {
++        const guard = useUwxLobbyGuardStore();
++        await guard.init();
++        await vi.advanceTimersByTimeAsync(2000);
++        expect(toast.error).not.toHaveBeenCalled();
++
++        lobby([ME, 'Darko'], [FINE, 'Friendly'], [CRASHER, 'BadActor']);
++        await vi.advanceTimersByTimeAsync(2000);
++        expect(toast.error).toHaveBeenCalledTimes(1);
++        expect(toast.error.mock.calls[0][0]).toBe('BadActor is labeled: Crasher · Malicious client');
++        expect(guard.flaggedHere.map((p) => p.displayName)).toEqual(['BadActor']);
++        // Only IDs are looked up, and never your own.
++        expect(safety.batchLookup.mock.calls.at(-1)[0]).not.toContain(ME);
++
++        lobby([ME, 'Darko'], [CRASHER, 'BadActor']);
++        await vi.advanceTimersByTimeAsync(2000);
++        expect(toast.error).toHaveBeenCalledTimes(1);
++
++        locationStore.lastLocation.location = 'wrld_b:2';
++        await vi.advanceTimersByTimeAsync(2000);
++        expect(toast.error).toHaveBeenCalledTimes(2);
++    });
++
++    test('respects the minimum level and the off switch', async () => {
++        const guard = useUwxLobbyGuardStore();
++        await guard.init();
++        await guard.setMinLevel('caution');
++        lobby([ME, 'Darko'], [MINOR, 'Meh']);
++        await vi.advanceTimersByTimeAsync(2000);
++        expect(toast.warning).not.toHaveBeenCalled();
++        await guard.setMinLevel('info');
++        await guard.check();
++        expect(toast.warning).toHaveBeenCalledTimes(1);
++
++        await guard.setEnabled(false);
++        safety.batchLookup.mockClear();
++        lobby([ME, 'Darko'], [CRASHER, 'BadActor']);
++        await vi.advanceTimersByTimeAsync(2000);
++        expect(safety.batchLookup).not.toHaveBeenCalled();
++    });
++});
+diff --git a/src/stores/uwxAccount.js b/src/stores/uwxAccount.js
+new file mode 100644
+index 0000000..345b0af
+--- /dev/null
++++ b/src/stores/uwxAccount.js
+@@ -0,0 +1,237 @@
++import { computed, ref } from 'vue';
++import { defineStore } from 'pinia';
++import { toast } from 'vue-sonner';
++
++import configRepository from '../services/config';
++
++// UnderWeb account sign-in inside UWX (email + 6-digit code, the same passwordless
++// sign-in as underweb.cloud). This is your UnderWeb account — never your VRChat login.
++// The refresh token is kept in UWX's local settings on this PC and never logged.
++// What you can do once signed in is decided by the server (RLS / staff checks), not by UWX.
++
++export const UNDERWEB_SUPABASE_URL = 'https://pxipclkptxpqukefwexh.supabase.co';
++// Publishable (anon) key — safe to ship in a client.
++export const UNDERWEB_ANON_KEY =
++    'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB4aXBjbGtwdHhwcXVrZWZ3ZXhoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwOTM0MDcsImV4cCI6MjEwNDY2OTQwN30.B7hucEUAMsVvoyEpScq9SWQXEGsfg3C9FHuRTBLgKnc';
++
++const REFRESH_KEY = 'UWX_underwebRefreshToken';
++const EMAIL_KEY = 'UWX_underwebEmail';
++const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
++
++function authError(json, status) {
++    const msg = json?.msg || json?.error_description || json?.message || json?.error || '';
++    if (status === 429) return 'Too many attempts. Wait a minute and try again.';
++    if (/expired|invalid/i.test(msg)) return 'That code is wrong or expired. Request a new one.';
++    if (/signups not allowed|user not found/i.test(msg)) return 'No UnderWeb account uses that email. Join on underweb.cloud first.';
++    return msg || `Sign-in failed (${status}).`;
++}
++
++export const useUwxAccountStore = defineStore('UwxAccount', () => {
++    const email = ref('');
++    const userId = ref('');
++    const accessToken = ref('');
++    const expiresAt = ref(0);
++    const isStaff = ref(false);
++    const canReviewSafety = ref(false);
++    const busy = ref(false);
++    const codeSentTo = ref('');
++    const initialized = ref(false);
++    let refreshToken = '';
++    let refreshing = null;
++
++    const signedIn = computed(() => Boolean(accessToken.value && userId.value));
++
++    async function authFetch(path, body) {
++        const response = await fetch(`${UNDERWEB_SUPABASE_URL}/auth/v1/${path}`, {
++            method: 'POST',
++            headers: { apikey: UNDERWEB_ANON_KEY, 'Content-Type': 'application/json' },
++            body: JSON.stringify(body)
++        });
++        const json = await response.json().catch(() => ({}));
++        if (!response.ok) throw new Error(authError(json, response.status));
++        return json;
++    }
++
++    async function applySession(json) {
++        accessToken.value = json.access_token || '';
++        refreshToken = json.refresh_token || '';
++        expiresAt.value = Date.now() + (Number(json.expires_in) || 3600) * 1000;
++        userId.value = json.user?.id || '';
++        email.value = json.user?.email || email.value;
++        await configRepository.setString(REFRESH_KEY, refreshToken);
++        await configRepository.setString(EMAIL_KEY, email.value);
++        await loadPermissions();
++    }
++
++    async function clearSession() {
++        accessToken.value = '';
++        refreshToken = '';
++        userId.value = '';
++        expiresAt.value = 0;
++        isStaff.value = false;
++        canReviewSafety.value = false;
++        await configRepository.setString(REFRESH_KEY, '');
++    }
++
++    async function requestCode(address) {
++        const value = String(address || '').trim().toLowerCase();
++        if (!EMAIL_RE.test(value)) {
++            toast.error('Enter the email you use for UnderWeb.');
++            return false;
++        }
++        busy.value = true;
++        try {
++            await authFetch('otp', { email: value, create_user: false });
++            email.value = value;
++            codeSentTo.value = value;
++            toast.success(`Code sent to ${value}.`);
++            return true;
++        } catch (error) {
++            toast.error(error.message);
++            return false;
++        } finally {
++            busy.value = false;
++        }
++    }
++
++    async function verifyCode(code) {
++        const token = String(code || '').replace(/\s+/g, '');
++        if (!/^\d{6,10}$/.test(token)) {
++            toast.error('Enter the code from the email.');
++            return false;
++        }
++        busy.value = true;
++        try {
++            const json = await authFetch('verify', { type: 'email', email: codeSentTo.value || email.value, token });
++            await applySession(json);
++            codeSentTo.value = '';
++            toast.success('Signed in to UnderWeb.');
++            return true;
++        } catch (error) {
++            toast.error(error.message);
++            return false;
++        } finally {
++            busy.value = false;
++        }
++    }
++
++    async function refresh() {
++        if (!refreshToken) return false;
++        if (refreshing) return refreshing;
++        refreshing = (async () => {
++            try {
++                const response = await fetch(`${UNDERWEB_SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
++                    method: 'POST',
++                    headers: { apikey: UNDERWEB_ANON_KEY, 'Content-Type': 'application/json' },
++                    body: JSON.stringify({ refresh_token: refreshToken })
++                });
++                const json = await response.json().catch(() => ({}));
++                if (!response.ok) {
++                    // Refresh token revoked or expired: sign out locally.
++                    if (response.status === 400 || response.status === 401) await clearSession();
++                    return false;
++                }
++                await applySession(json);
++                return true;
++            } catch {
++                return false;
++            } finally {
++                refreshing = null;
++            }
++        })();
++        return refreshing;
++    }
++
++    /** fetch() against UnderWeb's REST API as you, refreshing the session if needed. */
++    async function api(path, init = {}) {
++        if (!signedIn.value && !(await refresh())) throw new Error('Sign in to UnderWeb first.');
++        if (Date.now() > expiresAt.value - 60 * 1000) await refresh();
++        const doFetch = () =>
++            fetch(`${UNDERWEB_SUPABASE_URL}/rest/v1/${path}`, {
++                ...init,
++                headers: {
++                    apikey: UNDERWEB_ANON_KEY,
++                    Authorization: `Bearer ${accessToken.value}`,
++                    'Content-Type': 'application/json',
++                    Accept: 'application/json',
++                    ...(init.headers || {})
++                }
++            });
++        let response = await doFetch();
++        if (response.status === 401 && (await refresh())) response = await doFetch();
++        const text = await response.text();
++        let json = null;
++        try {
++            json = text ? JSON.parse(text) : null;
++        } catch {
++            json = text;
++        }
++        if (!response.ok) {
++            const message = json?.message || json?.hint || `Request failed (${response.status}).`;
++            const error = /** @type {Error & { status?: number }} */ (new Error(message));
++            error.status = response.status;
++            throw error;
++        }
++        return json;
++    }
++
++    const rpc = (name, args = {}) => api(`rpc/${name}`, { method: 'POST', body: JSON.stringify(args) });
++
++    async function loadPermissions() {
++        try {
++            isStaff.value = Boolean(await rpc('uwx_is_underweb_staff'));
++        } catch {
++            isStaff.value = false;
++        }
++        try {
++            canReviewSafety.value = Boolean(await rpc('uwx_can_review_safety'));
++        } catch {
++            canReviewSafety.value = false;
++        }
++    }
++
++    async function init() {
++        if (initialized.value) return;
++        initialized.value = true;
++        email.value = (await configRepository.getString(EMAIL_KEY, '')) || '';
++        refreshToken = (await configRepository.getString(REFRESH_KEY, '')) || '';
++        if (refreshToken) await refresh();
++    }
++
++    async function signOut() {
++        if (accessToken.value) {
++            try {
++                await fetch(`${UNDERWEB_SUPABASE_URL}/auth/v1/logout?scope=local`, {
++                    method: 'POST',
++                    headers: { apikey: UNDERWEB_ANON_KEY, Authorization: `Bearer ${accessToken.value}` }
++                });
++            } catch {
++                // Signing out locally is enough if the network is down.
++            }
++        }
++        await clearSession();
++        toast.success('Signed out of UnderWeb.');
++    }
++
++    function cancelCode() {
++        codeSentTo.value = '';
++    }
++
++    return {
++        email,
++        userId,
++        isStaff,
++        canReviewSafety,
++        signedIn,
++        busy,
++        codeSentTo,
++        init,
++        requestCode,
++        verifyCode,
++        cancelCode,
++        signOut,
++        api,
++        rpc,
++        loadPermissions
++    };
++});
+diff --git a/src/stores/uwxLabels.js b/src/stores/uwxLabels.js
+new file mode 100644
+index 0000000..e90de02
+--- /dev/null
++++ b/src/stores/uwxLabels.js
+@@ -0,0 +1,195 @@
++import { ref } from 'vue';
++import { defineStore } from 'pinia';
++import { toast } from 'vue-sonner';
++
++import { useSafetyIntelStore } from './safetyIntel';
++import { useUwxAccountStore } from './uwxAccount';
++
++// Staff side of the shared "bad news" labels. Every action here runs as the signed-in
++// UnderWeb account; the database decides who may do it (safety reviewers: Owner,
++// Director, Moderator, Security, Admin). UWX only hides buttons you can't use.
++
++const USER_ID_RE = /^usr_[A-Za-z0-9-]{8,}$/;
++const DAY = 24 * 60 * 60 * 1000;
++const REPORT_FIELDS =
++    'id,vrchat_user_id,last_known_display_name,category,suggested_severity,incident_at,incident_world,summary,status,created_at,private_evidence_url,source';
++
++export const LABEL_DURATIONS = Object.freeze([
++    { days: 30, label: '30 days' },
++    { days: 90, label: '3 months' },
++    { days: 180, label: '6 months' },
++    { days: 365, label: '1 year (max)' }
++]);
++
++function cleanSummary(text) {
++    return String(text || '').trim().replace(/\s+/g, ' ');
++}
++
++/** Checks the same rules the database enforces, so staff get a clear message first. */
++export function validateLabel({ vrchatUserId, category, riskLevel, publicSummary, reason, days }) {
++    if (!USER_ID_RE.test(String(vrchatUserId || ''))) return 'That isn’t a valid VRChat user ID (usr_…).';
++    if (!category) return 'Pick what kind of bad news this is.';
++    if (!['info', 'caution', 'high'].includes(riskLevel)) return 'Pick a risk level.';
++    const summary = cleanSummary(publicSummary);
++    if (summary.length < 20 || summary.length > 500) return 'The public note needs 20–500 characters (everyone using UWX sees it).';
++    if (cleanSummary(reason).length < 10) return 'Add what happened for staff (at least 10 characters, private).';
++    if (!LABEL_DURATIONS.some((d) => d.days === Number(days))) return 'Pick how long the label lasts.';
++    return '';
++}
++
++export const useUwxLabelsStore = defineStore('UwxLabels', () => {
++    const account = useUwxAccountStore();
++    const safety = useSafetyIntelStore();
++
++    const queue = ref([]);
++    const queueLoading = ref(false);
++    const busy = ref(false);
++
++    async function review(reportId, decision, { publicSummary = null, riskLevel = null, days = null, note = null } = {}) {
++        return account.rpc('uwx_review_safety_report', {
++            p_report_id: reportId,
++            p_decision: decision,
++            p_review_note: note,
++            p_public_summary: decision === 'verified' ? cleanSummary(publicSummary) : null,
++            p_risk_level: decision === 'verified' ? riskLevel : null,
++            p_expires_at: decision === 'verified' ? new Date(Date.now() + Number(days) * DAY).toISOString() : null
++        });
++    }
++
++    /** Staff: label someone right now (creates the report and verifies it in one step). */
++    async function labelNow(input) {
++        const problem = validateLabel(input);
++        if (problem) {
++            toast.error(problem);
++            return false;
++        }
++        if (!account.canReviewSafety) {
++            toast.error('Only UnderWeb safety reviewers can publish labels. Use Report instead.');
++            return false;
++        }
++        busy.value = true;
++        try {
++            const rows = await account.api(`uwx_safety_reports?select=id`, {
++                method: 'POST',
++                headers: { Prefer: 'return=representation' },
++                body: JSON.stringify({
++                    vrchat_user_id: input.vrchatUserId,
++                    last_known_display_name: String(input.displayName || '').trim().slice(0, 100) || null,
++                    category: input.category,
++                    suggested_severity: input.riskLevel,
++                    summary: cleanSummary(input.reason).slice(0, 2000),
++                    incident_world: String(input.world || '').trim().slice(0, 160) || null,
++                    private_evidence_url: String(input.evidenceUrl || '').trim() || null,
++                    status: 'pending',
++                    source: 'uwx'
++                })
++            });
++            const reportId = Array.isArray(rows) ? rows[0]?.id : rows?.id;
++            if (!reportId) throw new Error('The report was saved but UWX could not read it back to publish it. Check the review queue.');
++            await review(reportId, 'verified', {
++                publicSummary: input.publicSummary,
++                riskLevel: input.riskLevel,
++                days: input.days,
++                note: 'Labeled directly from UWX.'
++            });
++            await safety.lookupUser(input.vrchatUserId, { force: true }).catch(() => {});
++            toast.success(`${input.displayName || input.vrchatUserId} is now labeled for everyone using UWX.`);
++            return true;
++        } catch (error) {
++            toast.error(error?.message || 'Could not publish the label.');
++            return false;
++        } finally {
++            busy.value = false;
++        }
++    }
++
++    async function loadQueue() {
++        if (!account.canReviewSafety) return [];
++        queueLoading.value = true;
++        try {
++            const rows = await account.api(
++                `uwx_safety_reports?select=${REPORT_FIELDS}&status=in.(pending,reviewing)&order=created_at.desc&limit=50`
++            );
++            queue.value = Array.isArray(rows) ? rows : [];
++        } catch (error) {
++            toast.error(error?.message || 'Could not load the review queue.');
++        } finally {
++            queueLoading.value = false;
++        }
++        return queue.value;
++    }
++
++    async function approve(report, { publicSummary, riskLevel, days }) {
++        const problem = validateLabel({
++            vrchatUserId: report.vrchat_user_id,
++            category: report.category,
++            riskLevel,
++            publicSummary,
++            reason: report.summary,
++            days
++        });
++        if (problem) {
++            toast.error(problem);
++            return false;
++        }
++        busy.value = true;
++        try {
++            await review(report.id, 'verified', { publicSummary, riskLevel, days, note: 'Approved in UWX.' });
++            queue.value = queue.value.filter((r) => r.id !== report.id);
++            await safety.lookupUser(report.vrchat_user_id, { force: true }).catch(() => {});
++            toast.success('Label published.');
++            return true;
++        } catch (error) {
++            toast.error(error?.message || 'Could not approve.');
++            return false;
++        } finally {
++            busy.value = false;
++        }
++    }
++
++    async function reject(report, reason) {
++        if (cleanSummary(reason).length < 10) {
++            toast.error('Add a short private reason (10+ characters).');
++            return false;
++        }
++        busy.value = true;
++        try {
++            await review(report.id, 'rejected', { note: cleanSummary(reason) });
++            queue.value = queue.value.filter((r) => r.id !== report.id);
++            toast.success('Report rejected. Nothing was published.');
++            return true;
++        } catch (error) {
++            toast.error(error?.message || 'Could not reject.');
++            return false;
++        } finally {
++            busy.value = false;
++        }
++    }
++
++    /** Staff: take a label down (expires every verified report for that person). */
++    async function removeLabel(vrchatUserId, reason) {
++        if (cleanSummary(reason).length < 10) {
++            toast.error('Add a short private reason for removing the label (10+ characters).');
++            return false;
++        }
++        busy.value = true;
++        try {
++            const rows = await account.api(
++                `uwx_safety_reports?select=id&vrchat_user_id=eq.${encodeURIComponent(vrchatUserId)}&status=eq.verified`
++            );
++            for (const row of Array.isArray(rows) ? rows : []) {
++                await review(row.id, 'expired', { note: cleanSummary(reason) });
++            }
++            await safety.lookupUser(vrchatUserId, { force: true }).catch(() => {});
++            toast.success('Label removed for everyone.');
++            return true;
++        } catch (error) {
++            toast.error(error?.message || 'Could not remove the label.');
++            return false;
++        } finally {
++            busy.value = false;
++        }
++    }
++
++    return { queue, queueLoading, busy, labelNow, loadQueue, approve, reject, removeLabel };
++});
+diff --git a/src/stores/uwxLobbyGuard.js b/src/stores/uwxLobbyGuard.js
+new file mode 100644
+index 0000000..39ac4cb
+--- /dev/null
++++ b/src/stores/uwxLobbyGuard.js
+@@ -0,0 +1,135 @@
++import { computed, reactive, ref, watch } from 'vue';
++import { defineStore } from 'pinia';
++import { toast } from 'vue-sonner';
++
++import configRepository from '../services/config';
++import { labelSummary, pendingAlerts, riskLabel, riskRank } from '../shared/utils/uwxSafety';
++import { useLocationStore } from './location';
++import { useSafetyIntelStore } from './safetyIntel';
++import { useUserStore } from './user';
++
++// Lobby Guard: checks everyone in your instance against the shared, staff-reviewed
++// "bad news" labels as they join, and warns you privately. It never kicks, bans,
++// blocks or tells anyone else — it's a heads-up for you.
++// Only VRChat user IDs are sent to the label lookup (no names, worlds or your identity).
++
++const CONFIG = Object.freeze({
++    enabled: 'UWX_lobbyGuardEnabled',
++    minLevel: 'UWX_lobbyGuardMinLevel'
++});
++const DEBOUNCE_MS = 1500;
++const RECHECK_MS = 10 * 60 * 1000;
++
++export const useUwxLobbyGuardStore = defineStore('UwxLobbyGuard', () => {
++    const locationStore = useLocationStore();
++    const safety = useSafetyIntelStore();
++    const userStore = useUserStore();
++
++    const enabled = ref(true);
++    const minLevel = ref('info');
++    const lastCheckAt = ref(0);
++    const lastError = ref('');
++    const initialized = ref(false);
++    // Warned about in the current instance: userId -> true
++    const alerted = reactive(new Set());
++
++    let debounceTimer = null;
++    let recheckTimer = null;
++    let lastLocation = '';
++    const stops = [];
++
++    const players = computed(() =>
++        Array.from(locationStore.lastLocation.playerList?.values?.() || [])
++            .map((p) => ({ userId: String(p?.userId || ''), displayName: p?.displayName || p?.userId || 'Unknown' }))
++            .filter((p) => p.userId.startsWith('usr_') && p.userId !== userStore.currentUser?.id)
++    );
++
++    /** Labeled people in your instance right now, worst first. */
++    const flaggedHere = computed(() =>
++        players.value
++            .map((p) => ({ ...p, intel: safety.getIntel(p.userId) }))
++            .filter((p) => p.intel)
++            .sort((a, b) => riskRank(b.intel.risk_level) - riskRank(a.intel.risk_level))
++    );
++
++    async function check({ force = false } = {}) {
++        if (!enabled.value || !players.value.length) return;
++        try {
++            await safety.batchLookup(
++                players.value.map((p) => p.userId),
++                { force }
++            );
++            lastCheckAt.value = Date.now();
++            lastError.value = '';
++        } catch (error) {
++            lastError.value = error?.message || 'Could not check labels.';
++            return;
++        }
++        const fresh = pendingAlerts(players.value, (id) => safety.getIntel(id), alerted, minLevel.value);
++        for (const person of fresh) {
++            alerted.add(person.userId);
++            const level = person.intel.risk_level;
++            const message = `${person.displayName} is labeled: ${labelSummary(person.intel)}`;
++            const options = {
++                description: person.intel.public_summary || `${riskLabel(level)} · ${person.intel.verified_report_count} verified report(s)`,
++                duration: level === 'high' ? 20000 : 10000
++            };
++            if (level === 'high') toast.error(message, options);
++            else toast.warning(message, options);
++        }
++    }
++
++    function schedule(force = false) {
++        if (debounceTimer) clearTimeout(debounceTimer);
++        debounceTimer = setTimeout(() => {
++            debounceTimer = null;
++            void check({ force });
++        }, DEBOUNCE_MS);
++    }
++
++    async function init() {
++        if (initialized.value) return;
++        initialized.value = true;
++        enabled.value = await configRepository.getBool(CONFIG.enabled, true);
++        const level = await configRepository.getString(CONFIG.minLevel, 'info');
++        minLevel.value = ['info', 'caution', 'high'].includes(level) ? level : 'info';
++
++        stops.push(watch(
++            () => locationStore.lastLocation.location,
++            (location) => {
++                if (location !== lastLocation) {
++                    lastLocation = location;
++                    alerted.clear(); // warn again in a new instance
++                }
++                schedule(true);
++            }
++        ));
++        stops.push(watch(
++            () => players.value.map((p) => p.userId).join(','),
++            () => schedule(false)
++        ));
++        // Labels can be added while you're in an instance; recheck now and then.
++        recheckTimer = setInterval(() => void check({ force: true }), RECHECK_MS);
++        schedule(true);
++    }
++
++    async function setEnabled(value) {
++        enabled.value = Boolean(value);
++        await configRepository.setBool(CONFIG.enabled, enabled.value);
++        if (enabled.value) schedule(true);
++    }
++
++    async function setMinLevel(value) {
++        minLevel.value = ['info', 'caution', 'high'].includes(value) ? value : 'info';
++        await configRepository.setString(CONFIG.minLevel, minLevel.value);
++    }
++
++    function dispose() {
++        if (recheckTimer) clearInterval(recheckTimer);
++        if (debounceTimer) clearTimeout(debounceTimer);
++        stops.splice(0).forEach((stop) => stop());
++        initialized.value = false;
++    }
++
++    return { enabled, minLevel, lastCheckAt, lastError, flaggedHere, players, init, check, setEnabled, setMinLevel, dispose };
++});
+diff --git a/src/views/UnderWeb/UnderWeb.vue b/src/views/UnderWeb/UnderWeb.vue
+index 20fb6bf..dac99df 100644
+--- a/src/views/UnderWeb/UnderWeb.vue
++++ b/src/views/UnderWeb/UnderWeb.vue
+@@ -30,7 +30,10 @@
+             <div class="uwx-overview-tile">
+                 <span>INSTANCE</span>
+                 <strong>{{ currentPlayerCount }} player{{ currentPlayerCount === 1 ? '' : 's' }}</strong>
+-                <small>{{ currentFriendsHere }} friend{{ currentFriendsHere === 1 ? '' : 's' }} here</small>
++                <small v-if="flaggedCurrentPlayers.length" class="uwx-tile-warn" role="button" @click="activePanel = 'safety'">
++                    <i class="ri-alarm-warning-line" /> {{ flaggedCurrentPlayers.length }} labeled here — view
++                </small>
++                <small v-else>{{ currentFriendsHere }} friend{{ currentFriendsHere === 1 ? '' : 's' }} here</small>
+             </div>
+             <div class="uwx-overview-tile">
+                 <span>NETWORK ONLINE</span>
+@@ -519,9 +522,10 @@
+                     <div class="flex items-start justify-between gap-4">
+                         <div>
+                             <div class="uwx-section-label">UWX SAFETY INTEL</div>
+-                            <CardTitle>Community Safety Network</CardTitle>
++                            <CardTitle>Bad News Labels</CardTitle>
+                             <CardDescription>
+-                                Shared, staff-reviewed awareness signals for observable harmful behavior. UWX informs you; it does not punish people for you.
++                                Shared with everyone using UWX: staff-reviewed labels for crashers, doxxers, malicious clients and other bad news.
++                                Anyone can report; only UnderWeb staff can make a label public.
+                             </CardDescription>
+                         </div>
+                         <Badge variant="outline">REVIEWED FLAGS ONLY</Badge>
+@@ -542,15 +546,27 @@
+                         <section class="uwx-safety-panel">
+                             <div class="uwx-safety-panel-head">
+                                 <div>
+-                                    <strong>Current Instance</strong>
+-                                    <span>Check visible player IDs against reviewed Safety Intel.</span>
++                                    <strong>This instance</strong>
++                                    <span>Everyone here is checked automatically as they join.</span>
+                                 </div>
+                                 <Button size="sm" variant="outline" :disabled="safetyIntelStore.isLoading" @click="scanSafetyCurrentInstance()">
+                                     <i :class="safetyIntelStore.isLoading ? 'ri-loader-4-line animate-spin' : 'ri-radar-line'" />
+-                                    Scan instance
++                                    Check now
+                                 </Button>
+                             </div>
+ 
++                            <div class="uwx-guard-controls">
++                                <label class="uwx-inline-toggle">
++                                    <Switch :model-value="lobbyGuardEnabled" @update:modelValue="setLobbyGuardEnabled" />
++                                    <span><strong>Warn me when someone labeled joins</strong><small>Private pop-up for you only. Nobody is kicked, blocked or told.</small></span>
++                                </label>
++                                <NativeSelect :model-value="lobbyGuardMinLevel" aria-label="Which labels to warn about" @update:modelValue="setLobbyGuardMinLevel">
++                                    <NativeSelectOption value="info">Warn for every label</NativeSelectOption>
++                                    <NativeSelectOption value="caution">Caution and high risk</NativeSelectOption>
++                                    <NativeSelectOption value="high">High risk only</NativeSelectOption>
++                                </NativeSelect>
++                            </div>
++
+                             <div v-if="flaggedCurrentPlayers.length" class="uwx-safety-list">
+                                 <div
+                                     v-for="player in flaggedCurrentPlayers"
+@@ -563,6 +579,7 @@
+                                         <div class="uwx-safety-flags">
+                                             <span v-for="flag in player.intel.verified_flags" :key="flag" class="uwx-safety-flag">{{ safetyCategoryLabel(flag) }}</span>
+                                         </div>
++                                        <p v-if="player.intel.public_summary" class="uwx-help mt-1">{{ player.intel.public_summary }}</p>
+                                     </div>
+                                     <div class="text-right">
+                                         <span class="uwx-risk-badge" :class="player.intel.risk_level">
+@@ -570,17 +587,26 @@
+                                             {{ safetyRiskLabel(player.intel.risk_level) }}
+                                         </span>
+                                         <div class="uwx-help mt-2">{{ player.intel.verified_report_count }} verified report{{ player.intel.verified_report_count === 1 ? '' : 's' }}</div>
++                                        <Button size="sm" variant="ghost" class="mt-1" @click="prefillSafetyReport(player.userId, player.displayName)">Add a report</Button>
++                                        <Button v-if="canReviewSafety" size="sm" variant="ghost" class="mt-1" @click="removeLabelFor(player.userId, player.displayName)">Remove label</Button>
+                                     </div>
+                                 </div>
+                             </div>
+-
+                             <div v-else class="uwx-safety-result empty">
+                                 <div>
+                                     <i class="ri-shield-user-line" />
+-                                    <strong>No reviewed flags loaded for this instance.</strong>
+-                                    <p class="uwx-help mt-2">Run a scan to check the visible player list. No record is not a guarantee that someone is safe.</p>
++                                    <strong>No labeled people here{{ currentInstancePlayers.length ? '' : ' (no one else in your instance)' }}.</strong>
++                                    <p class="uwx-help mt-2">No label isn't a guarantee someone is safe — it means no one has been reviewed yet.</p>
+                                 </div>
+                             </div>
++
++                            <details v-if="unflaggedCurrentPlayers.length" class="uwx-guard-everyone">
++                                <summary>Everyone else here ({{ unflaggedCurrentPlayers.length }}) — report someone</summary>
++                                <div v-for="player in unflaggedCurrentPlayers" :key="player.userId" class="uwx-guard-person">
++                                    <span class="min-w-0 truncate">{{ player.displayName }}</span>
++                                    <Button size="sm" variant="ghost" @click="prefillSafetyReport(player.userId, player.displayName)">Report</Button>
++                                </div>
++                            </details>
+                         </section>
+ 
+                         <section class="uwx-safety-panel">
+@@ -627,10 +653,16 @@
+                                     <p class="uwx-help mt-2">This only means UWX has no active reviewed record for that user ID. It is not a guarantee of safety.</p>
+                                 </div>
+                             </div>
+-                            <Button v-if="safetyLookupComplete" class="mt-3" variant="outline"
+-                                @click="prefillSafetyReport(safetyLookupUserId, safetyLookupIntel?.last_known_display_name || '')">
+-                                Report this user privately
+-                            </Button>
++                            <div v-if="safetyLookupComplete" class="flex flex-wrap gap-2 mt-3">
++                                <Button variant="outline"
++                                    @click="prefillSafetyReport(safetyLookupUserId, safetyLookupIntel?.last_known_display_name || '')">
++                                    {{ canReviewSafety ? 'Report or label this user' : 'Report this user privately' }}
++                                </Button>
++                                <Button v-if="canReviewSafety && safetyLookupIntel" variant="ghost"
++                                    @click="removeLabelFor(safetyLookupUserId, safetyLookupIntel?.last_known_display_name || '')">
++                                    Remove label
++                                </Button>
++                            </div>
+                         </section>
+                     </div>
+ 
+@@ -669,13 +701,13 @@
+                         <label>Category *
+                             <select v-model="reportCategory" class="uwx-report-input">
+                                 <option value="">Choose a category</option>
+-                                <option value="crashing">Crashing</option>
+-                                <option value="doxxing_privacy_threat">Doxxing / privacy threat</option>
+-                                <option value="harassment">Harassment</option>
+-                                <option value="scam_impersonation">Scam / impersonation</option>
+-                                <option value="malicious_client_behavior">Malicious client behavior</option>
+-                                <option value="ban_evasion">Ban evasion</option>
+-                                <option value="other">Other harmful behavior</option>
++                                <option value="crashing">Crasher</option>
++                                <option value="doxxing_privacy_threat">Doxxer / privacy threat</option>
++                                <option value="harassment">Harasser</option>
++                                <option value="scam_impersonation">Scammer / impersonator</option>
++                                <option value="malicious_client_behavior">Malicious client (crash/exploit tools)</option>
++                                <option value="ban_evasion">Ban evader</option>
++                                <option value="other">Other bad news</option>
+                             </select>
+                         </label>
+                         <label>Suggested severity
+@@ -699,10 +731,32 @@
+                         </label>
+                     </div>
+                     <p class="uwx-help">Do not include addresses, phone numbers, passwords, IP addresses, emails, or doxxed material. Staff can request evidence privately.</p>
+-                    <Button :disabled="reportingStore.busy" @click="submitSafetyReport">Submit private report</Button>
++                    <div v-if="canReviewSafety" class="uwx-staff-publish">
++                        <label class="uwx-inline-toggle">
++                            <Switch v-model="publishNow" />
++                            <span>
++                                <strong>Publish as a label now (staff)</strong>
++                                <small>Skips the queue: everyone using UWX sees this label right away. "What happened" stays private to staff.</small>
++                            </span>
++                        </label>
++                        <template v-if="publishNow">
++                            <textarea v-model="publicNote" rows="2" maxlength="500" class="uwx-report-input" placeholder="Public note everyone sees (20–500 characters). Describe behavior, no personal info."></textarea>
++                            <div class="flex flex-wrap items-center gap-2">
++                                <span class="text-sm">Label lasts</span>
++                                <NativeSelect v-model="labelDays" aria-label="How long the label lasts">
++                                    <NativeSelectOption v-for="d in LABEL_DURATIONS" :key="d.days" :value="d.days">{{ d.label }}</NativeSelectOption>
++                                </NativeSelect>
++                                <span class="uwx-help">Risk level uses “Suggested severity” above.</span>
++                            </div>
++                        </template>
++                    </div>
++                    <Button v-if="canReviewSafety && publishNow" :disabled="labelsStore.busy" variant="destructive" @click="publishLabelNow">Publish label for everyone</Button>
++                    <Button v-else :disabled="reportingStore.busy" @click="submitSafetyReport">Submit private report</Button>
+                 </CardContent>
+             </Card>
+ 
++            <UwxLabelReviewQueue v-if="activePanel === 'safety' && canReviewSafety" />
++
+             <Card v-show="activePanel === 'system'" class="uwx-card">
+                 <CardHeader>
+                     <CardTitle>Notification Rules</CardTitle>
+@@ -736,6 +790,8 @@
+                 </CardContent>
+             </Card>
+ 
++            <UwxAccountCard v-show="activePanel === 'system'" />
++
+             <Card v-show="activePanel === 'system'" class="uwx-card">
+                 <CardHeader>
+                     <CardTitle>Updates</CardTitle>
+@@ -972,6 +1028,14 @@
+     import { openExternalLink, parseLocation } from '../../shared/utils';
+     import { useFriendStore, useGroupStore, useLocationStore, useOscLabStore, useUnderWebNetworkStore, useUnderWebStore } from '../../stores';
+     import { useSafetyIntelStore } from '../../stores/safetyIntel';
++    import { useUwxLobbyGuardStore } from '../../stores/uwxLobbyGuard';
++    import { useUwxAccountStore } from '../../stores/uwxAccount';
++    import { LABEL_DURATIONS, useUwxLabelsStore } from '../../stores/uwxLabels';
++    import { useModalStore } from '../../stores/modal';
++    import UwxAccountCard from './UwxAccountCard.vue';
++    import UwxLabelReviewQueue from './UwxLabelReviewQueue.vue';
++    import { useUserStore } from '../../stores/user';
++    import { categoryLabel } from '../../shared/utils/uwxSafety';
+     import { useSafetyReportingStore } from '../../stores/safetyReporting';
+ 
+     const router = useRouter();
+@@ -982,6 +1046,8 @@
+     const locationStore = useLocationStore();
+     const oscLabStore = useOscLabStore();
+     const safetyIntelStore = useSafetyIntelStore();
++    const userStoreForGuard = useUserStore();
++    const modalStore = useModalStore();
+     const reportingStore = useSafetyReportingStore();
+ 
+     const {
+@@ -1323,6 +1389,14 @@
+             })
+     );
+ 
++    const unflaggedCurrentPlayers = computed(() =>
++        currentInstancePlayers.value.filter((player) => player.userId !== userStoreForGuard.currentUser?.id && !safetyIntelStore.getIntel(player.userId))
++    );
++
++    const lobbyGuard = useUwxLobbyGuardStore();
++    const { enabled: lobbyGuardEnabled, minLevel: lobbyGuardMinLevel } = storeToRefs(lobbyGuard);
++    const { setEnabled: setLobbyGuardEnabled, setMinLevel: setLobbyGuardMinLevel } = lobbyGuard;
++
+     const selectedSafetyIntel = computed(() =>
+         selectedProfileFriend.value ? safetyIntelStore.getIntel(selectedProfileFriend.value.id) : null
+     );
+@@ -1338,18 +1412,10 @@
+     }
+ 
+     function safetyCategoryLabel(category) {
+-        const labels = {
+-            crashing: 'Crasher',
+-            doxxing_privacy_threat: 'Doxxing / Privacy Threat',
+-            harassment: 'Harassment',
+-            scam_impersonation: 'Scam / Impersonation',
+-            malicious_client_behavior: 'Malicious Client Behavior',
+-            ban_evasion: 'Ban Evasion',
+-            other: 'Other'
+-        };
+-        return labels[category] || String(category || '').replaceAll('_', ' ');
++        return categoryLabel(category);
+     }
+ 
++
+     function formatSafetyDate(value) {
+         if (!value) return 'Unknown';
+         const date = new Date(value);
+@@ -1393,6 +1459,7 @@
+         reportTarget.value = userId;
+         reportDisplayName.value = displayName;
+         activePanel.value = 'safety';
++        setTimeout(() => document.querySelector('.uwx-report-card')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+     }
+ 
+     function pickReportPlayer(id) {
+@@ -1400,6 +1467,43 @@
+         if (player) prefillSafetyReport(player.userId, player.displayName);
+     }
+ 
++    const accountStore = useUwxAccountStore();
++    const { canReviewSafety } = storeToRefs(accountStore);
++    const labelsStore = useUwxLabelsStore();
++    const publishNow = ref(false);
++    const publicNote = ref('');
++    const labelDays = ref(180);
++
++    async function publishLabelNow() {
++        const ok = await labelsStore.labelNow({
++            vrchatUserId: reportTarget.value.trim(),
++            displayName: reportDisplayName.value,
++            category: reportCategory.value,
++            riskLevel: reportSeverity.value,
++            publicSummary: publicNote.value,
++            reason: reportSummary.value,
++            world: reportWorld.value,
++            evidenceUrl: reportEvidence.value,
++            days: Number(labelDays.value)
++        });
++        if (ok) {
++            reportSummary.value = '';
++            reportEvidence.value = '';
++            reportCategory.value = '';
++            publicNote.value = '';
++            publishNow.value = false;
++        }
++    }
++
++    async function removeLabelFor(userId, displayName) {
++        const { ok, value } = await modalStore.prompt({
++            title: `Remove the label on ${displayName || userId}?`,
++            description: 'It disappears for everyone using UWX. Private reason for staff (10+ characters):',
++            confirmText: 'Remove label'
++        });
++        if (ok) await labelsStore.removeLabel(userId, value);
++    }
++
+     async function submitSafetyReport() {
+         try {
+             await reportingStore.submitReport({
+@@ -1725,6 +1829,42 @@
+     .uwx-message-picker :deep([data-slot='native-select-wrapper']) {
+         width: 100%;
+     }
++    .uwx-tile-warn {
++        color: #ff6b6b !important;
++        font-weight: 700;
++        cursor: pointer;
++    }
++    .uwx-guard-controls {
++        display: flex;
++        flex-wrap: wrap;
++        align-items: center;
++        justify-content: space-between;
++        gap: 10px;
++        margin: 4px 0 12px;
++    }
++    .uwx-guard-everyone {
++        margin-top: 10px;
++        font-size: 13px;
++    }
++    .uwx-guard-everyone summary {
++        cursor: pointer;
++        color: var(--muted-foreground);
++    }
++    .uwx-guard-person {
++        display: flex;
++        align-items: center;
++        justify-content: space-between;
++        gap: 8px;
++        padding: 2px 0;
++    }
++    .uwx-staff-publish {
++        display: flex;
++        flex-direction: column;
++        gap: 8px;
++        padding: 12px;
++        border-radius: 10px;
++        border: 1px dashed rgb(255 107 107 / 40%);
++    }
+     .uwx-approved-groups {
+         display: flex;
+         flex-direction: column;
+diff --git a/src/views/UnderWeb/UwxAccountCard.vue b/src/views/UnderWeb/UwxAccountCard.vue
+new file mode 100644
+index 0000000..bdc4afd
+--- /dev/null
++++ b/src/views/UnderWeb/UwxAccountCard.vue
+@@ -0,0 +1,88 @@
++<template>
++    <Card class="uwx-card">
++        <CardHeader>
++            <CardTitle>UnderWeb account</CardTitle>
++            <CardDescription>
++                Sign in with the email you use on underweb.cloud. This is your UnderWeb account — never your VRChat login.
++            </CardDescription>
++        </CardHeader>
++        <CardContent class="space-y-3">
++            <template v-if="signedIn">
++                <div class="uwx-acct-row">
++                    <span class="uwx-acct-avatar"><i class="ri-user-3-line" /></span>
++                    <div class="min-w-0 flex-1">
++                        <strong class="block truncate">{{ email }}</strong>
++                        <div class="flex flex-wrap gap-1 mt-1">
++                            <Badge v-if="isStaff" variant="default">UNDERWEB STAFF</Badge>
++                            <Badge v-if="canReviewSafety" variant="outline">LABEL REVIEWER</Badge>
++                            <Badge v-if="!isStaff && !canReviewSafety" variant="outline">MEMBER</Badge>
++                        </div>
++                    </div>
++                    <Button size="sm" variant="ghost" @click="signOut">Sign out</Button>
++                </div>
++                <p class="uwx-help">
++                    <template v-if="canReviewSafety">You can publish and remove shared labels and review reports in Safety Intel.</template>
++                    <template v-else>Staff tools appear here automatically if your UnderWeb role allows them.</template>
++                </p>
++            </template>
++
++            <form v-else-if="!codeSentTo" class="flex flex-wrap gap-2" @submit.prevent="requestCode(emailDraft)">
++                <Input v-model="emailDraft" type="email" class="flex-1 min-w-[12rem]" placeholder="you@example.com" aria-label="UnderWeb email" autocomplete="email" />
++                <Button type="submit" :disabled="busy">{{ busy ? 'Sending…' : 'Email me a code' }}</Button>
++            </form>
++
++            <form v-else class="space-y-2" @submit.prevent="verifyCode(code)">
++                <p class="text-sm">Enter the code sent to <strong>{{ codeSentTo }}</strong>.</p>
++                <div class="flex flex-wrap gap-2">
++                    <Input v-model="code" inputmode="numeric" autocomplete="one-time-code" class="max-w-[10rem] tracking-widest" placeholder="123456" aria-label="Sign-in code" />
++                    <Button type="submit" :disabled="busy">{{ busy ? 'Checking…' : 'Sign in' }}</Button>
++                    <Button type="button" variant="ghost" @click="cancelCode">Use a different email</Button>
++                </div>
++                <p class="uwx-help">No code? Check spam. If the email only has a link and no code, the site's email template needs the code added (Supabase → Authentication → Email templates).</p>
++            </form>
++        </CardContent>
++    </Card>
++</template>
++
++<script setup>
++    import { ref, watch } from 'vue';
++    import { storeToRefs } from 'pinia';
++    import { Badge } from '@/components/ui/badge';
++    import { Button } from '@/components/ui/button';
++    import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
++    import { Input } from '@/components/ui/input';
++
++    import { useUwxAccountStore } from '../../stores/uwxAccount';
++
++    const account = useUwxAccountStore();
++    const { email, signedIn, isStaff, canReviewSafety, busy, codeSentTo } = storeToRefs(account);
++    const { requestCode, cancelCode, signOut } = account;
++
++    const emailDraft = ref(email.value);
++    const code = ref('');
++    watch(email, (v) => {
++        if (!emailDraft.value) emailDraft.value = v;
++    });
++
++    async function verifyCode(value) {
++        if (await account.verifyCode(value)) code.value = '';
++    }
++</script>
++
++<style scoped>
++    .uwx-acct-row {
++        display: flex;
++        align-items: center;
++        gap: 12px;
++    }
++    .uwx-acct-avatar {
++        display: grid;
++        place-items: center;
++        width: 36px;
++        height: 36px;
++        border-radius: 999px;
++        color: #3df514;
++        background: rgb(61 245 20 / 10%);
++        border: 1px solid rgb(61 245 20 / 35%);
++    }
++</style>
+diff --git a/src/views/UnderWeb/UwxGroupTools.vue b/src/views/UnderWeb/UwxGroupTools.vue
+index 5403543..22bf5c2 100644
+--- a/src/views/UnderWeb/UwxGroupTools.vue
++++ b/src/views/UnderWeb/UwxGroupTools.vue
+@@ -109,7 +109,12 @@
+                     <div class="uwx-member-results mt-2">
+                         <div v-for="player in instanceOccupants" :key="player.userId" class="uwx-member-row">
+                             <div class="min-w-0 flex-1">
+-                                <strong class="block truncate">{{ player.displayName }}</strong>
++                                <strong class="block truncate">
++                                    {{ player.displayName }}
++                                    <span v-if="safety.getIntel(player.userId)" class="uwx-label-chip" :class="safety.getIntel(player.userId).risk_level">
++                                        <i class="ri-alarm-warning-line" /> {{ labelSummary(safety.getIntel(player.userId)) }}
++                                    </span>
++                                </strong>
+                                 <small class="text-muted-foreground">{{ player.userId }}</small>
+                             </div>
+                             <div class="flex flex-wrap gap-2 justify-end">
+@@ -174,10 +179,13 @@
+     import { Input } from '@/components/ui/input';
+ 
+     import { useUwxGroupToolsStore } from '../../stores/uwxGroupTools';
++    import { useSafetyIntelStore } from '../../stores/safetyIntel';
++    import { labelSummary } from '../../shared/utils/uwxSafety';
+     import { useUwxGroupAuditStore } from '../../stores/uwxGroupAudit';
+     import UwxGroupAudit from './UwxGroupAudit.vue';
+ 
+     const store = useUwxGroupToolsStore();
++    const safety = useSafetyIntelStore();
+     const auditStore = useUwxGroupAuditStore();
+     const { loadingPermissions, moderationLog, busyAction, myGroups, moderatableGroups, currentInstanceGroupId, instanceOccupants } =
+         storeToRefs(store);
+@@ -256,3 +264,22 @@
+         }
+     );
+ </script>
++
++<style scoped>
++    .uwx-label-chip {
++        display: inline-flex;
++        align-items: center;
++        gap: 4px;
++        margin-left: 6px;
++        padding: 0 8px;
++        border-radius: 999px;
++        font-size: 11px;
++        font-weight: 600;
++        color: #ffb84d;
++        border: 1px solid rgb(255 184 77 / 45%);
++    }
++    .uwx-label-chip.high {
++        color: #ff6b6b;
++        border-color: rgb(255 107 107 / 50%);
++    }
++</style>
+diff --git a/src/views/UnderWeb/UwxLabelReviewQueue.vue b/src/views/UnderWeb/UwxLabelReviewQueue.vue
+new file mode 100644
+index 0000000..50d7270
+--- /dev/null
++++ b/src/views/UnderWeb/UwxLabelReviewQueue.vue
+@@ -0,0 +1,147 @@
++<template>
++    <Card class="uwx-card uwx-card-wide">
++        <CardHeader>
++            <div class="flex items-start justify-between gap-4">
++                <div>
++                    <CardTitle>Reports waiting for review</CardTitle>
++                    <CardDescription>
++                        From UWX and the website. Approving publishes a label every UWX user sees; rejecting publishes nothing.
++                    </CardDescription>
++                </div>
++                <Button size="sm" variant="outline" :disabled="queueLoading" @click="loadQueue">
++                    <i :class="queueLoading ? 'ri-loader-4-line animate-spin' : 'ri-refresh-line'" /> Refresh
++                </Button>
++            </div>
++        </CardHeader>
++        <CardContent>
++            <p v-if="!queue.length" class="text-sm text-muted-foreground">{{ queueLoading ? 'Loading…' : 'Nothing waiting. 🎉' }}</p>
++            <div v-else class="uwx-queue">
++                <div v-for="report in queue" :key="report.id" class="uwx-queue-item">
++                    <div class="flex flex-wrap items-start justify-between gap-2">
++                        <div class="min-w-0">
++                            <strong>{{ report.last_known_display_name || report.vrchat_user_id }}</strong>
++                            <span class="uwx-queue-cat">{{ categoryLabel(report.category) }}</span>
++                            <div class="text-xs text-muted-foreground">
++                                {{ report.vrchat_user_id }} · reported {{ when(report.created_at) }} · suggested {{ report.suggested_severity }}
++                                <template v-if="report.incident_world"> · {{ report.incident_world }}</template>
++                            </div>
++                        </div>
++                        <Button v-if="report.private_evidence_url" size="sm" variant="ghost" @click="openExternalLink(report.private_evidence_url)">
++                            <i class="ri-external-link-line" /> Evidence
++                        </Button>
++                    </div>
++                    <p class="uwx-queue-summary">{{ report.summary }}</p>
++
++                    <div v-if="openId === report.id" class="uwx-queue-form">
++                        <textarea v-model="draft.publicSummary" rows="2" maxlength="500" class="uwx-report-input" placeholder="Public note everyone sees (20–500 characters). No personal info." />
++                        <div class="flex flex-wrap gap-2">
++                            <NativeSelect v-model="draft.riskLevel" aria-label="Risk level">
++                                <NativeSelectOption value="info">Heads up</NativeSelectOption>
++                                <NativeSelectOption value="caution">Caution</NativeSelectOption>
++                                <NativeSelectOption value="high">High risk</NativeSelectOption>
++                            </NativeSelect>
++                            <NativeSelect v-model="draft.days" aria-label="How long">
++                                <NativeSelectOption v-for="d in LABEL_DURATIONS" :key="d.days" :value="d.days">{{ d.label }}</NativeSelectOption>
++                            </NativeSelect>
++                            <Button :disabled="busy" @click="approve(report)">Publish label</Button>
++                            <Button variant="ghost" @click="openId = ''">Cancel</Button>
++                        </div>
++                    </div>
++                    <div v-else class="flex flex-wrap gap-2 mt-2">
++                        <Button size="sm" @click="startApprove(report)">Approve…</Button>
++                        <Button size="sm" variant="outline" :disabled="busy" @click="rejectReport(report)">Reject</Button>
++                    </div>
++                </div>
++            </div>
++        </CardContent>
++    </Card>
++</template>
++
++<script setup>
++    import { onMounted, reactive, ref } from 'vue';
++    import { storeToRefs } from 'pinia';
++    import { Button } from '@/components/ui/button';
++    import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
++    import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
++
++    import { openExternalLink } from '../../shared/utils';
++    import { categoryLabel } from '../../shared/utils/uwxSafety';
++    import { LABEL_DURATIONS, useUwxLabelsStore } from '../../stores/uwxLabels';
++    import { useModalStore } from '../../stores';
++
++    const labels = useUwxLabelsStore();
++    const { queue, queueLoading, busy } = storeToRefs(labels);
++    const { loadQueue } = labels;
++    const modalStore = useModalStore();
++
++    const openId = ref('');
++    const draft = reactive({ publicSummary: '', riskLevel: 'caution', days: 180 });
++
++    function startApprove(report) {
++        openId.value = report.id;
++        draft.publicSummary = '';
++        draft.riskLevel = report.suggested_severity || 'caution';
++        draft.days = 180;
++    }
++
++    async function approve(report) {
++        if (await labels.approve(report, { ...draft, days: Number(draft.days) })) openId.value = '';
++    }
++
++    async function rejectReport(report) {
++        const { ok, value } = await modalStore.prompt({
++            title: 'Reject this report?',
++            description: 'Private reason for staff (10+ characters). Nothing is published.',
++            confirmText: 'Reject'
++        });
++        if (ok) await labels.reject(report, value);
++    }
++
++    function when(ts) {
++        return new Date(ts).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
++    }
++
++    onMounted(loadQueue);
++</script>
++
++<style scoped>
++    .uwx-queue {
++        display: flex;
++        flex-direction: column;
++        gap: 10px;
++    }
++    .uwx-queue-item {
++        padding: 12px;
++        border-radius: 10px;
++        border: 1px solid var(--border);
++        border-left: 3px solid #ffb84d;
++    }
++    .uwx-queue-cat {
++        margin-left: 8px;
++        font-size: 11px;
++        padding: 1px 8px;
++        border-radius: 999px;
++        color: #ffb84d;
++        border: 1px solid rgb(255 184 77 / 45%);
++    }
++    .uwx-queue-summary {
++        margin-top: 8px;
++        font-size: 13px;
++        white-space: pre-wrap;
++        overflow-wrap: anywhere;
++    }
++    .uwx-queue-form {
++        display: flex;
++        flex-direction: column;
++        gap: 8px;
++        margin-top: 10px;
++    }
++    .uwx-report-input {
++        width: 100%;
++        padding: 8px 10px;
++        border-radius: 8px;
++        border: 1px solid var(--border);
++        background: rgb(0 0 0 / 20%);
++        font-size: 13px;
++    }
++</style>

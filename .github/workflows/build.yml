@@ -602,13 +602,32 @@ jobs:
           if (-not (Get-Content "src\views\UnderWeb\UnderWeb.vue" -Raw).Contains("<UwxEventMode")) { throw "RC14: Event Mode panel is not on the Command tab." }
           Write-Host "RC14 applied: UWX $version"
 
+      - name: Apply RC15 bad news labels
+        shell: pwsh
+        working-directory: ${{ env.UWX_SOURCE }}
+        run: |
+          $patchFile = Join-Path $env:GITHUB_WORKSPACE "features\core\rc15-labels.patch"
+          if (-not (Test-Path $patchFile)) { throw "RC15 patch not found." }
+          $patchText = [System.IO.File]::ReadAllText($patchFile).Replace("`r`n", "`n")
+          [System.IO.File]::WriteAllText($patchFile, $patchText, [System.Text.UTF8Encoding]::new($false))
+          git apply --check --verbose $patchFile
+          if ($LASTEXITCODE -ne 0) { throw "RC15 patch check failed." }
+          git apply --whitespace=nowarn $patchFile
+          if ($LASTEXITCODE -ne 0) { throw "RC15 patch failed." }
+          $version = (Get-Content "UWX_VERSION" -Raw).Trim()
+          if ($version -ne "0.5.6-rc15") { throw "RC15 version mismatch: $version" }
+          $app = Get-Content "src\App.vue" -Raw
+          if (-not $app.Contains("useUwxLobbyGuardStore")) { throw "RC15: Lobby Guard is not started with the app." }
+          if ((Get-Content "src\stores\uwxAccount.js" -Raw) -match "service_role") { throw "RC15: a service-role key must never ship in UWX." }
+          Write-Host "RC15 applied: UWX $version"
+
       - name: Install dependencies and run UWX unit tests
         shell: pwsh
         working-directory: ${{ env.UWX_SOURCE }}
         run: |
           npm ci
           if ($LASTEXITCODE -ne 0) { throw "npm ci failed." }
-          npx vitest run src/stores/__tests__/uwxInviter.test.js src/stores/__tests__/uwxGroupTools.test.js src/shared/utils/__tests__/uwxOsc.test.js src/shared/utils/__tests__/uwxAudit.test.js src/stores/__tests__/uwxGroupAudit.test.js src/shared/utils/__tests__/uwxRelease.test.js src/stores/__tests__/vrcxUpdater.test.js src/shared/utils/__tests__/uwxEvent.test.js src/stores/__tests__/uwxEventMode.test.js
+          npx vitest run src/stores/__tests__/uwxInviter.test.js src/stores/__tests__/uwxGroupTools.test.js src/shared/utils/__tests__/uwxOsc.test.js src/shared/utils/__tests__/uwxAudit.test.js src/stores/__tests__/uwxGroupAudit.test.js src/shared/utils/__tests__/uwxRelease.test.js src/stores/__tests__/vrcxUpdater.test.js src/shared/utils/__tests__/uwxEvent.test.js src/stores/__tests__/uwxEventMode.test.js src/stores/__tests__/uwxLobbyGuard.test.js src/stores/__tests__/uwxAccountLabels.test.js
           if ($LASTEXITCODE -ne 0) { throw "UWX unit tests failed." }
 
       - name: Build UnderWeb X
