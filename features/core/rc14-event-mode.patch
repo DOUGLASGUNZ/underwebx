@@ -1,0 +1,1212 @@
+diff --git a/CHANGELOG_UWX.md b/CHANGELOG_UWX.md
+index 06c57a0..29b97b1 100644
+--- a/CHANGELOG_UWX.md
++++ b/CHANGELOG_UWX.md
+@@ -1,5 +1,15 @@
+ # UnderWeb X changelog
+ 
++## 0.5.5-rc14 — Event Mode
++
++Command → **Event Mode**: pick an event type and press Start.
++- Switches UWX into that event's setup: group invites in our instances, automatic friend invites to the chosen audience, an invite message, and a chatbox line (shown even if your Statuses module is off).
++- Live panel: who's here now, peak, how many came by, group and friend invites sent during the event, and which UnderWeb staff are in the lobby.
++- End event puts your usual invite and chatbox settings back exactly as they were, and saves a recap. "Copy recap" gives a Discord-ready summary (names only — no IDs, instances or locations).
++- Comes with Music Video Night, Cinema Night, Hub Hangout and Staff Meeting. Edit them or add your own (e.g. Halloween Party).
++- If UWX is closed mid-event, the event resumes when you reopen it.
++- Old Event Mode card (which only mirrored the website) replaced; upcoming website events can be used as tonight's name.
++
+ ## 0.5.4-rc13 — Safe, automatic updates
+ 
+ - **Fixed a serious updater bug**: UWX was still checking VRCX's update server. As soon as stock VRCX published a newer version, UWX would have downloaded it and offered to install it, replacing UnderWeb X. UWX now only updates from UnderWeb X's own releases on GitHub.
+diff --git a/UWX_VERSION b/UWX_VERSION
+index ae2fe4e..d1517bc 100644
+--- a/UWX_VERSION
++++ b/UWX_VERSION
+@@ -1 +1 @@
+-0.5.4-rc13
++0.5.5-rc14
+diff --git a/src/App.vue b/src/App.vue
+index a99a0ac..f2fcfdc 100644
+--- a/src/App.vue
++++ b/src/App.vue
+@@ -33,6 +33,7 @@
+     import { Toaster } from './components/ui/sonner';
+     import { TooltipProvider } from './components/ui/tooltip';
+     import { createGlobalStores } from './stores';
++    import { useUwxEventModeStore } from './stores/uwxEventMode';
+     import { initNoty } from './plugins/noty';
+ 
+     import AlertDialogModal from './components/ui/alert-dialog/AlertDialogModal.vue';
+@@ -80,6 +81,8 @@
+             await store.underWeb.initUnderWeb();
+             // OSC Lab runs for the whole session, not only while the UnderWeb page is open.
+             await store.oscLab.initOscLab();
++            // Event Mode resumes a running event and keeps tracking it in the background.
++            await useUwxEventModeStore().init();
+         }
+ 
+         runCheckVRChatDebugLoggingFlow();
+diff --git a/src/shared/constants/uwx.js b/src/shared/constants/uwx.js
+index fd7b6f6..0d72c43 100644
+--- a/src/shared/constants/uwx.js
++++ b/src/shared/constants/uwx.js
+@@ -1,2 +1,2 @@
+-export const UWX_VERSION = '0.5.4-rc13';
++export const UWX_VERSION = '0.5.5-rc14';
+ export const UWX_MANIFEST_URL = 'https://underweb.cloud/api/uwx/manifest';
+diff --git a/src/shared/utils/__tests__/uwxEvent.test.js b/src/shared/utils/__tests__/uwxEvent.test.js
+new file mode 100644
+index 0000000..ddbcee7
+--- /dev/null
++++ b/src/shared/utils/__tests__/uwxEvent.test.js
+@@ -0,0 +1,59 @@
++import { describe, expect, it } from 'vitest';
++import {
++    buildRecap,
++    createAttendance,
++    currentHeadcount,
++    DEFAULT_EVENT_PRESETS,
++    formatRecap,
++    normalizePreset,
++    normalizePresets,
++    trackAttendance
++} from '../uwxEvent';
++
++const MIN = 60 * 1000;
++const T0 = Date.parse('2026-10-16T00:00:00Z');
++const p = (n, name) => ({ userId: `usr_${String(n).padStart(8, '0')}-0000-0000-0000-000000000000`, displayName: name });
++const ME = p(0, 'Darko').userId;
++
++describe('uwxEvent', () => {
++    it('falls back to the UnderWeb presets and cleans bad input', () => {
++        expect(normalizePresets(null).map((x) => x.name)).toEqual(DEFAULT_EVENT_PRESETS.map((x) => x.name));
++        expect(normalizePreset({ name: '  ' })).toBeNull();
++        expect(normalizePreset({ name: 'Rave', scope: 'everyone', messageSlot: 99 })).toMatchObject({ scope: 'favorites', messageSlot: -1, id: 'rave' });
++    });
++
++    it('tracks time present, peak and leaving/rejoining, never counting yourself', () => {
++        const s = createAttendance(T0);
++        trackAttendance(s, [p(0, 'Darko'), p(1, 'Blooty'), p(2, 'Vex')], T0, { selfId: ME });
++        trackAttendance(s, [p(1, 'Blooty'), p(2, 'Vex'), p(3, 'Newbie')], T0 + 10 * MIN, { selfId: ME });
++        trackAttendance(s, [p(1, 'Blooty')], T0 + 20 * MIN, { selfId: ME });
++        trackAttendance(s, [p(1, 'Blooty'), p(2, 'Vex')], T0 + 30 * MIN, { selfId: ME });
++        expect(s.peak).toBe(3);
++        expect(currentHeadcount(s)).toBe(2);
++        expect(Object.keys(s.people)).toHaveLength(3);
++        expect(s.people[p(1).userId].ms).toBe(30 * MIN);
++        expect(s.people[p(2).userId].ms).toBe(20 * MIN); // left at 20, back at 30
++        expect(s.people[p(3).userId].ms).toBe(10 * MIN);
++    });
++
++    it('builds a recap with staff and longest stayers, and a Discord-ready text without IDs', () => {
++        const s = createAttendance(T0);
++        trackAttendance(s, [p(1, 'Blooty'), p(2, 'Vex')], T0);
++        trackAttendance(s, [p(1, 'Blooty'), p(2, 'Vex')], T0 + 90 * MIN);
++        const recap = buildRecap({
++            name: 'Music Video Night',
++            startedAt: T0,
++            endedAt: T0 + 95 * MIN,
++            groupInvites: 4,
++            instanceInvites: 12,
++            attendance: s,
++            staffIds: [p(1).userId]
++        });
++        expect(recap).toMatchObject({ peak: 2, unique: 2, stayedFiveMinutes: 2, staffPresent: ['Blooty'], groupInvites: 4 });
++        const text = formatRecap(recap);
++        expect(text).toContain('**Music Video Night**');
++        expect(text).toContain('1h 35m');
++        expect(text).toContain('Staff: Blooty');
++        expect(text).not.toMatch(/usr_|wrld_/);
++    });
++});
+diff --git a/src/shared/utils/__tests__/uwxOsc.test.js b/src/shared/utils/__tests__/uwxOsc.test.js
+index 5da260c..c7c517c 100644
+--- a/src/shared/utils/__tests__/uwxOsc.test.js
++++ b/src/shared/utils/__tests__/uwxOsc.test.js
+@@ -195,4 +195,12 @@ describe('settings persistence', () => {
+         expect(s.modules.weather).toMatchObject({ enabled: true, zip: '48226' });
+         expect(s.modules.world.enabled).toBe(false);
+     });
++
++    test('an Event Mode status shows even when the Statuses module is off', () => {
++        const s = normalizeSettings({});
++        s.modules.status.enabled = false;
++        expect(renderModuleLines(s, { status: 'Rotating' }).map((l) => l.key)).not.toContain('status');
++        const lines = renderModuleLines(s, { status: '🎬 Music Video Night', pinnedStatus: true });
++        expect(lines.find((l) => l.key === 'status')?.text).toBe('🎬 Music Video Night');
++    });
+ });
+diff --git a/src/shared/utils/uwxEvent.js b/src/shared/utils/uwxEvent.js
+new file mode 100644
+index 0000000..004334d
+--- /dev/null
++++ b/src/shared/utils/uwxEvent.js
+@@ -0,0 +1,158 @@
++// UWX Event Mode helpers (pure). An event run switches UWX into an event setup
++// (recruiting, invites + message, chatbox status), tracks who came, and produces a recap.
++
++export const EVENT_SCOPES = Object.freeze(['selected', 'favorites', 'all-online', 'staff', 'creators', 'partners']);
++
++export const DEFAULT_EVENT_PRESETS = Object.freeze([
++    {
++        id: 'music-video-night',
++        name: 'Music Video Night',
++        status: '🎬 Music Video Night — come through',
++        recruit: true,
++        autoInvite: true,
++        scope: 'favorites',
++        messageSlot: -1
++    },
++    {
++        id: 'cinema-night',
++        name: 'Cinema Night',
++        status: '🍿 UnderWeb Cinema — movie starting soon',
++        recruit: true,
++        autoInvite: true,
++        scope: 'favorites',
++        messageSlot: -1
++    },
++    {
++        id: 'hub-hangout',
++        name: 'Hub Hangout',
++        status: 'Hanging at the UnderWeb Hub',
++        recruit: true,
++        autoInvite: false,
++        scope: 'favorites',
++        messageSlot: -1
++    },
++    {
++        id: 'staff-meeting',
++        name: 'Staff Meeting',
++        status: 'Staff meeting — back soon',
++        recruit: false,
++        autoInvite: true,
++        scope: 'staff',
++        messageSlot: -1
++    }
++]);
++
++export function normalizePreset(raw, fallbackId = '') {
++    const name = String(raw?.name || '').trim().slice(0, 60);
++    if (!name) return null;
++    const slot = Number(raw?.messageSlot);
++    return {
++        id: String(raw?.id || fallbackId || name.toLowerCase().replace(/[^a-z0-9]+/g, '-')).slice(0, 60),
++        name,
++        status: String(raw?.status || '').trim().slice(0, 140),
++        recruit: Boolean(raw?.recruit),
++        autoInvite: Boolean(raw?.autoInvite),
++        scope: EVENT_SCOPES.includes(raw?.scope) ? raw.scope : 'favorites',
++        messageSlot: Number.isInteger(slot) && slot >= 0 && slot < 12 ? slot : -1
++    };
++}
++
++export function normalizePresets(list) {
++    const out = [];
++    for (const raw of Array.isArray(list) ? list : []) {
++        const preset = normalizePreset(raw);
++        if (preset && !out.some((p) => p.id === preset.id)) out.push(preset);
++    }
++    return out.length ? out : DEFAULT_EVENT_PRESETS.map((p) => ({ ...p }));
++}
++
++/** Fresh attendance tracker. */
++export function createAttendance(startedAt) {
++    return { startedAt, lastTickAt: startedAt, peak: 0, peakAt: startedAt, people: {}, instances: [] };
++}
++
++/**
++ * Record who is in the lobby right now. `players` is [{ userId, displayName }].
++ * Time present is accumulated per person; leaving and rejoining is handled.
++ * Mutates and returns `state` (it's plain JSON so it can be saved between restarts).
++ */
++export function trackAttendance(state, players, now, { selfId = '', location = '' } = {}) {
++    const present = new Set();
++    const elapsed = Math.max(0, now - (state.lastTickAt || now));
++    for (const player of players || []) {
++        const id = String(player?.userId || '');
++        if (!id.startsWith('usr_') || id === selfId) continue;
++        present.add(id);
++        const person = state.people[id] || { name: player.displayName || id, firstSeen: now, lastSeen: now, ms: 0, present: false };
++        if (person.present) person.ms += elapsed;
++        person.present = true;
++        person.lastSeen = now;
++        if (player.displayName) person.name = player.displayName;
++        state.people[id] = person;
++    }
++    for (const [id, person] of Object.entries(state.people)) {
++        if (!present.has(id) && person.present) {
++            person.ms += elapsed;
++            person.present = false;
++        }
++    }
++    if (present.size > state.peak) {
++        state.peak = present.size;
++        state.peakAt = now;
++    }
++    if (location && state.instances[state.instances.length - 1] !== location) state.instances.push(location);
++    state.lastTickAt = now;
++    return state;
++}
++
++export function currentHeadcount(state) {
++    return Object.values(state?.people || {}).filter((p) => p.present).length;
++}
++
++/**
++ * Summary for the history list and for posting to Discord.
++ * @param {object} run { name, startedAt, endedAt, groupInvites, instanceInvites, attendance, staffIds: Set|string[] }
++ */
++export function buildRecap(run) {
++    const people = Object.entries(run.attendance?.people || {}).map(([userId, p]) => ({ userId, ...p }));
++    const staff = new Set(run.staffIds || []);
++    const durationMs = Math.max(0, (run.endedAt || Date.now()) - run.startedAt);
++    const stayed = people.filter((p) => p.ms >= 5 * 60 * 1000);
++    return {
++        name: run.name,
++        startedAt: run.startedAt,
++        endedAt: run.endedAt,
++        durationMs,
++        peak: run.attendance?.peak || 0,
++        unique: people.length,
++        stayedFiveMinutes: stayed.length,
++        groupInvites: run.groupInvites || 0,
++        instanceInvites: run.instanceInvites || 0,
++        staffPresent: people.filter((p) => staff.has(p.userId)).map((p) => p.name),
++        topStayers: people
++            .slice()
++            .sort((a, b) => b.ms - a.ms)
++            .slice(0, 5)
++            .map((p) => ({ name: p.name, minutes: Math.round(p.ms / 60000) }))
++    };
++}
++
++export function formatDuration(ms) {
++    const minutes = Math.round(ms / 60000);
++    if (minutes < 60) return `${minutes}m`;
++    const h = Math.floor(minutes / 60);
++    const m = minutes % 60;
++    return m ? `${h}h ${m}m` : `${h}h`;
++}
++
++/** Plain-text recap to paste into Discord. Names only — no IDs, locations or instance links. */
++export function formatRecap(recap) {
++    const lines = [
++        `**${recap.name}** — recap`,
++        `⏱️ ${formatDuration(recap.durationMs)} · 👥 peak ${recap.peak} · ${recap.unique} came by (${recap.stayedFiveMinutes} stayed 5m+)`,
++        `📨 ${recap.groupInvites} group invite${recap.groupInvites === 1 ? '' : 's'} · ${recap.instanceInvites} instance invite${recap.instanceInvites === 1 ? '' : 's'}`
++    ];
++    if (recap.staffPresent.length) lines.push(`🛡️ Staff: ${recap.staffPresent.join(', ')}`);
++    if (recap.topStayers.length) lines.push(`⭐ Stayed longest: ${recap.topStayers.map((p) => `${p.name} (${formatDuration(p.minutes * 60000)})`).join(', ')}`);
++    return lines.join('\n');
++}
+diff --git a/src/shared/utils/uwxOsc.js b/src/shared/utils/uwxOsc.js
+index b53a2f0..836fa6c 100644
+--- a/src/shared/utils/uwxOsc.js
++++ b/src/shared/utils/uwxOsc.js
+@@ -195,7 +195,9 @@ export function renderModuleLines(settings, data, now = Date.now()) {
+     const lines = [];
+     for (const key of settings.order) {
+         const mod = settings.modules[key];
+-        if (!mod?.enabled) continue;
++        // An Event Mode status shows even if the Statuses module is switched off.
++        const pinnedStatus = key === 'status' && Boolean(data.pinnedStatus);
++        if (!mod?.enabled && !pinnedStatus) continue;
+         let values = null;
+         if (key === 'music') {
+             const media = data.media;
+diff --git a/src/stores/__tests__/uwxEventMode.test.js b/src/stores/__tests__/uwxEventMode.test.js
+new file mode 100644
+index 0000000..fa29720
+--- /dev/null
++++ b/src/stores/__tests__/uwxEventMode.test.js
+@@ -0,0 +1,113 @@
++import { beforeEach, describe, expect, test, vi } from 'vitest';
++import { createPinia, setActivePinia } from 'pinia';
++import { nextTick, reactive } from 'vue';
++
++const config = {};
++vi.mock('../../services/config', () => ({
++    default: {
++        getString: vi.fn(async (k, d) => (k in config ? config[k] : d)),
++        setString: vi.fn(async (k, v) => {
++            config[k] = v;
++        })
++    }
++}));
++vi.mock('vue-sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }));
++
++const underweb = reactive({
++    groupRecruitEnabled: false,
++    autoInviteEnabled: false,
++    inviteScope: 'selected',
++    inviteMessageSlot: -1,
++    sessionGroupInvitesSent: 0,
++    sessionInvitesSent: 0,
++    setGroupRecruitEnabled: vi.fn(async (v) => (underweb.groupRecruitEnabled = v)),
++    setAutoInviteEnabled: vi.fn(async (v) => (underweb.autoInviteEnabled = v)),
++    setInviteScope: vi.fn(async (v) => (underweb.inviteScope = v)),
++    setInviteMessageSlot: vi.fn(async (v) => (underweb.inviteMessageSlot = v))
++});
++const osc = { eventStatus: '', setEventStatus: vi.fn((t) => (osc.eventStatus = t)) };
++const ME = 'usr_00000000-0000-0000-0000-000000000000';
++const BLOOTY = 'usr_11111111-0000-0000-0000-000000000000';
++const VEX = 'usr_22222222-0000-0000-0000-000000000000';
++const locationStore = reactive({ lastLocation: { location: 'wrld_x:1~hidden(' + ME + ')', playerList: new Map() } });
++vi.mock('../underweb', () => ({ useUnderWebStore: () => underweb }));
++vi.mock('../oscLab', () => ({ useOscLabStore: () => osc }));
++vi.mock('../location', () => ({ useLocationStore: () => locationStore }));
++vi.mock('../underwebNetwork', () => ({ useUnderWebNetworkStore: () => ({ staffUserIds: new Set([BLOOTY]) }) }));
++vi.mock('../user', () => ({ useUserStore: () => ({ currentUser: { id: ME } }) }));
++
++const { useUwxEventModeStore } = await import('../uwxEventMode');
++
++function setLobby(ids) {
++    locationStore.lastLocation.playerList = new Map(ids.map(([id, name]) => [id, { userId: id, displayName: name }]));
++}
++
++describe('UWX Event Mode', () => {
++    beforeEach(() => {
++        vi.useFakeTimers();
++        vi.setSystemTime(new Date('2026-10-16T00:00:00Z'));
++        setActivePinia(createPinia());
++        for (const k of Object.keys(config)) delete config[k];
++        Object.assign(underweb, { groupRecruitEnabled: false, autoInviteEnabled: false, inviteScope: 'selected', inviteMessageSlot: 2, sessionGroupInvitesSent: 0, sessionInvitesSent: 0 });
++        osc.eventStatus = '';
++        setLobby([[ME, 'Darko']]);
++    });
++
++    test('start switches UWX into the preset and pins the chatbox status', async () => {
++        const store = useUwxEventModeStore();
++        await store.init();
++        expect(await store.start('music-video-night')).toBe(true);
++        expect(underweb.groupRecruitEnabled).toBe(true);
++        expect(underweb.autoInviteEnabled).toBe(true);
++        expect(underweb.inviteScope).toBe('favorites');
++        expect(osc.eventStatus).toMatch(/Music Video Night/);
++        expect(await store.start('cinema-night')).toBe(false);
++    });
++
++    test('tracks attendance and invites, then end restores settings and saves a recap', async () => {
++        const store = useUwxEventModeStore();
++        await store.init();
++        await store.start('music-video-night', { name: 'MVN #12' });
++        setLobby([[ME, 'Darko'], [BLOOTY, 'Blooty'], [VEX, 'Vex']]);
++        await nextTick();
++        underweb.sessionGroupInvitesSent = 3;
++        underweb.sessionInvitesSent = 5;
++        await nextTick();
++        expect(store.headcount).toBe(2);
++        expect(store.staffHere).toEqual(['Blooty']);
++        vi.advanceTimersByTime(45 * 60 * 1000);
++        const recap = await store.end();
++        expect(recap).toMatchObject({ name: 'MVN #12', peak: 2, unique: 2, groupInvites: 3, instanceInvites: 5, staffPresent: ['Blooty'] });
++        expect(underweb.groupRecruitEnabled).toBe(false);
++        expect(underweb.autoInviteEnabled).toBe(false);
++        expect(underweb.inviteScope).toBe('selected');
++        expect(underweb.inviteMessageSlot).toBe(2);
++        expect(osc.eventStatus).toBe('');
++        expect(store.history[0].name).toBe('MVN #12');
++        expect(config.UWX_activeEventRun).toBe('');
++    });
++
++    test('an event survives UWX being closed and reopened', async () => {
++        const first = useUwxEventModeStore();
++        await first.init();
++        await first.start('cinema-night');
++        setLobby([[ME, 'Darko'], [VEX, 'Vex']]);
++        await nextTick();
++        vi.advanceTimersByTime(2000);
++        setActivePinia(createPinia());
++        osc.eventStatus = '';
++        const second = useUwxEventModeStore();
++        await second.init();
++        expect(second.isRunning).toBe(true);
++        expect(second.active.name).toBe('Cinema Night');
++        expect(osc.eventStatus).toMatch(/Cinema/);
++    });
++
++    test('presets can be added and edited', async () => {
++        const store = useUwxEventModeStore();
++        await store.init();
++        const p = await store.upsertPreset({ name: 'Halloween Party', status: '🎃 Halloween at the Hub', recruit: true, autoInvite: true, scope: 'all-online' });
++        expect(store.presets.find((x) => x.id === p.id)).toMatchObject({ scope: 'all-online' });
++        expect(JSON.parse(config.UWX_eventPresets).some((x) => x.name === 'Halloween Party')).toBe(true);
++    });
++});
+diff --git a/src/stores/oscLab.js b/src/stores/oscLab.js
+index fbf6415..88d3c0c 100644
+--- a/src/stores/oscLab.js
++++ b/src/stores/oscLab.js
+@@ -59,6 +59,8 @@ export const useOscLabStore = defineStore('OscLab', () => {
+     const weatherState = ref('');
+     const weatherUpdatedAt = ref(0);
+     const currentStatus = ref('');
++    // Event Mode can pin one status line while an event runs (overrides the rotation).
++    const eventStatus = ref('');
+     const heartRate = ref(0);
+     const heartRateState = ref('offline');
+     const pulsoidToken = ref('');
+@@ -84,7 +86,8 @@ export const useOscLabStore = defineStore('OscLab', () => {
+     const liveData = computed(() => ({
+         media: settings.modules.music.enabled ? media.value : null,
+         weather: settings.modules.weather.enabled ? weather.value : null,
+-        status: settings.modules.status.enabled ? currentStatus.value : '',
++        status: eventStatus.value || (settings.modules.status.enabled ? currentStatus.value : ''),
++        pinnedStatus: Boolean(eventStatus.value),
+         heartRate: settings.modules.heart.enabled ? heartRate.value : 0,
+         world: settings.modules.world.enabled ? worldName.value : ''
+     }));
+@@ -392,6 +395,10 @@ export const useOscLabStore = defineStore('OscLab', () => {
+         await transmit('', 'hidden');
+     }
+ 
++    function setEventStatus(text) {
++        eventStatus.value = String(text || '').trim().slice(0, 140);
++    }
++
+     // Old export name kept for the System panel "Disarm" button.
+     const enabled = computed(() => settings.enabled);
+ 
+@@ -475,6 +482,8 @@ export const useOscLabStore = defineStore('OscLab', () => {
+         weatherState,
+         weatherUpdatedAt,
+         currentStatus,
++        eventStatus,
++        setEventStatus,
+         heartRate,
+         heartRateState,
+         pulsoidToken,
+diff --git a/src/stores/uwxEventMode.js b/src/stores/uwxEventMode.js
+new file mode 100644
+index 0000000..cbb63fd
+--- /dev/null
++++ b/src/stores/uwxEventMode.js
+@@ -0,0 +1,271 @@
++import { computed, ref, watch } from 'vue';
++import { defineStore } from 'pinia';
++import { toast } from 'vue-sonner';
++
++import configRepository from '../services/config';
++import {
++    buildRecap,
++    createAttendance,
++    currentHeadcount,
++    DEFAULT_EVENT_PRESETS,
++    formatRecap,
++    normalizePreset,
++    normalizePresets,
++    trackAttendance
++} from '../shared/utils/uwxEvent';
++import { useLocationStore } from './location';
++import { useOscLabStore } from './oscLab';
++import { useUnderWebStore } from './underweb';
++import { useUnderWebNetworkStore } from './underwebNetwork';
++import { useUserStore } from './user';
++
++// Event Mode: one button switches UWX into an event setup, tracks the night, and
++// puts everything back the way it was when the event ends.
++// Everything is stored locally on this PC.
++
++const CONFIG = Object.freeze({
++    presets: 'UWX_eventPresets',
++    active: 'UWX_activeEventRun',
++    history: 'UWX_eventHistory'
++});
++const MAX_HISTORY = 30;
++const TICK_MS = 15 * 1000;
++
++export const useUwxEventModeStore = defineStore('UwxEventMode', () => {
++    const underweb = useUnderWebStore();
++    const osc = useOscLabStore();
++    const locationStore = useLocationStore();
++    const network = useUnderWebNetworkStore();
++    const userStore = useUserStore();
++
++    const presets = ref(DEFAULT_EVENT_PRESETS.map((p) => ({ ...p })));
++    const active = ref(null); // { id, presetId, name, startedAt, before, groupInvites, instanceInvites, attendance }
++    const history = ref([]);
++    const initialized = ref(false);
++    const now = ref(Date.now());
++
++    let timer = null;
++    let unwatchPlayers = null;
++    let unwatchGroupSent = null;
++    let unwatchInstanceSent = null;
++    let saveTimer = null;
++
++    const isRunning = computed(() => Boolean(active.value));
++    const headcount = computed(() => (active.value ? currentHeadcount(active.value.attendance) : 0));
++    const elapsedMs = computed(() => (active.value ? now.value - active.value.startedAt : 0));
++    const staffHere = computed(() => {
++        if (!active.value) return [];
++        return Object.entries(active.value.attendance.people)
++            .filter(([id, p]) => p.present && network.staffUserIds.has(id))
++            .map(([, p]) => p.name);
++    });
++    const uniqueCount = computed(() => (active.value ? Object.keys(active.value.attendance.people).length : 0));
++
++    function lobby() {
++        return Array.from(locationStore.lastLocation.playerList?.values?.() || []).map((player) => ({
++            userId: String(player?.userId || ''),
++            displayName: player?.displayName || ''
++        }));
++    }
++
++    function saveSoon() {
++        if (saveTimer) clearTimeout(saveTimer);
++        saveTimer = setTimeout(() => {
++            saveTimer = null;
++            void configRepository.setString(CONFIG.active, active.value ? JSON.stringify(active.value) : '');
++        }, 1000);
++    }
++
++    function tick() {
++        now.value = Date.now();
++        if (!active.value) return;
++        trackAttendance(active.value.attendance, lobby(), now.value, {
++            selfId: userStore.currentUser?.id || '',
++            location: locationStore.lastLocation.location || ''
++        });
++        saveSoon();
++    }
++
++    function startTracking() {
++        stopTracking();
++        tick();
++        timer = setInterval(tick, TICK_MS);
++        unwatchPlayers = watch(
++            () => locationStore.lastLocation.playerList?.size,
++            () => tick()
++        );
++        // Count invites sent during the event (the store counters reset on restart, so count deltas).
++        unwatchGroupSent = watch(
++            () => underweb.sessionGroupInvitesSent,
++            (next, prev) => {
++                if (active.value && next > prev) {
++                    active.value.groupInvites += next - prev;
++                    saveSoon();
++                }
++            }
++        );
++        unwatchInstanceSent = watch(
++            () => underweb.sessionInvitesSent,
++            (next, prev) => {
++                if (active.value && next > prev) {
++                    active.value.instanceInvites += next - prev;
++                    saveSoon();
++                }
++            }
++        );
++    }
++
++    function stopTracking() {
++        if (timer) clearInterval(timer);
++        timer = null;
++        unwatchPlayers?.();
++        unwatchGroupSent?.();
++        unwatchInstanceSent?.();
++        unwatchPlayers = unwatchGroupSent = unwatchInstanceSent = null;
++    }
++
++    async function init() {
++        if (initialized.value) return;
++        initialized.value = true;
++        try {
++            presets.value = normalizePresets(JSON.parse((await configRepository.getString(CONFIG.presets, '')) || 'null'));
++        } catch {
++            presets.value = normalizePresets(null);
++        }
++        try {
++            const h = JSON.parse((await configRepository.getString(CONFIG.history, '')) || '[]');
++            history.value = Array.isArray(h) ? h.slice(0, MAX_HISTORY) : [];
++        } catch {
++            history.value = [];
++        }
++        try {
++            const saved = JSON.parse((await configRepository.getString(CONFIG.active, '')) || 'null');
++            if (saved?.startedAt && saved?.attendance) {
++                // UWX was closed mid-event: carry on. Time while closed isn't counted as presence.
++                saved.attendance.lastTickAt = Date.now();
++                for (const person of Object.values(saved.attendance.people || {})) person.present = false;
++                active.value = saved;
++                if (saved.status) osc.setEventStatus(saved.status);
++                startTracking();
++            }
++        } catch {
++            active.value = null;
++        }
++    }
++
++    async function savePresets() {
++        await configRepository.setString(CONFIG.presets, JSON.stringify(presets.value));
++    }
++
++    async function upsertPreset(raw) {
++        const preset = normalizePreset(raw, raw?.id || `event-${Date.now()}`);
++        if (!preset) {
++            toast.error('Give the event a name.');
++            return null;
++        }
++        const index = presets.value.findIndex((p) => p.id === preset.id);
++        if (index >= 0) presets.value.splice(index, 1, preset);
++        else presets.value.push(preset);
++        await savePresets();
++        return preset;
++    }
++
++    async function deletePreset(id) {
++        presets.value = presets.value.filter((p) => p.id !== id);
++        if (!presets.value.length) presets.value = normalizePresets(null);
++        await savePresets();
++    }
++
++    /** Switch UWX into the preset's setup. Everything changed is remembered and put back on end(). */
++    async function start(presetId, { name = '' } = {}) {
++        if (active.value) {
++            toast.info(`${active.value.name} is already running.`);
++            return false;
++        }
++        const preset = presets.value.find((p) => p.id === presetId);
++        if (!preset) return false;
++        const before = {
++            groupRecruitEnabled: underweb.groupRecruitEnabled,
++            autoInviteEnabled: underweb.autoInviteEnabled,
++            inviteScope: underweb.inviteScope,
++            inviteMessageSlot: underweb.inviteMessageSlot
++        };
++        const startedAt = Date.now();
++        const title = String(name || preset.name).trim().slice(0, 80) || preset.name;
++        active.value = {
++            id: `${startedAt}`,
++            presetId: preset.id,
++            name: title,
++            status: preset.status,
++            startedAt,
++            before,
++            groupInvites: 0,
++            instanceInvites: 0,
++            attendance: createAttendance(startedAt)
++        };
++        await underweb.setInviteScope(preset.scope);
++        if (preset.messageSlot >= 0) await underweb.setInviteMessageSlot(preset.messageSlot);
++        await underweb.setGroupRecruitEnabled(preset.recruit);
++        await underweb.setAutoInviteEnabled(preset.autoInvite);
++        osc.setEventStatus(preset.status);
++        startTracking();
++        await configRepository.setString(CONFIG.active, JSON.stringify(active.value));
++        toast.success(`${title} started.`);
++        return true;
++    }
++
++    /** End the event: put settings back, save the recap. Returns the recap. */
++    async function end() {
++        if (!active.value) return null;
++        tick();
++        const run = active.value;
++        stopTracking();
++        const endedAt = Date.now();
++        const recap = buildRecap({ ...run, endedAt, staffIds: Array.from(network.staffUserIds || []) });
++        recap.id = run.id;
++        history.value = [recap, ...history.value].slice(0, MAX_HISTORY);
++        await configRepository.setString(CONFIG.history, JSON.stringify(history.value));
++        active.value = null;
++        await configRepository.setString(CONFIG.active, '');
++        osc.setEventStatus('');
++        const b = run.before || {};
++        await underweb.setGroupRecruitEnabled(Boolean(b.groupRecruitEnabled));
++        await underweb.setAutoInviteEnabled(Boolean(b.autoInviteEnabled));
++        if (b.inviteScope) await underweb.setInviteScope(b.inviteScope);
++        if (typeof b.inviteMessageSlot === 'number') await underweb.setInviteMessageSlot(b.inviteMessageSlot);
++        toast.success(`${run.name} ended — your usual settings are back.`);
++        return recap;
++    }
++
++    async function deleteRecap(id) {
++        history.value = history.value.filter((r) => r.id !== id);
++        await configRepository.setString(CONFIG.history, JSON.stringify(history.value));
++    }
++
++    async function copyRecap(recap) {
++        try {
++            await navigator.clipboard.writeText(formatRecap(recap));
++            toast.success('Recap copied — paste it in Discord.');
++        } catch {
++            toast.error('Could not copy the recap.');
++        }
++    }
++
++    return {
++        presets,
++        active,
++        history,
++        isRunning,
++        headcount,
++        elapsedMs,
++        staffHere,
++        uniqueCount,
++        init,
++        upsertPreset,
++        deletePreset,
++        start,
++        end,
++        deleteRecap,
++        copyRecap
++    };
++});
+diff --git a/src/views/UnderWeb/UnderWeb.vue b/src/views/UnderWeb/UnderWeb.vue
+index a472b17..20fb6bf 100644
+--- a/src/views/UnderWeb/UnderWeb.vue
++++ b/src/views/UnderWeb/UnderWeb.vue
+@@ -162,6 +162,8 @@
+                 </CardContent>
+             </Card>
+ 
++            <UwxEventMode v-show="activePanel === 'command'" />
++
+             <Card v-show="activePanel === 'invites'" class="uwx-card uwx-card-wide uwx-invite-card uwx-invite-kind-group">
+                 <CardHeader>
+                     <div class="flex items-start justify-between gap-4">
+@@ -511,63 +513,6 @@
+                 </CardContent>
+             </Card>
+ 
+-            <Card v-show="activePanel === 'command'" class="uwx-card uwx-card-wide">
+-                <CardHeader>
+-                    <div class="flex items-start justify-between gap-4">
+-                        <div>
+-                            <CardTitle>Event Mode</CardTitle>
+-                            <CardDescription>Live event operations and the next scheduled UnderWeb signals.</CardDescription>
+-                        </div>
+-                        <Badge :variant="activeEvent ? 'default' : 'outline'">{{ activeEvent ? 'LIVE' : 'STANDBY' }}</Badge>
+-                    </div>
+-                </CardHeader>
+-                <CardContent>
+-                    <div v-if="activeEvent" class="uwx-event-grid">
+-                        <div class="uwx-event-primary">
+-                            <div class="uwx-event-eyebrow">ACTIVE SIGNAL</div>
+-                            <h3>{{ activeEvent.title }}</h3>
+-                            <p>{{ formatEventTime(activeEvent) }}</p>
+-                            <div class="flex flex-wrap gap-2 mt-4">
+-                                <Badge v-if="activeEvent.host" variant="outline">HOST · {{ activeEvent.host }}</Badge>
+-                                <Badge v-if="activeEvent.groupId" variant="outline">GROUP INSTANCE</Badge>
+-                                <Badge variant="outline">{{ activeEvent.staff.length }} STAFF</Badge>
+-                                <Badge variant="outline">{{ activeEvent.performers.length }} TALENT</Badge>
+-                            </div>
+-                            <div class="flex flex-wrap gap-2 mt-5">
+-                                <Button @click="openEvent(activeEvent)">Open event page</Button>
+-                                <Button v-if="activeEvent.instanceTag" variant="outline" @click="copyText(activeEvent.instanceTag)">
+-                                    Copy instance
+-                                </Button>
+-                            </div>
+-                        </div>
+-                        <div class="uwx-event-side">
+-                            <div class="uwx-section-label">OPERATION STATUS</div>
+-                            <div class="uwx-list-row mt-2"><span>Network feed</span><Badge variant="outline">{{ networkStatus }}</Badge></div>
+-                            <div class="uwx-list-row"><span>Approved instance</span><Badge :variant="isCurrentGroupAllowed ? 'default' : 'outline'">{{ isCurrentGroupAllowed ? 'YES' : 'NO' }}</Badge></div>
+-                            <div class="uwx-list-row"><span>Instance Inviter</span><Badge :variant="autoInviteEnabled ? 'default' : 'outline'">{{ autoInviteEnabled ? 'ARMED' : 'OFF' }}</Badge></div>
+-                        </div>
+-                    </div>
+-                    <div v-else class="uwx-event-empty">
+-                        <i class="ri-calendar-schedule-line" />
+-                        <div>
+-                            <strong>No live UnderWeb event.</strong>
+-                            <p>The command center will switch into Event Mode when the network manifest marks an event live.</p>
+-                        </div>
+-                    </div>
+-
+-                    <div class="uwx-section-label mt-5">UP NEXT</div>
+-                    <div v-if="upcomingEvents.length" class="uwx-upcoming-list mt-2">
+-                        <button v-for="event in upcomingEvents.slice(0, 4)" :key="event.id" type="button" @click="openEvent(event)">
+-                            <div class="min-w-0">
+-                                <strong class="block truncate">{{ event.title }}</strong>
+-                                <span>{{ formatEventTime(event) }}</span>
+-                            </div>
+-                            <i class="ri-arrow-right-line" />
+-                        </button>
+-                    </div>
+-                    <p v-else class="mt-2 text-sm text-muted-foreground">No upcoming event data in the network feed.</p>
+-                </CardContent>
+-            </Card>
+ 
+             <Card v-show="activePanel === 'safety'" class="uwx-card uwx-card-wide">
+                 <CardHeader>
+@@ -1018,6 +963,7 @@
+     import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
+     import UwxGroupTools from './UwxGroupTools.vue';
+     import UwxOscLab from './UwxOscLab.vue';
++    import UwxEventMode from './UwxEventMode.vue';
+ 
+     import { UWX_VERSION } from '../../shared/constants/uwx';
+     import { UWX_RELEASES_PAGE } from '../../shared/utils/uwxRelease';
+diff --git a/src/views/UnderWeb/UwxEventMode.vue b/src/views/UnderWeb/UwxEventMode.vue
+new file mode 100644
+index 0000000..9fab31a
+--- /dev/null
++++ b/src/views/UnderWeb/UwxEventMode.vue
+@@ -0,0 +1,365 @@
++<template>
++    <Card class="uwx-card uwx-card-wide uwx-event-mode" :class="{ live: isRunning }">
++        <CardHeader>
++            <div class="flex items-start justify-between gap-4">
++                <div>
++                    <CardTitle>Event Mode</CardTitle>
++                    <CardDescription>
++                        One button sets UWX up for the night: group recruiting, friend invites with your message, and a chatbox line.
++                        Ending it puts your usual settings back and gives you a recap.
++                    </CardDescription>
++                </div>
++                <Badge :variant="isRunning ? 'default' : 'outline'">{{ isRunning ? 'LIVE' : 'STANDBY' }}</Badge>
++            </div>
++        </CardHeader>
++
++        <CardContent class="space-y-5">
++            <!-- Running -->
++            <section v-if="isRunning && active" class="uwx-em-live">
++                <div class="uwx-em-live-head">
++                    <span class="uwx-em-dot" />
++                    <div class="min-w-0 flex-1">
++                        <div class="uwx-em-kicker">LIVE NOW · {{ formatDuration(elapsedMs) }}</div>
++                        <h3>{{ active.name }}</h3>
++                        <p v-if="active.status" class="uwx-em-status"><i class="ri-chat-3-line" /> Chatbox: {{ active.status }}</p>
++                    </div>
++                    <Button variant="destructive" @click="confirmEnd">End event</Button>
++                </div>
++                <div class="uwx-em-stats">
++                    <div><strong>{{ headcount }}</strong><span>here now</span></div>
++                    <div><strong>{{ active.attendance.peak }}</strong><span>peak</span></div>
++                    <div><strong>{{ uniqueCount }}</strong><span>came by</span></div>
++                    <div class="group"><strong>{{ active.groupInvites }}</strong><span>group invites</span></div>
++                    <div class="instance"><strong>{{ active.instanceInvites }}</strong><span>friend invites</span></div>
++                </div>
++                <div class="uwx-em-staff">
++                    <span class="uwx-section-label">STAFF HERE</span>
++                    <span v-for="name in staffHere" :key="name" class="uwx-em-chip">{{ name }}</span>
++                    <span v-if="!staffHere.length" class="text-xs text-muted-foreground">No UnderWeb staff in the lobby right now.</span>
++                </div>
++            </section>
++
++            <!-- Standby -->
++            <template v-else>
++                <div class="flex flex-wrap items-center gap-2">
++                    <Input v-model="eventName" class="max-w-sm" placeholder="Name for tonight (optional), e.g. MVN #12" aria-label="Event name" />
++                    <span v-if="upcomingEvents.length" class="text-xs text-muted-foreground">or use an upcoming event:</span>
++                    <Button
++                        v-for="event in upcomingEvents.slice(0, 3)"
++                        :key="event.id"
++                        size="sm"
++                        variant="ghost"
++                        @click="eventName = event.title">
++                        {{ event.title }}
++                    </Button>
++                </div>
++
++                <div class="uwx-em-presets">
++                    <div v-for="preset in presets" :key="preset.id" class="uwx-em-preset">
++                        <template v-if="editingId !== preset.id">
++                            <div class="min-w-0">
++                                <strong class="block truncate">{{ preset.name }}</strong>
++                                <small class="block truncate text-muted-foreground">{{ preset.status || 'No chatbox line' }}</small>
++                            </div>
++                            <div class="uwx-em-tags">
++                                <span :class="preset.recruit ? 'on group' : 'off'">{{ preset.recruit ? 'Group invites' : 'No group invites' }}</span>
++                                <span :class="preset.autoInvite ? 'on instance' : 'off'">{{ preset.autoInvite ? 'Auto-invite ' + scopeLabel(preset.scope) : 'No auto friend invites' }}</span>
++                                <span v-if="preset.messageSlot >= 0" class="on instance">Message {{ preset.messageSlot + 1 }}</span>
++                            </div>
++                            <div class="flex gap-2">
++                                <Button class="flex-1" @click="startPreset(preset.id)"><i class="ri-play-fill" /> Start</Button>
++                                <Button variant="ghost" size="icon" aria-label="Edit" @click="beginEdit(preset)"><i class="ri-pencil-line" /></Button>
++                            </div>
++                        </template>
++                        <form v-else class="space-y-2" @submit.prevent="saveEdit">
++                            <Input v-model="draft.name" placeholder="Event type name" aria-label="Event type name" />
++                            <Input v-model="draft.status" placeholder="Chatbox line while it runs" aria-label="Chatbox line" />
++                            <label class="uwx-em-check"><Switch v-model="draft.recruit" /> Group invites (our instances only)</label>
++                            <label class="uwx-em-check"><Switch v-model="draft.autoInvite" /> Auto friend invites</label>
++                            <NativeSelect v-model="draft.scope" aria-label="Who to invite">
++                                <NativeSelectOption v-for="scope in scopes" :key="scope.id" :value="scope.id">{{ scope.label }}</NativeSelectOption>
++                            </NativeSelect>
++                            <NativeSelect v-model="draft.messageSlot" aria-label="Invite message">
++                                <NativeSelectOption :value="-1">Keep my current invite message</NativeSelectOption>
++                                <NativeSelectOption v-for="row in inviteMessages" :key="row.slot" :value="row.slot">
++                                    {{ row.slot + 1 }}. {{ row.message || '(empty)' }}
++                                </NativeSelectOption>
++                            </NativeSelect>
++                            <div class="flex gap-2">
++                                <Button type="submit" class="flex-1">Save</Button>
++                                <Button type="button" variant="ghost" @click="editingId = ''">Cancel</Button>
++                                <Button v-if="presets.length > 1" type="button" variant="ghost" size="icon" aria-label="Delete" @click="removePreset(preset.id)">
++                                    <i class="ri-delete-bin-line" />
++                                </Button>
++                            </div>
++                        </form>
++                    </div>
++                    <button type="button" class="uwx-em-preset uwx-em-new" @click="beginEdit(null)">
++                        <i class="ri-add-line" /> New event type
++                    </button>
++                </div>
++            </template>
++
++            <!-- History -->
++            <section v-if="history.length">
++                <div class="uwx-section-label">PAST EVENTS</div>
++                <div class="uwx-em-history">
++                    <div v-for="recap in history.slice(0, showAllHistory ? 30 : 5)" :key="recap.id" class="uwx-em-recap">
++                        <div class="min-w-0 flex-1">
++                            <strong class="block truncate">{{ recap.name }}</strong>
++                            <small class="text-muted-foreground">
++                                {{ formatDate(recap.startedAt) }} · {{ formatDuration(recap.durationMs) }} · peak {{ recap.peak }} ·
++                                {{ recap.unique }} came by · {{ recap.groupInvites }} group invites
++                            </small>
++                        </div>
++                        <Button size="sm" variant="outline" @click="copyRecap(recap)"><i class="ri-file-copy-line" /> Copy recap</Button>
++                        <Button size="icon" variant="ghost" aria-label="Delete recap" @click="deleteRecap(recap.id)"><i class="ri-close-line" /></Button>
++                    </div>
++                </div>
++                <Button v-if="history.length > 5" size="sm" variant="ghost" class="mt-2" @click="showAllHistory = !showAllHistory">
++                    {{ showAllHistory ? 'Show fewer' : `Show all ${history.length}` }}
++                </Button>
++            </section>
++        </CardContent>
++    </Card>
++</template>
++
++<script setup>
++    import { onMounted, reactive, ref } from 'vue';
++    import { storeToRefs } from 'pinia';
++    import { Badge } from '@/components/ui/badge';
++    import { Button } from '@/components/ui/button';
++    import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
++    import { Input } from '@/components/ui/input';
++    import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
++    import { Switch } from '@/components/ui/switch';
++
++    import { formatDuration } from '../../shared/utils/uwxEvent';
++    import { useUwxEventModeStore } from '../../stores/uwxEventMode';
++    import { useUnderWebNetworkStore, useUnderWebStore, useModalStore } from '../../stores';
++
++    const store = useUwxEventModeStore();
++    const { presets, active, history, isRunning, headcount, elapsedMs, staffHere, uniqueCount } = storeToRefs(store);
++    const { inviteMessages } = storeToRefs(useUnderWebStore());
++    const { upcomingEvents } = storeToRefs(useUnderWebNetworkStore());
++    const modalStore = useModalStore();
++
++    const eventName = ref('');
++    const editingId = ref('');
++    const showAllHistory = ref(false);
++    const draft = reactive({ id: '', name: '', status: '', recruit: true, autoInvite: true, scope: 'favorites', messageSlot: -1 });
++
++    const scopes = [
++        { id: 'favorites', label: 'Favorite friends' },
++        { id: 'all-online', label: 'All online friends' },
++        { id: 'selected', label: 'Selected friends' },
++        { id: 'staff', label: 'UnderWeb staff' },
++        { id: 'creators', label: 'UnderWeb creators' },
++        { id: 'partners', label: 'UnderWeb partners' }
++    ];
++    const scopeLabel = (id) => (scopes.find((s) => s.id === id)?.label || id).replace(/^(Favorite|All|Selected)/, (w) => w.toLowerCase());
++
++    function beginEdit(preset) {
++        const p = preset || { id: '', name: '', status: '', recruit: true, autoInvite: true, scope: 'favorites', messageSlot: -1 };
++        Object.assign(draft, { ...p, messageSlot: Number(p.messageSlot) });
++        editingId.value = preset ? preset.id : '__new__';
++        if (!preset) presets.value.push({ ...draft, id: '__new__', name: 'New event' });
++    }
++
++    async function saveEdit() {
++        const isNew = editingId.value === '__new__';
++        if (isNew) presets.value = presets.value.filter((p) => p.id !== '__new__');
++        const saved = await store.upsertPreset({ ...draft, id: isNew ? '' : draft.id, messageSlot: Number(draft.messageSlot) });
++        if (saved) editingId.value = '';
++        else if (isNew) beginEdit(null);
++    }
++
++    async function removePreset(id) {
++        editingId.value = '';
++        if (id === '__new__') {
++            presets.value = presets.value.filter((p) => p.id !== '__new__');
++            return;
++        }
++        await store.deletePreset(id);
++    }
++
++    async function startPreset(id) {
++        const ok = await store.start(id, { name: eventName.value });
++        if (ok) eventName.value = '';
++    }
++
++    async function confirmEnd() {
++        const { ok } = await modalStore.confirm({
++            title: `End ${active.value?.name}?`,
++            description: 'UWX turns off the event setup, puts your usual invite and chatbox settings back, and saves a recap.',
++            confirmText: 'End event'
++        });
++        if (ok) await store.end();
++    }
++
++    const copyRecap = (recap) => store.copyRecap(recap);
++    const deleteRecap = (id) => store.deleteRecap(id);
++
++    function formatDate(ts) {
++        return new Date(ts).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
++    }
++
++    onMounted(() => store.init());
++</script>
++
++<style scoped>
++    .uwx-section-label {
++        color: #76ff00;
++        font-size: 10px;
++        font-weight: 900;
++        letter-spacing: 0.12em;
++    }
++    .uwx-event-mode.live {
++        border-color: rgb(61 245 20 / 45%);
++        box-shadow: 0 0 0 1px rgb(61 245 20 / 15%), 0 0 40px rgb(61 245 20 / 6%);
++    }
++    .uwx-em-live {
++        display: flex;
++        flex-direction: column;
++        gap: 14px;
++        padding: 16px;
++        border-radius: 12px;
++        border: 1px solid rgb(61 245 20 / 30%);
++        background: linear-gradient(150deg, rgb(61 245 20 / 9%), rgb(0 0 0 / 20%) 60%);
++    }
++    .uwx-em-live-head {
++        display: flex;
++        align-items: center;
++        gap: 14px;
++    }
++    .uwx-em-live-head h3 {
++        font-size: 22px;
++        font-weight: 800;
++        line-height: 1.15;
++    }
++    .uwx-em-dot {
++        width: 12px;
++        height: 12px;
++        flex: none;
++        border-radius: 999px;
++        background: #3df514;
++        box-shadow: 0 0 0 0 rgb(61 245 20 / 60%);
++        animation: uwx-em-pulse 1.8s infinite;
++    }
++    @keyframes uwx-em-pulse {
++        0% { box-shadow: 0 0 0 0 rgb(61 245 20 / 55%); }
++        70% { box-shadow: 0 0 0 12px rgb(61 245 20 / 0%); }
++        100% { box-shadow: 0 0 0 0 rgb(61 245 20 / 0%); }
++    }
++    @media (prefers-reduced-motion: reduce) {
++        .uwx-em-dot { animation: none; }
++    }
++    .uwx-em-kicker {
++        color: #3df514;
++        font-size: 10px;
++        font-weight: 900;
++        letter-spacing: 0.12em;
++    }
++    .uwx-em-status {
++        margin-top: 4px;
++        font-size: 12px;
++        color: var(--muted-foreground);
++        overflow-wrap: anywhere;
++    }
++    .uwx-em-stats {
++        display: grid;
++        grid-template-columns: repeat(5, minmax(0, 1fr));
++        gap: 8px;
++    }
++    @media (max-width: 800px) {
++        .uwx-em-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
++    }
++    .uwx-em-stats > div {
++        display: flex;
++        flex-direction: column;
++        padding: 10px 12px;
++        border-radius: 10px;
++        background: rgb(0 0 0 / 25%);
++        border: 1px solid var(--border);
++    }
++    .uwx-em-stats strong {
++        font-size: 24px;
++        line-height: 1.1;
++        font-variant-numeric: tabular-nums;
++    }
++    .uwx-em-stats span {
++        font-size: 11px;
++        color: var(--muted-foreground);
++    }
++    .uwx-em-stats .group strong { color: #3df514; }
++    .uwx-em-stats .instance strong { color: #4fb3ff; }
++    .uwx-em-staff {
++        display: flex;
++        flex-wrap: wrap;
++        align-items: center;
++        gap: 6px;
++    }
++    .uwx-em-chip {
++        font-size: 12px;
++        padding: 2px 10px;
++        border-radius: 999px;
++        border: 1px solid rgb(61 245 20 / 35%);
++    }
++    .uwx-em-presets {
++        display: grid;
++        grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
++        gap: 10px;
++    }
++    .uwx-em-preset {
++        display: flex;
++        flex-direction: column;
++        gap: 10px;
++        padding: 14px;
++        border-radius: 12px;
++        border: 1px solid var(--border);
++        background: rgb(255 255 255 / 2%);
++    }
++    .uwx-em-new {
++        align-items: center;
++        justify-content: center;
++        min-height: 120px;
++        border-style: dashed;
++        color: var(--muted-foreground);
++    }
++    .uwx-em-new:hover { color: var(--foreground); border-color: rgb(61 245 20 / 40%); }
++    .uwx-em-tags {
++        display: flex;
++        flex-wrap: wrap;
++        gap: 4px;
++    }
++    .uwx-em-tags span {
++        font-size: 10.5px;
++        padding: 1px 8px;
++        border-radius: 999px;
++        border: 1px solid var(--border);
++        color: var(--muted-foreground);
++    }
++    .uwx-em-tags .on.group { color: #3df514; border-color: rgb(61 245 20 / 35%); }
++    .uwx-em-tags .on.instance { color: #4fb3ff; border-color: rgb(79 179 255 / 35%); }
++    .uwx-em-check {
++        display: flex;
++        align-items: center;
++        gap: 8px;
++        font-size: 13px;
++    }
++    .uwx-em-preset :deep([data-slot='native-select-wrapper']) { width: 100%; }
++    .uwx-em-history {
++        display: flex;
++        flex-direction: column;
++        gap: 6px;
++        margin-top: 8px;
++    }
++    .uwx-em-recap {
++        display: flex;
++        align-items: center;
++        gap: 8px;
++        padding: 8px 10px;
++        border-radius: 10px;
++        border: 1px solid var(--border);
++    }
++</style>
