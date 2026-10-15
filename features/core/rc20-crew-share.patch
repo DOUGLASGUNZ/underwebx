@@ -1,0 +1,2178 @@
+diff --git a/CHANGELOG_UWX.md b/CHANGELOG_UWX.md
+index 8ec0b90..54794b6 100644
+--- a/CHANGELOG_UWX.md
++++ b/CHANGELOG_UWX.md
+@@ -1,5 +1,12 @@
+ # UnderWeb X changelog
+ 
++## 0.6.1-rc20 — Now showing, your crew, photos to the showcase
++
++- **Now showing** (OSC Lab → new chatbox module): what the world's video player is playing, e.g. "🍿 Now showing: Static Hearts". Tokens for title, who queued it (off by default), time, length, time left and a progress bar. Read from VRChat's log — links are never put in the chatbox, only a title (or "a YouTube video" if VRCX has no YouTube API key). Hides itself when you leave the instance. Every chatbox theme has a matching layout.
++- **Event Mode**: Music Video Night and Cinema Night switch "Now showing" on for the event and back off after. A new switch per preset.
++- **Your crew** (Command): the people you actually hang out with over the last 30 days, worked out from VRCX's own history on this PC (nothing uploaded). Shows who's with you, in VRChat, on the website or offline; one-click **Invite** or **Invite crew** for everyone online elsewhere (uses your invite message); pin people (also from the Lobby) or hide them. Optional pop-up when one of them comes online, with an Invite button. Labeled people never appear.
++- **Post to your showcase** (Command): send a VRChat photo (latest, or pick one) to your profile on underweb.cloud with a title and caption — it goes into the same staff review queue as website uploads. During an event the title is filled in for you. Optional "Post…" pop-up after every photo (off by default). **Privacy:** VRCX saves the world, the exact instance and everyone in the lobby inside each photo; UWX re-draws the picture into a fresh JPEG so none of that is uploaded. Needs your UnderWeb sign-in (System tab) and approved network access.
++
+ ## 0.6.0-rc19 — Themes: client + chatbox
+ 
+ - **Client themes** (System → Appearance): UnderWeb Green (default), Blood Moon, Violet, Ice, Gold, Rose, Mono, or any custom color. One accent recolors the whole client — UnderWeb pages, premium cards, and VRCX's own buttons, highlights and sidebar — with readable button text on any color. Optional background tint (none / subtle / strong). Turn it off to use VRCX's own theme. Saved on this PC and painted at startup with no flash.
+diff --git a/UWX_VERSION b/UWX_VERSION
+index b5f0065..4e33e61 100644
+--- a/UWX_VERSION
++++ b/UWX_VERSION
+@@ -1 +1 @@
+-0.6.0-rc19
++0.6.1-rc20
+diff --git a/src/App.vue b/src/App.vue
+index e573167..7942f49 100644
+--- a/src/App.vue
++++ b/src/App.vue
+@@ -35,6 +35,8 @@
+     import { createGlobalStores } from './stores';
+     import { useUwxEventModeStore } from './stores/uwxEventMode';
+     import { useUwxThemeStore } from './stores/uwxTheme';
++    import { useUwxCrewStore } from './stores/uwxCrew';
++    import { useUwxShareStore } from './stores/uwxShare';
+     import { useUwxLobbyGuardStore } from './stores/uwxLobbyGuard';
+     import { useUwxAccountStore } from './stores/uwxAccount';
+     import { useUwxDiscordAlertsStore } from './stores/uwxDiscordAlerts';
+@@ -98,6 +100,10 @@
+             void useUwxDiscordAlertsStore().init();
+             // Work out member / group staff / UnderWeb staff from VRChat + UnderWeb permissions.
+             useUwxAccessStore().init();
++            // Your crew: regulars from local history + "came online" alerts.
++            void useUwxCrewStore().init();
++            // Offer to post new VRChat photos to the UnderWeb showcase (only if switched on).
++            void useUwxShareStore().init();
+         }
+ 
+         runCheckVRChatDebugLoggingFlow();
+diff --git a/src/services/uwxPhotoEncode.js b/src/services/uwxPhotoEncode.js
+new file mode 100644
+index 0000000..857dae0
+--- /dev/null
++++ b/src/services/uwxPhotoEncode.js
+@@ -0,0 +1,44 @@
++// Re-draw a photo into a brand-new JPEG. Drawing to a canvas keeps only the pixels,
++// so VRCX's embedded metadata (world, instance ID, player list) never leaves the PC.
++
++import { fitSize, JPEG_QUALITY, MAX_SIDE, MAX_UPLOAD_BYTES } from '../shared/utils/uwxShare';
++
++function loadImage(src) {
++    return new Promise((resolve, reject) => {
++        const img = new Image();
++        img.onload = () => resolve(img);
++        img.onerror = () => reject(new Error('Could not read that image.'));
++        img.src = src;
++    });
++}
++
++function toBlob(canvas, quality) {
++    return new Promise((resolve, reject) =>
++        canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('Could not prepare the photo.'))), 'image/jpeg', quality)
++    );
++}
++
++/**
++ * @param {string} base64Png  file contents as base64 (from AppApi.GetFileBase64)
++ * @returns {Promise<{ blob: Blob, width: number, height: number, previewUrl: string }>}
++ */
++export async function encodePhoto(base64Png) {
++    if (!base64Png) throw new Error('Could not read that photo.');
++    const img = await loadImage(`data:image/png;base64,${base64Png}`);
++    const attempts = [
++        [MAX_SIDE, JPEG_QUALITY],
++        [MAX_SIDE, 0.8],
++        [1920, 0.8]
++    ];
++    for (const [side, quality] of attempts) {
++        const { width, height } = fitSize(img.naturalWidth || img.width, img.naturalHeight || img.height, side);
++        const canvas = document.createElement('canvas');
++        canvas.width = width;
++        canvas.height = height;
++        const ctx = canvas.getContext('2d');
++        ctx.drawImage(img, 0, 0, width, height);
++        const blob = await toBlob(canvas, quality);
++        if (blob.size <= MAX_UPLOAD_BYTES) return { blob, width, height, previewUrl: URL.createObjectURL(blob) };
++    }
++    throw new Error('That photo is too big to upload.');
++}
+diff --git a/src/shared/constants/uwx.js b/src/shared/constants/uwx.js
+index 50fc6c8..e54fe8d 100644
+--- a/src/shared/constants/uwx.js
++++ b/src/shared/constants/uwx.js
+@@ -1,2 +1,2 @@
+-export const UWX_VERSION = '0.6.0-rc19';
++export const UWX_VERSION = '0.6.1-rc20';
+ export const UWX_MANIFEST_URL = 'https://underweb.cloud/api/uwx/manifest';
+diff --git a/src/shared/utils/__tests__/uwxCrew.test.js b/src/shared/utils/__tests__/uwxCrew.test.js
+new file mode 100644
+index 0000000..43a4bf2
+--- /dev/null
++++ b/src/shared/utils/__tests__/uwxCrew.test.js
+@@ -0,0 +1,78 @@
++import { describe, expect, test } from 'vitest';
++
++import { cameOnline, crewPresence, crewScore, rankCrew, sortByPresence, togetherText } from '../uwxCrew';
++
++const H = 3600 * 1000;
++const ME = 'usr_me';
++const row = (userId, displayName, hours, days, lastSeen = '2026-10-10T00:00:00Z') => ({ userId, displayName, ms: hours * H, days, lastSeen });
++
++describe('UWX crew', () => {
++    test('regulars over many days beat one very long night', () => {
++        expect(crewScore(row('usr_a', 'A', 6, 8))).toBeGreaterThan(crewScore(row('usr_b', 'B', 12, 1)));
++        // hours are capped so a 200h AFK doesn't top the list
++        expect(crewScore(row('usr_c', 'C', 200, 1))).toBe(2 + 40);
++    });
++
++    test('ranks, skips you, hidden and labeled people, and merges name changes', () => {
++        const rows = [
++            row(ME, 'Me', 99, 30),
++            row('usr_vex', 'Vex', 10, 9),
++            row('usr_vex', 'Vex (old name)', 4, 3, '2026-10-12T00:00:00Z'),
++            row('usr_blooty', 'Blooty', 20, 6),
++            row('usr_bad', 'Crasher', 30, 10),
++            row('usr_hidden', 'Hidden', 30, 10),
++            row('nope', 'Broken', 30, 10)
++        ];
++        const crew = rankCrew(rows, { selfId: ME, hidden: ['usr_hidden'], isLabeled: (id) => id === 'usr_bad' });
++        expect(crew.map((r) => r.userId)).toEqual(['usr_blooty', 'usr_vex']);
++        const vex = crew.find((r) => r.userId === 'usr_vex');
++        expect(vex.ms).toBe(14 * H);
++        expect(vex.days).toBe(9);
++        expect(vex.lastSeen).toBe('2026-10-12T00:00:00Z');
++    });
++
++    test('pinned people always show first, even without history, using the friend name', () => {
++        const rows = Array.from({ length: 20 }, (_, i) => row(`usr_${i}`, `P${i}`, 20 - i, 5));
++        const crew = rankCrew(rows, { pinned: ['usr_new', 'usr_19'], nameOf: (id) => (id === 'usr_new' ? 'Newbie' : ''), limit: 5 });
++        expect(crew).toHaveLength(5);
++        expect(crew.slice(0, 2).map((r) => r.userId).sort()).toEqual(['usr_19', 'usr_new']);
++        expect(crew.find((r) => r.userId === 'usr_new').displayName).toBe('Newbie');
++        expect(crew.every((r, i) => (i < 2) === r.pinned)).toBe(true);
++    });
++
++    test('labeled people cannot be pinned into the crew', () => {
++        expect(rankCrew([], { pinned: ['usr_bad'], isLabeled: () => true })).toEqual([]);
++    });
++
++    test('together text', () => {
++        expect(togetherText(row('usr_a', 'A', 14.4, 9))).toBe('14h together · 9 days');
++        expect(togetherText(row('usr_a', 'A', 2.25, 1))).toBe('2.3h together · 1 day');
++        expect(togetherText(row('usr_a', 'A', 0.25, 1))).toBe('15m together · 1 day');
++        expect(togetherText({ ms: 0, days: 0 })).toBe('Pinned');
++    });
++
++    test('presence and sorting', () => {
++        expect(crewPresence({ state: 'online' })).toBe('online');
++        expect(crewPresence({ state: 'online' }, { here: true })).toBe('here');
++        expect(crewPresence({ state: 'active' })).toBe('web');
++        expect(crewPresence({ state: 'offline' })).toBe('offline');
++        expect(crewPresence(undefined)).toBe('not-friend');
++        const sorted = sortByPresence([
++            { userId: 'a', presence: 'offline', score: 50 },
++            { userId: 'b', presence: 'online', score: 1 },
++            { userId: 'c', presence: 'here', score: 2 },
++            { userId: 'd', presence: 'online', score: 9 }
++        ]);
++        expect(sorted.map((r) => r.userId)).toEqual(['c', 'd', 'b', 'a']);
++    });
++
++    test('came-online alerts: nothing on first sight, then only offline/web → in VRChat', () => {
++        const seen = new Map();
++        expect(cameOnline(seen, [{ userId: 'a', presence: 'online' }, { userId: 'b', presence: 'offline' }])).toEqual([]);
++        expect(cameOnline(seen, [{ userId: 'a', presence: 'here' }, { userId: 'b', presence: 'online' }]).map((r) => r.userId)).toEqual(['b']);
++        // leaving your instance (here → online) is not "coming online"
++        expect(cameOnline(seen, [{ userId: 'a', presence: 'online' }, { userId: 'b', presence: 'online' }])).toEqual([]);
++        expect(cameOnline(seen, [{ userId: 'a', presence: 'web' }])).toEqual([]);
++        expect(cameOnline(seen, [{ userId: 'a', presence: 'online' }]).map((r) => r.userId)).toEqual(['a']);
++    });
++});
+diff --git a/src/shared/utils/__tests__/uwxEvent.test.js b/src/shared/utils/__tests__/uwxEvent.test.js
+index ddbcee7..fbc39a5 100644
+--- a/src/shared/utils/__tests__/uwxEvent.test.js
++++ b/src/shared/utils/__tests__/uwxEvent.test.js
+@@ -1,5 +1,6 @@
+ import { describe, expect, it } from 'vitest';
+ import {
++    normalizePreset,
+     buildRecap,
+     createAttendance,
+     currentHeadcount,
+@@ -57,3 +58,12 @@ describe('uwxEvent', () => {
+         expect(text).not.toMatch(/usr_|wrld_/);
+     });
+ });
++
++describe('Now showing in presets', () => {
++    it('video nights get it on when saved before it existed; others off; explicit choice wins', () => {
++        expect(normalizePreset({ id: 'cinema-night', name: 'Cinema Night' }).nowShowing).toBe(true);
++        expect(normalizePreset({ id: 'music-video-night', name: 'MVN' }).nowShowing).toBe(true);
++        expect(normalizePreset({ id: 'hub-hangout', name: 'Hub' }).nowShowing).toBe(false);
++        expect(normalizePreset({ id: 'cinema-night', name: 'Cinema Night', nowShowing: false }).nowShowing).toBe(false);
++    });
++});
+diff --git a/src/shared/utils/__tests__/uwxOsc.test.js b/src/shared/utils/__tests__/uwxOsc.test.js
+index c567aab..4155d88 100644
+--- a/src/shared/utils/__tests__/uwxOsc.test.js
++++ b/src/shared/utils/__tests__/uwxOsc.test.js
+@@ -11,7 +11,8 @@ import {
+     migrateLegacySettings,
+     normalizeSettings,
+     CHATBOX_THEMES,
+-    renderModuleLines
++    renderModuleLines,
++    videoTitle
+ } from '../uwxOsc';
+ 
+ const T0 = 1_000_000;
+@@ -183,7 +184,7 @@ describe('settings persistence', () => {
+             statuses: [{ id: '1', text: '  hi  ' }, { text: '' }, null]
+         });
+         expect(s.enabled).toBe(true);
+-        expect(s.order).toEqual(['weather', 'music', 'status', 'heart', 'world']);
++        expect(s.order).toEqual(['weather', 'music', 'video', 'status', 'heart', 'world']);
+         expect(s.modules.weather).toMatchObject({ zip: '', unit: 'C' });
+         expect(s.modules.status.rotateSeconds).toBe(10);
+         expect(s.statuses).toEqual([{ id: '1', text: 'hi', favorite: true }]);
+@@ -236,3 +237,79 @@ describe('settings persistence', () => {
+         expect(s.savedThemes[0].templates.weather).toBeTruthy();
+     });
+ });
++
++describe('Now showing (world video)', () => {
++    const video = (extra = {}) => ({ title: 'Static Hearts', requestedBy: 'Vex', lengthSeconds: 240, startedAt: T0, ...extra });
++    const on = (extra = {}) => {
++        const s = normalizeSettings({});
++        s.modules.video.enabled = true;
++        s.modules.status.enabled = false;
++        Object.assign(s.modules.video, extra);
++        return s;
++    };
++
++    test('is off by default and sits right after music', () => {
++        const s = normalizeSettings({});
++        expect(s.modules.video.enabled).toBe(false);
++        expect(s.order.slice(0, 2)).toEqual(['music', 'video']);
++        expect(renderModuleLines(s, { video: video() }, T0)).toEqual([]);
++    });
++
++    test('renders the title with live time', () => {
++        const s = on({ template: '🍿 {title} | {time} / {duration} | {remaining}' });
++        const [line] = renderModuleLines(s, { video: video() }, T0 + 65_000);
++        expect(line).toEqual({ key: 'video', text: '🍿 Static Hearts | 1:05 / 4:00 | 2:55 left' });
++    });
++
++    test('requester only shows when switched on', () => {
++        const tpl = '🍿 {title} — {by}';
++        expect(renderModuleLines(on({ template: tpl }), { video: video() }, T0)[0].text).toBe('🍿 Static Hearts');
++        expect(renderModuleLines(on({ template: tpl, showRequester: true }), { video: video() }, T0)[0].text).toBe('🍿 Static Hearts — Vex');
++    });
++
++    test('unknown length drops the time tokens cleanly', () => {
++        const s = on({ template: '🍿 {title} | {time} / {duration}' });
++        expect(renderModuleLines(s, { video: video({ lengthSeconds: 0 }) }, T0 + 5000)[0].text).toBe('🍿 Static Hearts');
++    });
++
++    test('Event Mode can pin it on even when the module is off', () => {
++        const s = normalizeSettings({});
++        s.modules.status.enabled = false;
++        expect(renderModuleLines(s, { video: video(), pinnedVideo: true }, T0).map((l) => l.key)).toEqual(['video']);
++    });
++
++    test('moving clock does not change the meaningful key, a new video does', () => {
++        const s = on({ template: '{title} {time}' });
++        const a = meaningfulKey(s, { video: video() });
++        expect(meaningfulKey(s, { video: video({ startedAt: T0 - 30_000 }) })).toBe(a);
++        expect(meaningfulKey(s, { video: video({ title: 'Next one' }) })).not.toBe(a);
++    });
++
++    test('every built-in chatbox theme has a video layout', () => {
++        for (const theme of CHATBOX_THEMES) expect(theme.templates.video).toBeTruthy();
++    });
++
++    test('old saved settings get the new module without losing their order', () => {
++        const s = normalizeSettings({ order: ['status', 'music', 'weather', 'heart', 'world'] });
++        expect(s.order).toEqual(['status', 'music', 'weather', 'heart', 'world', 'video']);
++    });
++});
++
++describe('videoTitle', () => {
++    test('uses the video name', () => {
++        expect(videoTitle({ title: 'Static Hearts', url: 'https://youtu.be/abc' })).toBe('Static Hearts');
++    });
++    test('strips the requester VRCX adds to the name', () => {
++        expect(videoTitle({ name: 'Static Hearts (Vex)', requestedBy: 'Vex', url: 'https://youtu.be/abc' })).toBe('Static Hearts');
++    });
++    test('never shows a link — falls back to the site', () => {
++        expect(videoTitle({ name: ' (Vex)', requestedBy: 'Vex', url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' })).toBe('a YouTube video');
++        expect(videoTitle({ url: 'https://www.twitch.tv/someone' })).toBe('a Twitch stream');
++        expect(videoTitle({ title: 'https://stream.example.net/live/SECRETKEY', url: 'https://stream.example.net/live/SECRETKEY' })).toBe('a video');
++        expect(videoTitle({ url: 'rtspt://10.0.0.5/key' })).toBe('a video');
++    });
++    test('nothing playing → empty', () => {
++        expect(videoTitle({ url: '' })).toBe('');
++        expect(videoTitle(null)).toBe('');
++    });
++});
+diff --git a/src/shared/utils/__tests__/uwxShare.test.js b/src/shared/utils/__tests__/uwxShare.test.js
+new file mode 100644
+index 0000000..915e224
+--- /dev/null
++++ b/src/shared/utils/__tests__/uwxShare.test.js
+@@ -0,0 +1,64 @@
++import { describe, expect, test } from 'vitest';
++
++import { fitSize, pngHasTextChunks, postError, showcasePath, showcaseRow, suggestTitle, validatePost } from '../uwxShare';
++
++const UID = '582affa4-c6d4-4bcb-bdf3-a26bf40dcad7';
++
++function png(chunks) {
++    const parts = [[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]];
++    for (const [type, data] of chunks) {
++        const len = data.length;
++        parts.push([(len >>> 24) & 255, (len >>> 16) & 255, (len >>> 8) & 255, len & 255, ...[...type].map((c) => c.charCodeAt(0)), ...data, 0, 0, 0, 0]);
++    }
++    return new Uint8Array(parts.flat());
++}
++
++describe('UWX share', () => {
++    test('fits big photos inside 2560px and leaves small ones alone', () => {
++        expect(fitSize(3840, 2160)).toEqual({ width: 2560, height: 1440 });
++        expect(fitSize(2160, 3840)).toEqual({ width: 1440, height: 2560 });
++        expect(fitSize(1920, 1080)).toEqual({ width: 1920, height: 1080 });
++    });
++
++    test('title suggestion uses the event, never the world', () => {
++        const at = new Date(2026, 9, 15, 21, 0).getTime();
++        expect(suggestTitle({ eventName: 'Music Video Night', at })).toBe('Music Video Night · Oct 15');
++        expect(suggestTitle({ at })).toBe('VRChat photo · Oct 15');
++    });
++
++    test('validates and cleans title/caption', () => {
++        expect(validatePost({ title: '   ', caption: '' })).toEqual({ ok: false, error: 'Give the photo a title.' });
++        expect(validatePost({ title: ' MVN\u0007  night ', caption: 'x'.repeat(600) })).toEqual({ ok: true, title: 'MVN night', caption: 'x'.repeat(500) });
++    });
++
++    test('path and row match what the website and review queue expect', () => {
++        expect(showcasePath(UID, 1700000000000, 'ab/c..d')).toBe(`${UID}/1700000000000-abcd.jpg`);
++        expect(() => showcasePath('')).toThrow(/Sign in/);
++        expect(() => showcasePath('../other')).toThrow();
++        const row = showcaseRow(UID, `${UID}/1-x.jpg`, { title: 'T', caption: 'C' });
++        expect(row).toEqual({
++            user_id: UID,
++            media_url: `pending://${UID}/1-x.jpg`,
++            storage_path: `${UID}/1-x.jpg`,
++            media_type: 'image',
++            title: 'T',
++            caption: 'C',
++            is_featured: false,
++            sort_order: 0,
++            moderation_status: 'pending'
++        });
++    });
++
++    test('server refusals become plain English', () => {
++        expect(postError({ status: 403, message: 'new row violates row-level security policy' })).toMatch(/approved network access/);
++        expect(postError(new Error('Sign in to UnderWeb first.'))).toMatch(/System tab/);
++        expect(postError({ status: 413, message: 'Payload too large' })).toMatch(/too big/);
++    });
++
++    test('detects metadata chunks in a PNG (VRCX stores the instance there)', () => {
++        const tagged = png([['IHDR', [0, 0, 0, 1, 0, 0, 0, 1, 8, 2, 0, 0, 0]], ['iTXt', [...'Description\0\0\0\0\0{"instanceId":"wrld_x:123~private"}'].map((c) => c.charCodeAt(0))], ['IEND', []]]);
++        const clean = png([['IHDR', [0, 0, 0, 1, 0, 0, 0, 1, 8, 2, 0, 0, 0]], ['IEND', []]]);
++        expect(pngHasTextChunks(tagged)).toBe(true);
++        expect(pngHasTextChunks(clean)).toBe(false);
++    });
++});
+diff --git a/src/shared/utils/uwxCrew.js b/src/shared/utils/uwxCrew.js
+new file mode 100644
+index 0000000..7ffc595
+--- /dev/null
++++ b/src/shared/utils/uwxCrew.js
+@@ -0,0 +1,105 @@
++// "Your crew": the people you actually hang out with, worked out from VRCX's own
++// join/leave history on this PC. Pure logic — the store feeds it rows from SQLite.
++
++export const CREW_WINDOW_DAYS = 30;
++export const CREW_SIZE = 12;
++
++const HOUR = 3600 * 1000;
++
++/**
++ * How much someone counts as a regular. Showing up on many different days matters
++ * more than one very long night, so days weigh double and hours are capped.
++ */
++export function crewScore(row) {
++    const days = Math.max(0, Number(row?.days) || 0);
++    const hours = Math.max(0, Number(row?.ms) || 0) / HOUR;
++    return days * 2 + Math.min(hours, 40);
++}
++
++/**
++ * @param {Array<{userId:string, displayName:string, ms:number, days:number, lastSeen:string}>} rows
++ * @param {{ selfId?: string, pinned?: string[], hidden?: string[], isLabeled?: (id:string)=>boolean, nameOf?: (id:string)=>string, limit?: number }} opts
++ */
++export function rankCrew(rows, { selfId = '', pinned = [], hidden = [], isLabeled = () => false, nameOf = () => '', limit = CREW_SIZE } = {}) {
++    const hide = new Set(hidden);
++    const byId = new Map();
++    for (const row of rows || []) {
++        const id = String(row?.userId || '');
++        if (!id.startsWith('usr_') || id === selfId || hide.has(id) || isLabeled(id)) continue;
++        const prev = byId.get(id);
++        // A display-name change splits one person into two rows: merge them.
++        const merged = prev
++            ? { ...prev, ms: prev.ms + (Number(row.ms) || 0), days: Math.max(prev.days, Number(row.days) || 0), lastSeen: [prev.lastSeen, row.lastSeen].sort().pop() || '' }
++            : { userId: id, displayName: row.displayName || id, ms: Number(row.ms) || 0, days: Number(row.days) || 0, lastSeen: row.lastSeen || '' };
++        byId.set(id, merged);
++    }
++    const pins = pinned.filter((id) => String(id).startsWith('usr_') && id !== selfId && !hide.has(id) && !isLabeled(id));
++    for (const id of pins) {
++        if (!byId.has(id)) byId.set(id, { userId: id, displayName: nameOf(id) || id, ms: 0, days: 0, lastSeen: '' });
++    }
++    const all = Array.from(byId.values()).map((r) => ({
++        ...r,
++        displayName: nameOf(r.userId) || r.displayName,
++        pinned: pins.includes(r.userId),
++        score: crewScore(r)
++    }));
++    const pinnedRows = all.filter((r) => r.pinned).sort((a, b) => b.score - a.score);
++    const rest = all
++        .filter((r) => !r.pinned && r.days > 0)
++        .sort((a, b) => b.score - a.score || b.ms - a.ms)
++        .slice(0, Math.max(0, limit - pinnedRows.length));
++    return [...pinnedRows, ...rest];
++}
++
++/** "14h together · 9 days" */
++export function togetherText(row) {
++    const hours = (Number(row?.ms) || 0) / HOUR;
++    const days = Number(row?.days) || 0;
++    if (!hours && !days) return 'Pinned';
++    const h = hours >= 10 ? Math.round(hours) : Math.round(hours * 10) / 10;
++    const time = hours < 1 ? `${Math.max(1, Math.round(hours * 60))}m` : `${h}h`;
++    return `${time} together · ${days} day${days === 1 ? '' : 's'}`;
++}
++
++/**
++ * Where a crew member is, from what VRCX already knows about the friend.
++ * @returns {'here'|'online'|'web'|'offline'|'not-friend'}
++ */
++export function crewPresence(friend, { here = false } = {}) {
++    if (here) return 'here';
++    if (!friend) return 'not-friend';
++    if (friend.state === 'online') return 'online';
++    if (friend.state === 'active') return 'web';
++    return 'offline';
++}
++
++export const PRESENCE_LABELS = Object.freeze({
++    here: 'With you',
++    online: 'In VRChat',
++    web: 'On the website/app',
++    offline: 'Offline',
++    'not-friend': 'Not friends'
++});
++
++/** Sort: with you, in VRChat, web, offline; then by score. */
++export function sortByPresence(list) {
++    const rank = { here: 0, online: 1, web: 2, offline: 3, 'not-friend': 4 };
++    return [...list].sort((a, b) => rank[a.presence] - rank[b.presence] || b.score - a.score);
++}
++
++/**
++ * Who just came online since the last look. `seen` is mutated to the new states.
++ * The first time someone is seen nothing fires (avoids a flood when friends load).
++ * @param {Map<string,string>} seen userId -> last presence
++ * @param {Array<{userId:string, presence:string}>} list
++ */
++export function cameOnline(seen, list) {
++    const out = [];
++    for (const row of list) {
++        const prev = seen.get(row.userId);
++        const nowIn = row.presence === 'online' || row.presence === 'here';
++        if (prev !== undefined && nowIn && prev !== 'online' && prev !== 'here') out.push(row);
++        seen.set(row.userId, row.presence);
++    }
++    return out;
++}
+diff --git a/src/shared/utils/uwxEvent.js b/src/shared/utils/uwxEvent.js
+index 004334d..edc4a67 100644
+--- a/src/shared/utils/uwxEvent.js
++++ b/src/shared/utils/uwxEvent.js
+@@ -11,7 +11,8 @@ export const DEFAULT_EVENT_PRESETS = Object.freeze([
+         recruit: true,
+         autoInvite: true,
+         scope: 'favorites',
+-        messageSlot: -1
++        messageSlot: -1,
++        nowShowing: true
+     },
+     {
+         id: 'cinema-night',
+@@ -20,7 +21,8 @@ export const DEFAULT_EVENT_PRESETS = Object.freeze([
+         recruit: true,
+         autoInvite: true,
+         scope: 'favorites',
+-        messageSlot: -1
++        messageSlot: -1,
++        nowShowing: true
+     },
+     {
+         id: 'hub-hangout',
+@@ -29,7 +31,8 @@ export const DEFAULT_EVENT_PRESETS = Object.freeze([
+         recruit: true,
+         autoInvite: false,
+         scope: 'favorites',
+-        messageSlot: -1
++        messageSlot: -1,
++        nowShowing: false
+     },
+     {
+         id: 'staff-meeting',
+@@ -38,22 +41,28 @@ export const DEFAULT_EVENT_PRESETS = Object.freeze([
+         recruit: false,
+         autoInvite: true,
+         scope: 'staff',
+-        messageSlot: -1
++        messageSlot: -1,
++        nowShowing: false
+     }
+ ]);
+ 
++// Presets saved before "Now showing" existed: the video-night ones get it on.
++const NOW_SHOWING_BY_DEFAULT = new Set(['music-video-night', 'cinema-night']);
++
+ export function normalizePreset(raw, fallbackId = '') {
+     const name = String(raw?.name || '').trim().slice(0, 60);
+     if (!name) return null;
+     const slot = Number(raw?.messageSlot);
++    const id = String(raw?.id || fallbackId || name.toLowerCase().replace(/[^a-z0-9]+/g, '-')).slice(0, 60);
+     return {
+-        id: String(raw?.id || fallbackId || name.toLowerCase().replace(/[^a-z0-9]+/g, '-')).slice(0, 60),
++        id,
+         name,
+         status: String(raw?.status || '').trim().slice(0, 140),
+         recruit: Boolean(raw?.recruit),
+         autoInvite: Boolean(raw?.autoInvite),
+         scope: EVENT_SCOPES.includes(raw?.scope) ? raw.scope : 'favorites',
+-        messageSlot: Number.isInteger(slot) && slot >= 0 && slot < 12 ? slot : -1
++        messageSlot: Number.isInteger(slot) && slot >= 0 && slot < 12 ? slot : -1,
++        nowShowing: raw?.nowShowing === undefined ? NOW_SHOWING_BY_DEFAULT.has(id) : Boolean(raw.nowShowing)
+     };
+ }
+ 
+diff --git a/src/shared/utils/uwxOsc.js b/src/shared/utils/uwxOsc.js
+index de43018..7dd3f8a 100644
+--- a/src/shared/utils/uwxOsc.js
++++ b/src/shared/utils/uwxOsc.js
+@@ -10,10 +10,11 @@
+ export const CHATBOX_MAX_CHARS = 144;
+ export const CHATBOX_MAX_LINES = 9;
+ 
+-export const OSC_MODULES = Object.freeze(['music', 'weather', 'status', 'heart', 'world']);
++export const OSC_MODULES = Object.freeze(['music', 'video', 'weather', 'status', 'heart', 'world']);
+ 
+ export const DEFAULT_TEMPLATES = Object.freeze({
+     music: '🎵 {artist} — {title} | {time} / {duration}',
++    video: '🍿 Now showing: {title}',
+     weather: '{icon} {temp} | {condition}',
+     status: '{status}',
+     heart: '❤️ {bpm} BPM',
+@@ -22,6 +23,7 @@ export const DEFAULT_TEMPLATES = Object.freeze({
+ 
+ export const TEMPLATE_TOKENS = Object.freeze({
+     music: ['title', 'artist', 'time', 'duration', 'remaining', 'bar'],
++    video: ['title', 'by', 'time', 'duration', 'remaining', 'bar'],
+     weather: ['icon', 'temp', 'condition'],
+     status: ['status'],
+     heart: ['bpm'],
+@@ -35,31 +37,31 @@ export const CHATBOX_THEMES = Object.freeze([
+         id: 'neon',
+         name: 'Neon',
+         frame: { header: '✦ ━━━━━━━━━━━ ✦', footer: '' },
+-        templates: { music: '▶ {title} ∙ {artist} {bar}', weather: '☁ {temp} ∙ {condition}', status: '» {status} «', heart: '♥ {bpm}', world: '⌖ {world}' }
++        templates: { music: '▶ {title} ∙ {artist} {bar}', video: '▶ {title} {bar}', weather: '☁ {temp} ∙ {condition}', status: '» {status} «', heart: '♥ {bpm}', world: '⌖ {world}' }
+     },
+     {
+         id: 'boxed',
+         name: 'Boxed',
+         frame: { header: '╭────────────╮', footer: '╰────────────╯' },
+-        templates: { music: '│ ♫ {title} — {artist}', weather: '│ {icon} {temp}', status: '│ {status}', heart: '│ ♥ {bpm} BPM', world: '│ ⌖ {world}' }
++        templates: { music: '│ ♫ {title} — {artist}', video: '│ 🎬 {title}', weather: '│ {icon} {temp}', status: '│ {status}', heart: '│ ♥ {bpm} BPM', world: '│ ⌖ {world}' }
+     },
+     {
+         id: 'minimal',
+         name: 'Minimal',
+         frame: { header: '', footer: '' },
+-        templates: { music: '♪ {title}', weather: '{temp}', status: '{status}', heart: '♥{bpm}', world: '{world}' }
++        templates: { music: '♪ {title}', video: '▶ {title}', weather: '{temp}', status: '{status}', heart: '♥{bpm}', world: '{world}' }
+     },
+     {
+         id: 'event',
+         name: 'Event',
+         frame: { header: '🎬 ── LIVE EVENT ── 🎬', footer: '' },
+-        templates: { music: 'Now: {title} — {artist}', weather: '{icon} {temp}', status: '{status}', heart: '❤️ {bpm}', world: '{world}' }
++        templates: { music: 'Now: {title} — {artist}', video: '🎬 Now showing: {title} | {remaining}', weather: '{icon} {temp}', status: '{status}', heart: '❤️ {bpm}', world: '{world}' }
+     },
+     {
+         id: 'underweb',
+         name: 'UnderWeb',
+         frame: { header: '░▒▓ U N D E R W E B ▓▒░', footer: '' },
+-        templates: { music: '🎧 {artist} — {title} {time}', weather: '{icon} {temp} | {condition}', status: '{status}', heart: '❤️ {bpm} BPM', world: '🌐 {world}' }
++        templates: { music: '🎧 {artist} — {title} {time}', video: '🍿 {title} | {time} / {duration}', weather: '{icon} {temp} | {condition}', status: '{status}', heart: '❤️ {bpm} BPM', world: '🌐 {world}' }
+     }
+ ]);
+ 
+@@ -68,9 +70,11 @@ const cleanFrameLine = (v) => (typeof v === 'string' ? v.replace(/[\r\n]+/g, ' '
+ export const DEFAULT_SETTINGS = Object.freeze({
+     version: 3,
+     enabled: false,
+-    order: ['music', 'weather', 'status', 'heart', 'world'],
++    order: ['music', 'video', 'weather', 'status', 'heart', 'world'],
+     modules: {
+         music: { enabled: true, template: DEFAULT_TEMPLATES.music, hideWhenPaused: true },
++        // "Now showing": what the world's video player is playing (cinema / MVN nights).
++        video: { enabled: false, template: DEFAULT_TEMPLATES.video, showRequester: false },
+         weather: { enabled: false, template: DEFAULT_TEMPLATES.weather, zip: '', unit: 'F' },
+         status: { enabled: true, template: DEFAULT_TEMPLATES.status, rotateSeconds: 20, order: 'sequential' },
+         heart: { enabled: false, template: DEFAULT_TEMPLATES.heart },
+@@ -103,6 +107,7 @@ export function normalizeSettings(raw) {
+         target.enabled = m.enabled === undefined ? target.enabled : Boolean(m.enabled);
+         if (typeof m.template === 'string' && m.template.trim()) target.template = m.template.slice(0, 144);
+         if (key === 'music' && m.hideWhenPaused !== undefined) target.hideWhenPaused = Boolean(m.hideWhenPaused);
++        if (key === 'video' && m.showRequester !== undefined) target.showRequester = Boolean(m.showRequester);
+         if (key === 'weather') {
+             target.zip = /^\d{5}$/.test(String(m.zip || '')) ? String(m.zip) : '';
+             target.unit = m.unit === 'C' ? 'C' : 'F';
+@@ -194,6 +199,52 @@ export function estimatePosition(media, now) {
+     return duration ? Math.min(pos, duration) : pos;
+ }
+ 
++/** Seconds into the world video, clamped to its length. startedAt is a ms timestamp. */
++export function videoPosition(video, now) {
++    if (!video?.startedAt) return 0;
++    const pos = Math.max(0, (now - video.startedAt) / 1000);
++    const len = Number(video.lengthSeconds) || 0;
++    return len ? Math.min(pos, len) : pos;
++}
++
++/** @type {Array<[RegExp, string]>} */
++const VIDEO_HOSTS = [
++    [/(^|\.)(youtube\.com|youtu\.be|youtube-nocookie\.com)$/, 'a YouTube video'],
++    [/(^|\.)twitch\.tv$/, 'a Twitch stream'],
++    [/(^|\.)soundcloud\.com$/, 'a SoundCloud track'],
++    [/(^|\.)vimeo\.com$/, 'a Vimeo video'],
++    [/(^|\.)(nicovideo\.jp|nico\.ms)$/, 'a Niconico video'],
++    [/(^|\.)bilibili\.com$/, 'a Bilibili video']
++];
++
++/**
++ * A safe display title for whatever the world video player is playing.
++ * Never returns the URL itself: links can carry private stream keys or tokens.
++ * @param {{ name?: string, title?: string, requestedBy?: string, url?: string }} np
++ */
++export function videoTitle(np) {
++    let title = String(np?.title || '').trim();
++    if (!title && np?.name) {
++        // VRCX's nowPlaying.name is "<video name> (<requester>)"
++        title = String(np.name);
++        const by = String(np.requestedBy || '').trim();
++        if (by && title.endsWith(` (${by})`)) title = title.slice(0, -by.length - 3);
++        title = title.trim();
++    }
++    if (title && !/^[a-z]+:\/\//i.test(title) && !/^www\./i.test(title)) {
++        return title.replace(/[\r\n]+/g, ' ').slice(0, 90);
++    }
++    let host = '';
++    try {
++        host = new URL(String(np?.url || title)).hostname.toLowerCase();
++    } catch {
++        host = '';
++    }
++    if (!host) return '';
++    for (const [re, label] of VIDEO_HOSTS) if (re.test(host)) return label;
++    return 'a video';
++}
++
+ const WEATHER_CODES = Object.freeze({
+     0: ['Clear', '☀️'], 1: ['Mostly clear', '🌤️'], 2: ['Partly cloudy', '⛅'], 3: ['Cloudy', '☁️'],
+     45: ['Fog', '🌫️'], 48: ['Fog', '🌫️'],
+@@ -249,8 +300,8 @@ export function renderModuleLines(settings, data, now = Date.now()) {
+     for (const key of settings.order) {
+         const mod = settings.modules[key];
+         // An Event Mode status shows even if the Statuses module is switched off.
+-        const pinnedStatus = key === 'status' && Boolean(data.pinnedStatus);
+-        if (!mod?.enabled && !pinnedStatus) continue;
++        const pinned = (key === 'status' && Boolean(data.pinnedStatus)) || (key === 'video' && Boolean(data.pinnedVideo));
++        if (!mod?.enabled && !pinned) continue;
+         let values = null;
+         if (key === 'music') {
+             const media = data.media;
+@@ -268,6 +319,18 @@ export function renderModuleLines(settings, data, now = Date.now()) {
+                 };
+                 if (!playing) values.title = `⏸ ${values.title}`;
+             }
++        } else if (key === 'video' && data.video?.title) {
++            const v = data.video;
++            const duration = Number(v.lengthSeconds) || 0;
++            const position = videoPosition(v, now);
++            values = {
++                title: v.title,
++                by: mod.showRequester ? v.requestedBy || '' : '',
++                time: duration ? formatClock(position) : '',
++                duration: duration ? formatClock(duration) : '',
++                remaining: duration ? `${formatClock(duration - position)} left` : '',
++                bar: progressBar(position, duration)
++            };
+         } else if (key === 'weather' && data.weather) {
+             values = data.weather;
+         } else if (key === 'status' && data.status) {
+@@ -320,7 +383,8 @@ export function fitChatbox(lines) {
+  */
+ export function meaningfulKey(settings, data) {
+     const frozen = data.media ? { ...data.media, positionSeconds: 0, sampledAt: 0 } : data.media;
+-    return renderModuleLines(settings, { ...data, media: frozen }, 0)
++    const video = data.video ? { ...data.video, startedAt: 0 } : data.video;
++    return renderModuleLines(settings, { ...data, media: frozen, video }, 0)
+         .map((l) => l.text)
+         .join('\n');
+ }
+diff --git a/src/shared/utils/uwxShare.js b/src/shared/utils/uwxShare.js
+new file mode 100644
+index 0000000..34942bb
+--- /dev/null
++++ b/src/shared/utils/uwxShare.js
+@@ -0,0 +1,89 @@
++// Posting VRChat photos to your UnderWeb showcase (underweb.cloud). Pure helpers.
++//
++// Privacy: VRCX writes the world, the exact instance ID and everyone in the lobby
++// into each PNG it saves. Photos are always re-drawn into a fresh JPEG before upload,
++// which carries none of that — only the pixels go up.
++
++export const SHOWCASE_BUCKET = 'creator-showcase-pending';
++export const MAX_SIDE = 2560;
++export const MAX_UPLOAD_BYTES = 12 * 1024 * 1024; // same limit as the website
++export const JPEG_QUALITY = 0.9;
++
++/** Scale down so the longest side is at most `max`. */
++export function fitSize(width, height, max = MAX_SIDE) {
++    const w = Math.max(1, Math.round(Number(width) || 0));
++    const h = Math.max(1, Math.round(Number(height) || 0));
++    const scale = Math.min(1, max / Math.max(w, h));
++    return { width: Math.max(1, Math.round(w * scale)), height: Math.max(1, Math.round(h * scale)) };
++}
++
++const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
++
++/** "Music Video Night · Oct 15" during an event, otherwise "VRChat photo · Oct 15". Never the world or instance. */
++export function suggestTitle({ eventName = '', at = Date.now() } = {}) {
++    const d = new Date(at);
++    const date = `${MONTHS[d.getMonth()]} ${d.getDate()}`;
++    const base = String(eventName || '').trim() || 'VRChat photo';
++    return `${base} · ${date}`.slice(0, 80);
++}
++
++const clean = (value, max) =>
++    String(value || '')
++        .replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, '')
++        .trim()
++        .slice(0, max);
++
++/** @returns {{ ok: true, title: string, caption: string } | { ok: false, error: string }} */
++export function validatePost({ title, caption }) {
++    const t = clean(title, 80).replace(/\s+/g, ' ');
++    const c = clean(caption, 500);
++    if (!t) return { ok: false, error: 'Give the photo a title.' };
++    return { ok: true, title: t, caption: c };
++}
++
++/** Storage path in the same shape the website uses: <your account id>/<time>-<random>.jpg */
++export function showcasePath(userId, now = Date.now(), rand = Math.random().toString(36).slice(2, 12)) {
++    if (!/^[0-9a-f-]{36}$/i.test(String(userId))) throw new Error('Sign in to UnderWeb first.');
++    return `${userId}/${now}-${String(rand).replace(/[^a-z0-9]/gi, '').slice(0, 16) || 'photo'}.jpg`;
++}
++
++/** The pending row the website's review queue expects. */
++export function showcaseRow(userId, path, { title, caption }) {
++    return {
++        user_id: userId,
++        media_url: `pending://${path}`,
++        storage_path: path,
++        media_type: 'image',
++        title,
++        caption,
++        is_featured: false,
++        sort_order: 0,
++        moderation_status: 'pending'
++    };
++}
++
++/** Friendly text for what UnderWeb's server said no to. */
++export function postError(error) {
++    const status = Number(error?.status) || 0;
++    const msg = String(error?.message || '');
++    if (/sign in/i.test(msg)) return 'Sign in to UnderWeb (System tab) to post.';
++    if (status === 401 || status === 403 || /row-level security|violates|unauthorized/i.test(msg))
++        return 'Your UnderWeb account can’t post to the showcase yet — it needs approved network access on underweb.cloud.';
++    if (status === 413 || /too large|exceeded/i.test(msg)) return 'That photo is too big to upload.';
++    return msg || 'Upload failed.';
++}
++
++/** True if a PNG still carries text metadata chunks (tEXt/iTXt/zTXt). Used to prove uploads are clean. */
++export function pngHasTextChunks(bytes) {
++    const b = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
++    if (b.length < 8 || b[0] !== 0x89 || b[1] !== 0x50) return false;
++    let i = 8;
++    while (i + 8 <= b.length) {
++        const len = (b[i] << 24) | (b[i + 1] << 16) | (b[i + 2] << 8) | b[i + 3];
++        const type = String.fromCharCode(b[i + 4], b[i + 5], b[i + 6], b[i + 7]);
++        if (type === 'tEXt' || type === 'iTXt' || type === 'zTXt') return true;
++        if (type === 'IEND' || len < 0) break;
++        i += 12 + len;
++    }
++    return false;
++}
+diff --git a/src/stores/__tests__/uwxCrew.test.js b/src/stores/__tests__/uwxCrew.test.js
+new file mode 100644
+index 0000000..f49026f
+--- /dev/null
++++ b/src/stores/__tests__/uwxCrew.test.js
+@@ -0,0 +1,117 @@
++import { beforeEach, describe, expect, test, vi } from 'vitest';
++import { createPinia, setActivePinia } from 'pinia';
++import { nextTick, reactive } from 'vue';
++
++const config = {};
++vi.mock('../../services/config', () => ({
++    default: {
++        getString: vi.fn(async (k, d) => (k in config ? config[k] : d)),
++        setString: vi.fn(async (k, v) => (config[k] = v))
++    }
++}));
++const H = 3600 * 1000;
++let dbRows = [];
++const sqlite = { execute: vi.fn(async (cb, sql, args) => dbRows.forEach((r) => cb(r))) };
++vi.mock('../../services/sqlite.js', () => ({ default: sqlite }));
++const watchState = reactive({ isFriendsLoaded: true });
++vi.mock('../../services/watchState', () => ({ watchState }));
++const toast = vi.fn();
++toast.info = vi.fn();
++vi.mock('vue-sonner', () => ({ toast }));
++
++const friends = reactive(new Map());
++vi.mock('../friend', () => ({ useFriendStore: () => ({ friends }) }));
++const location = reactive({ lastLocation: { playerList: new Map() } });
++vi.mock('../location', () => ({ useLocationStore: () => location }));
++vi.mock('../user', () => ({ useUserStore: () => ({ currentUser: { id: 'usr_me' } }) }));
++vi.mock('../safetyIntel', () => ({ useSafetyIntelStore: () => ({ getIntel: (id) => (id === 'usr_bad' ? { risk_level: 'high' } : null) }) }));
++const underweb = reactive({ canInviteHere: true, inviteFriendsNow: vi.fn(async (ids) => ({ sent: ids.length })) });
++vi.mock('../underweb', () => ({ useUnderWebStore: () => underweb }));
++
++const { useUwxCrewStore, loadTogetherStats } = await import('../uwxCrew');
++
++const friend = (id, name, state) => friends.set(id, reactive({ id, state, ref: { displayName: name } }));
++
++describe('UWX crew store', () => {
++    beforeEach(() => {
++        setActivePinia(createPinia());
++        for (const k of Object.keys(config)) delete config[k];
++        friends.clear();
++        location.lastLocation.playerList = new Map();
++        toast.mockClear();
++        underweb.inviteFriendsNow.mockClear();
++        dbRows = [
++            ['usr_vex', 'Vex', 12 * H, 9, '2026-10-14T01:00:00Z'],
++            ['usr_blooty', 'Blooty', 30 * H, 12, '2026-10-14T02:00:00Z'],
++            ['usr_bad', 'Crasher', 40 * H, 15, '2026-10-14T02:00:00Z'],
++            ['usr_me', 'Darko', 99 * H, 30, '2026-10-14T02:00:00Z']
++        ];
++        friend('usr_vex', 'Vex', 'online');
++        friend('usr_blooty', 'Blooty', 'offline');
++    });
++
++    test('reads only the last 30 days of leave events from local history', async () => {
++        await loadTogetherStats();
++        const [, sql, args] = sqlite.execute.mock.calls.at(-1);
++        expect(sql).toMatch(/type = 'OnPlayerLeft'/);
++        expect(sql).toMatch(/created_at >= @since/);
++        const since = Date.parse(args['@since']);
++        expect(Math.round((Date.now() - since) / 86400000)).toBe(30);
++    });
++
++    test('builds the crew with presence, never including you or labeled people', async () => {
++        const store = useUwxCrewStore();
++        await store.init();
++        await vi.waitFor(() => expect(store.crew.length).toBe(2));
++        expect(store.crew.map((r) => [r.displayName, r.presence])).toEqual([
++            ['Vex', 'online'],
++            ['Blooty', 'offline']
++        ]);
++        location.lastLocation.playerList = new Map([['usr_blooty', {}]]);
++        await nextTick();
++        expect(store.crew[0]).toMatchObject({ displayName: 'Blooty', presence: 'here' });
++        store.dispose();
++    });
++
++    test('invite crew sends only to crew who are in VRChat somewhere else', async () => {
++        friend('usr_blooty', 'Blooty', 'online');
++        location.lastLocation.playerList = new Map([['usr_blooty', {}]]);
++        const store = useUwxCrewStore();
++        await store.init();
++        await vi.waitFor(() => expect(store.crew.length).toBe(2));
++        await store.inviteCrew();
++        expect(underweb.inviteFriendsNow).toHaveBeenCalledWith(['usr_vex']);
++        store.dispose();
++    });
++
++    test('alerts when a crew member comes online, with an invite button', async () => {
++        const store = useUwxCrewStore();
++        await store.init();
++        await vi.waitFor(() => expect(store.crew.length).toBe(2));
++        await nextTick();
++        expect(toast).not.toHaveBeenCalled();
++        friends.get('usr_blooty').state = 'online';
++        await nextTick();
++        expect(toast).toHaveBeenCalledTimes(1);
++        const [title, opts] = toast.mock.calls[0];
++        expect(title).toBe('Blooty is online');
++        opts.action.onClick();
++        expect(underweb.inviteFriendsNow).toHaveBeenCalledWith(['usr_blooty']);
++        store.dispose();
++    });
++
++    test('alerts can be switched off; pin and hide are saved', async () => {
++        const store = useUwxCrewStore();
++        await store.init();
++        await vi.waitFor(() => expect(store.crew.length).toBe(2));
++        await store.setAlerts(false);
++        friends.get('usr_blooty').state = 'online';
++        await nextTick();
++        expect(toast).not.toHaveBeenCalled();
++        await store.togglePin('usr_new');
++        await store.hide('usr_vex');
++        expect(JSON.parse(config.UWX_crew)).toEqual({ pinned: ['usr_new'], hidden: ['usr_vex'], alerts: false });
++        expect(store.crew.map((r) => r.userId)).toEqual(['usr_blooty', 'usr_new']);
++        store.dispose();
++    });
++});
+diff --git a/src/stores/__tests__/uwxEventMode.test.js b/src/stores/__tests__/uwxEventMode.test.js
+index a962562..3dd5728 100644
+--- a/src/stores/__tests__/uwxEventMode.test.js
++++ b/src/stores/__tests__/uwxEventMode.test.js
+@@ -28,7 +28,7 @@ const underweb = reactive({
+     setInviteScope: vi.fn(async (v) => (underweb.inviteScope = v)),
+     setInviteMessageSlot: vi.fn(async (v) => (underweb.inviteMessageSlot = v))
+ });
+-const osc = { eventStatus: '', setEventStatus: vi.fn((t) => (osc.eventStatus = t)) };
++const osc = { eventStatus: '', eventVideo: false, setEventStatus: vi.fn((t) => (osc.eventStatus = t)), setEventVideo: vi.fn((v) => (osc.eventVideo = v)) };
+ const ME = 'usr_00000000-0000-0000-0000-000000000000';
+ const BLOOTY = 'usr_11111111-0000-0000-0000-000000000000';
+ const VEX = 'usr_22222222-0000-0000-0000-000000000000';
+@@ -65,6 +65,7 @@ describe('UWX Event Mode', () => {
+         expect(underweb.autoInviteEnabled).toBe(true);
+         expect(underweb.inviteScope).toBe('favorites');
+         expect(osc.eventStatus).toMatch(/Music Video Night/);
++        expect(osc.eventVideo).toBe(true);
+         expect(await store.start('cinema-night')).toBe(false);
+     });
+ 
+@@ -87,6 +88,7 @@ describe('UWX Event Mode', () => {
+         expect(underweb.inviteScope).toBe('selected');
+         expect(underweb.inviteMessageSlot).toBe(2);
+         expect(osc.eventStatus).toBe('');
++        expect(osc.eventVideo).toBe(false);
+         expect(store.history[0].name).toBe('MVN #12');
+         expect(config.UWX_activeEventRun).toBe('');
+     });
+@@ -100,11 +102,13 @@ describe('UWX Event Mode', () => {
+         vi.advanceTimersByTime(2000);
+         setActivePinia(createPinia());
+         osc.eventStatus = '';
++        osc.eventVideo = false;
+         const second = useUwxEventModeStore();
+         await second.init();
+         expect(second.isRunning).toBe(true);
+         expect(second.active.name).toBe('Cinema Night');
+         expect(osc.eventStatus).toMatch(/Cinema/);
++        expect(osc.eventVideo).toBe(true);
+     });
+ 
+     test('presets can be added and edited', async () => {
+diff --git a/src/stores/__tests__/uwxShare.test.js b/src/stores/__tests__/uwxShare.test.js
+new file mode 100644
+index 0000000..d3f7f5f
+--- /dev/null
++++ b/src/stores/__tests__/uwxShare.test.js
+@@ -0,0 +1,113 @@
++import { beforeEach, describe, expect, test, vi } from 'vitest';
++import { createPinia, setActivePinia } from 'pinia';
++import { reactive } from 'vue';
++
++const config = {};
++vi.mock('../../services/config', () => ({
++    default: {
++        getString: vi.fn(async (k, d) => (k in config ? config[k] : d)),
++        setString: vi.fn(async (k, v) => (config[k] = v))
++    }
++}));
++const toast = vi.fn();
++toast.success = vi.fn();
++toast.error = vi.fn();
++toast.info = vi.fn();
++vi.mock('vue-sonner', () => ({ toast }));
++const blob = { size: 1234 };
++vi.mock('../../services/uwxPhotoEncode', () => ({ encodePhoto: vi.fn(async () => ({ blob, width: 1920, height: 1080, previewUrl: 'blob:x' })) }));
++const UID = '582affa4-c6d4-4bcb-bdf3-a26bf40dcad7';
++const account = reactive({
++    signedIn: true,
++    userId: UID,
++    storageUpload: vi.fn(async () => true),
++    storageRemove: vi.fn(async () => {}),
++    api: vi.fn(async () => null)
++});
++vi.mock('../uwxAccount', () => ({ useUwxAccountStore: () => account }));
++vi.mock('../uwxEventMode', () => ({ useUwxEventModeStore: () => ({ active: { name: 'Cinema Night' } }) }));
++vi.mock('../../plugins/router', () => ({ router: { push: vi.fn(async () => {}) } }));
++
++globalThis.AppApi = {
++    GetFileBase64: vi.fn(async () => 'iVBORw0KGgo='),
++    GetLastScreenshot: vi.fn(async () => 'C:\\Users\\me\\Pictures\\VRChat\\2026-10\\VRChat_2026-10-15.png'),
++    GetVRChatPhotosLocation: vi.fn(async () => 'C:\\Users\\me\\Pictures\\VRChat'),
++    OpenFileSelectorDialog: vi.fn(async () => '')
++};
++globalThis.URL.revokeObjectURL = vi.fn();
++
++const { useUwxShareStore } = await import('../uwxShare');
++
++describe('UWX share store', () => {
++    beforeEach(() => {
++        setActivePinia(createPinia());
++        for (const k of Object.keys(config)) delete config[k];
++        account.signedIn = true;
++        account.storageUpload.mockClear();
++        account.storageUpload.mockImplementation(async () => true);
++        account.storageRemove.mockClear();
++        account.api.mockClear();
++        account.api.mockImplementation(async () => null);
++        toast.mockClear();
++        toast.error.mockClear();
++    });
++
++    test('latest photo → clean copy prepared, event title suggested', async () => {
++        const store = useUwxShareStore();
++        expect(await store.selectLatest()).toBe(true);
++        expect(store.photo.blob).toBe(blob);
++        expect(store.title).toMatch(/^Cinema Night · /);
++    });
++
++    test('posts the clean JPEG to the pending bucket and a pending row, like the website', async () => {
++        const store = useUwxShareStore();
++        await store.selectLatest();
++        store.caption = 'Opening night';
++        expect(await store.post()).toBe(true);
++        const [bucket, path, sent, type] = account.storageUpload.mock.calls[0];
++        expect(bucket).toBe('creator-showcase-pending');
++        expect(path.startsWith(`${UID}/`)).toBe(true);
++        expect(path.endsWith('.jpg')).toBe(true);
++        expect(sent).toBe(blob);
++        expect(type).toBe('image/jpeg');
++        const [table, init] = account.api.mock.calls[0];
++        expect(table).toBe('creator_showcase');
++        expect(JSON.parse(init.body)).toMatchObject({ user_id: UID, storage_path: path, moderation_status: 'pending', caption: 'Opening night' });
++        expect(store.photo).toBe(null);
++        expect(JSON.parse(config.UWX_share).recent[0].title).toMatch(/Cinema Night/);
++    });
++
++    test('if the row is refused the uploaded file is removed again', async () => {
++        account.api.mockImplementation(async () => {
++            throw Object.assign(new Error('new row violates row-level security policy'), { status: 403 });
++        });
++        const store = useUwxShareStore();
++        await store.selectLatest();
++        expect(await store.post()).toBe(false);
++        expect(account.storageRemove).toHaveBeenCalledWith('creator-showcase-pending', [account.storageUpload.mock.calls[0][1]]);
++        expect(store.error).toMatch(/approved network access/);
++    });
++
++    test('not signed in: nothing is uploaded', async () => {
++        account.signedIn = false;
++        const store = useUwxShareStore();
++        await store.selectLatest();
++        expect(await store.post()).toBe(false);
++        expect(account.storageUpload).not.toHaveBeenCalled();
++        expect(store.error).toMatch(/Sign in/);
++    });
++
++    test('the after-photo pop-up only appears when switched on', async () => {
++        const store = useUwxShareStore();
++        await store.init();
++        store.offer('C:\\a.png');
++        expect(toast).not.toHaveBeenCalled();
++        await store.setOfferAfterScreenshot(true);
++        store.offer('C:\\a.png');
++        expect(toast).toHaveBeenCalledTimes(1);
++        const [, opts] = toast.mock.calls[0];
++        await opts.action.onClick();
++        expect(store.focusTick).toBe(1);
++        expect(store.selectedPath).toBe('C:\\a.png');
++    });
++});
+diff --git a/src/stores/gameLog/index.js b/src/stores/gameLog/index.js
+index 5fb6285..698647c 100644
+--- a/src/stores/gameLog/index.js
++++ b/src/stores/gameLog/index.js
+@@ -93,7 +93,9 @@ export const useGameLogStore = defineStore('GameLog', () => {
+         percentage: 0,
+         remainingText: '',
+         playing: false,
+-        thumbnailUrl: ''
++        thumbnailUrl: '',
++        title: '',
++        requestedBy: ''
+     });
+ 
+     const lastVideoUrl = ref('');
+@@ -208,7 +210,9 @@ export const useGameLogStore = defineStore('GameLog', () => {
+             percentage: 0,
+             remainingText: '',
+             playing: false,
+-            thumbnailUrl: ''
++            thumbnailUrl: '',
++            title: '',
++            requestedBy: ''
+         };
+         vrStore.updateVrNowPlaying();
+     }
+@@ -241,6 +245,9 @@ export const useGameLogStore = defineStore('GameLog', () => {
+             nowPlaying.value = {
+                 url: ctx.videoUrl,
+                 name,
++                // UWX: raw parts for the "Now showing" chatbox line
++                title: ctx.videoName || '',
++                requestedBy: ctx.displayName || '',
+                 length: ctx.videoLength,
+                 startTime: Date.parse(ctx.created_at) / 1000,
+                 offset: ctx.videoPos,
+diff --git a/src/stores/oscLab.js b/src/stores/oscLab.js
+index bab3478..ca6cb89 100644
+--- a/src/stores/oscLab.js
++++ b/src/stores/oscLab.js
+@@ -3,6 +3,7 @@ import { defineStore } from 'pinia';
+ import { toast } from 'vue-sonner';
+ 
+ import configRepository from '../services/config';
++import { useGameLogStore } from './gameLog';
+ import { useLocationStore } from './location';
+ import {
+     OSC_MODULES,
+@@ -16,7 +17,8 @@ import {
+     meaningfulKey,
+     migrateLegacySettings,
+     normalizeSettings,
+-    renderModuleLines
++    renderModuleLines,
++    videoTitle
+ } from '../shared/utils/uwxOsc';
+ 
+ // OSC Lab 3 — one engine that runs for the whole app session (not just while the
+@@ -38,6 +40,8 @@ const TICK_MS = 1000;
+ const MEDIA_POLL_MS = 2000;
+ const WEATHER_REFRESH_MS = 20 * 60 * 1000;
+ const MAX_STATUSES = 50;
++// A world video with no known length stops showing after this long.
++const VIDEO_UNKNOWN_LENGTH_MS = 3 * 60 * 60 * 1000;
+ 
+ const cleanStatusText = (input) =>
+     String(input || '')
+@@ -62,6 +66,8 @@ export const useOscLabStore = defineStore('OscLab', () => {
+     const currentStatus = ref('');
+     // Event Mode can pin one status line while an event runs (overrides the rotation).
+     const eventStatus = ref('');
++    // …and switch on "Now showing" for the length of the event.
++    const eventVideo = ref(false);
+     const heartRate = ref(0);
+     const heartRateState = ref('offline');
+     const pulsoidToken = ref('');
+@@ -84,8 +90,23 @@ export const useOscLabStore = defineStore('OscLab', () => {
+ 
+     const worldName = computed(() => locationStore.lastLocation.name || '');
+ 
++    // "Now showing": what the world's video player is playing, from VRChat's log.
++    const gameLogStore = useGameLogStore();
++    const nowShowing = computed(() => {
++        const np = gameLogStore.nowPlaying;
++        if (!np?.url) return null;
++        const title = videoTitle(np);
++        if (!title) return null;
++        const lengthSeconds = Number(np.length) || 0;
++        const startedAt = (Number(np.startTime) || 0) * 1000;
++        if (!lengthSeconds && startedAt && now.value - startedAt > VIDEO_UNKNOWN_LENGTH_MS) return null;
++        return { title, requestedBy: np.requestedBy || '', lengthSeconds, startedAt };
++    });
++
+     const liveData = computed(() => ({
+         media: settings.modules.music.enabled ? media.value : null,
++        video: settings.modules.video.enabled || eventVideo.value ? nowShowing.value : null,
++        pinnedVideo: eventVideo.value,
+         weather: settings.modules.weather.enabled ? weather.value : null,
+         status: eventStatus.value || (settings.modules.status.enabled ? currentStatus.value : ''),
+         pinnedStatus: Boolean(eventStatus.value),
+@@ -447,6 +468,10 @@ export const useOscLabStore = defineStore('OscLab', () => {
+         eventStatus.value = String(text || '').trim().slice(0, 140);
+     }
+ 
++    function setEventVideo(value) {
++        eventVideo.value = Boolean(value);
++    }
++
+     // Old export name kept for the System panel "Disarm" button.
+     const enabled = computed(() => settings.enabled);
+ 
+@@ -526,12 +551,15 @@ export const useOscLabStore = defineStore('OscLab', () => {
+         preview,
+         media,
+         mediaState,
++        nowShowing,
+         weather,
+         weatherState,
+         weatherUpdatedAt,
+         currentStatus,
+         eventStatus,
+         setEventStatus,
++        eventVideo,
++        setEventVideo,
+         heartRate,
+         heartRateState,
+         pulsoidToken,
+diff --git a/src/stores/uwxAccount.js b/src/stores/uwxAccount.js
+index 345b0af..3189de1 100644
+--- a/src/stores/uwxAccount.js
++++ b/src/stores/uwxAccount.js
+@@ -177,6 +177,40 @@ export const useUwxAccountStore = defineStore('UwxAccount', () => {
+ 
+     const rpc = (name, args = {}) => api(`rpc/${name}`, { method: 'POST', body: JSON.stringify(args) });
+ 
++    /** Upload a file to UnderWeb storage as you (the bucket's own rules decide if it's allowed). */
++    async function storageUpload(bucket, objectPath, blob, contentType) {
++        if (!signedIn.value && !(await refresh())) throw new Error('Sign in to UnderWeb first.');
++        if (Date.now() > expiresAt.value - 60 * 1000) await refresh();
++        const url = `${UNDERWEB_SUPABASE_URL}/storage/v1/object/${bucket}/${objectPath.split('/').map(encodeURIComponent).join('/')}`;
++        const doFetch = () =>
++            fetch(url, {
++                method: 'POST',
++                headers: { apikey: UNDERWEB_ANON_KEY, Authorization: `Bearer ${accessToken.value}`, 'Content-Type': contentType, 'x-upsert': 'false' },
++                body: blob
++            });
++        let response = await doFetch();
++        if (response.status === 401 && (await refresh())) response = await doFetch();
++        if (!response.ok) {
++            const json = await response.json().catch(() => ({}));
++            const error = /** @type {Error & { status?: number }} */ (new Error(json?.message || json?.error || `Upload failed (${response.status}).`));
++            error.status = Number(json?.statusCode) || response.status;
++            throw error;
++        }
++        return true;
++    }
++
++    async function storageRemove(bucket, paths) {
++        try {
++            await fetch(`${UNDERWEB_SUPABASE_URL}/storage/v1/object/${bucket}`, {
++                method: 'DELETE',
++                headers: { apikey: UNDERWEB_ANON_KEY, Authorization: `Bearer ${accessToken.value}`, 'Content-Type': 'application/json' },
++                body: JSON.stringify({ prefixes: paths })
++            });
++        } catch {
++            // best effort cleanup
++        }
++    }
++
+     async function loadPermissions() {
+         try {
+             isStaff.value = Boolean(await rpc('uwx_is_underweb_staff'));
+@@ -232,6 +266,8 @@ export const useUwxAccountStore = defineStore('UwxAccount', () => {
+         signOut,
+         api,
+         rpc,
++        storageUpload,
++        storageRemove,
+         loadPermissions
+     };
+ });
+diff --git a/src/stores/uwxCrew.js b/src/stores/uwxCrew.js
+new file mode 100644
+index 0000000..ab10bf3
+--- /dev/null
++++ b/src/stores/uwxCrew.js
+@@ -0,0 +1,173 @@
++import { computed, ref, watch } from 'vue';
++import { defineStore } from 'pinia';
++import { toast } from 'vue-sonner';
++
++import configRepository from '../services/config';
++import sqliteService from '../services/sqlite.js';
++import { watchState } from '../services/watchState';
++import { CREW_WINDOW_DAYS, cameOnline, crewPresence, rankCrew, sortByPresence } from '../shared/utils/uwxCrew';
++import { useFriendStore } from './friend';
++import { useLocationStore } from './location';
++import { useSafetyIntelStore } from './safetyIntel';
++import { useUnderWebStore } from './underweb';
++import { useUserStore } from './user';
++
++// Your crew: regulars worked out from VRCX's own join/leave history on this PC
++// (nothing is uploaded). Pin people to always keep them, hide people you don't want listed.
++
++const KEY = 'UWX_crew';
++const RELOAD_MS = 15 * 60 * 1000;
++
++/** Time spent with each person over the last N days, from VRCX's game log. */
++export async function loadTogetherStats(days = CREW_WINDOW_DAYS) {
++    const since = new Date(Date.now() - days * 86400000).toISOString();
++    const rows = [];
++    await sqliteService.execute(
++        (r) => rows.push({ userId: r[0], displayName: r[1], ms: Number(r[2]) || 0, days: Number(r[3]) || 0, lastSeen: r[4] || '' }),
++        `SELECT user_id, display_name, SUM(time), COUNT(DISTINCT substr(created_at, 1, 10)), MAX(created_at)
++         FROM gamelog_join_leave
++         WHERE type = 'OnPlayerLeft' AND created_at >= @since AND user_id LIKE 'usr_%'
++         GROUP BY user_id, display_name
++         ORDER BY SUM(time) DESC
++         LIMIT 120`,
++        { '@since': since }
++    );
++    return rows;
++}
++
++export const useUwxCrewStore = defineStore('UwxCrew', () => {
++    const friendStore = useFriendStore();
++    const locationStore = useLocationStore();
++    const userStore = useUserStore();
++    const safety = useSafetyIntelStore();
++    const underweb = useUnderWebStore();
++
++    const stats = ref([]);
++    const loadedAt = ref(0);
++    const loading = ref(false);
++    const prefs = ref({ pinned: [], hidden: [], alerts: true });
++    const seen = new Map();
++    let stopWatch = null;
++
++    const nameOf = (id) => {
++        const f = friendStore.friends.get(id);
++        return f?.ref?.displayName || f?.name || '';
++    };
++
++    const crew = computed(() => {
++        const ranked = rankCrew(stats.value, {
++            selfId: userStore.currentUser?.id || '',
++            pinned: prefs.value.pinned,
++            hidden: prefs.value.hidden,
++            isLabeled: (id) => Boolean(safety.getIntel?.(id)),
++            nameOf
++        });
++        const lobby = locationStore.lastLocation?.playerList;
++        return sortByPresence(
++            ranked.map((r) => ({
++                ...r,
++                presence: crewPresence(friendStore.friends.get(r.userId), { here: Boolean(lobby?.has?.(r.userId)) })
++            }))
++        );
++    });
++
++    const onlineNotHere = computed(() => crew.value.filter((r) => r.presence === 'online'));
++
++    async function loadPrefs() {
++        try {
++            const raw = JSON.parse((await configRepository.getString(KEY, '')) || '{}');
++            prefs.value = {
++                pinned: Array.isArray(raw.pinned) ? raw.pinned.filter((id) => String(id).startsWith('usr_')).slice(0, 50) : [],
++                hidden: Array.isArray(raw.hidden) ? raw.hidden.filter((id) => String(id).startsWith('usr_')).slice(0, 200) : [],
++                alerts: raw.alerts !== false
++            };
++        } catch {
++            prefs.value = { pinned: [], hidden: [], alerts: true };
++        }
++    }
++
++    async function savePrefs() {
++        await configRepository.setString(KEY, JSON.stringify(prefs.value));
++    }
++
++    async function refresh({ force = false } = {}) {
++        if (loading.value || (!force && Date.now() - loadedAt.value < RELOAD_MS)) return;
++        loading.value = true;
++        try {
++            stats.value = await loadTogetherStats();
++            loadedAt.value = Date.now();
++        } catch (error) {
++            console.error('UWX crew: could not read history', error);
++        } finally {
++            loading.value = false;
++        }
++    }
++
++    async function togglePin(userId) {
++        const pinned = prefs.value.pinned.includes(userId) ? prefs.value.pinned.filter((id) => id !== userId) : [...prefs.value.pinned, userId];
++        prefs.value = { ...prefs.value, pinned, hidden: prefs.value.hidden.filter((id) => id !== userId) };
++        await savePrefs();
++    }
++
++    async function hide(userId) {
++        prefs.value = { ...prefs.value, hidden: [...new Set([...prefs.value.hidden, userId])], pinned: prefs.value.pinned.filter((id) => id !== userId) };
++        await savePrefs();
++    }
++
++    async function unhideAll() {
++        prefs.value = { ...prefs.value, hidden: [] };
++        await savePrefs();
++    }
++
++    async function setAlerts(value) {
++        prefs.value = { ...prefs.value, alerts: Boolean(value) };
++        await savePrefs();
++    }
++
++    /** Invite everyone in the crew who is in VRChat but not with you (friend invite, with your message). */
++    async function inviteCrew() {
++        const ids = onlineNotHere.value.map((r) => r.userId);
++        if (!ids.length) {
++            toast.info('Nobody from your crew is online somewhere else right now.');
++            return null;
++        }
++        return underweb.inviteFriendsNow(ids);
++    }
++
++    function alertOnline(rows) {
++        if (!prefs.value.alerts) return;
++        for (const row of rows.slice(0, 3)) {
++            const canInvite = underweb.canInviteHere && row.presence === 'online';
++            toast(`${row.displayName} is online`, {
++                description: 'From your crew',
++                action: canInvite ? { label: 'Invite', onClick: () => underweb.inviteFriendsNow([row.userId]) } : undefined
++            });
++        }
++        if (rows.length > 3) toast(`${rows.length - 3} more of your crew came online`);
++    }
++
++    async function init() {
++        await loadPrefs();
++        void refresh({ force: true });
++        stopWatch?.();
++        stopWatch = watch(
++            () => crew.value.map((r) => `${r.userId}:${r.presence}`).join(','),
++            () => {
++                // Only start comparing once the friends list has loaded, so login doesn't fire every alert.
++                if (!watchState.isFriendsLoaded) {
++                    seen.clear();
++                    return;
++                }
++                alertOnline(cameOnline(seen, crew.value));
++            }
++        );
++    }
++
++    function dispose() {
++        stopWatch?.();
++        stopWatch = null;
++        seen.clear();
++    }
++
++    return { crew, stats, prefs, loading, loadedAt, onlineNotHere, init, dispose, refresh, togglePin, hide, unhideAll, setAlerts, inviteCrew };
++});
+diff --git a/src/stores/uwxEventMode.js b/src/stores/uwxEventMode.js
+index ccbac92..8157fc6 100644
+--- a/src/stores/uwxEventMode.js
++++ b/src/stores/uwxEventMode.js
+@@ -148,6 +148,7 @@ export const useUwxEventModeStore = defineStore('UwxEventMode', () => {
+                 for (const person of Object.values(saved.attendance.people || {})) person.present = false;
+                 active.value = saved;
+                 if (saved.status) osc.setEventStatus(saved.status);
++                osc.setEventVideo?.(Boolean(saved.nowShowing));
+                 startTracking();
+             }
+         } catch {
+@@ -199,6 +200,7 @@ export const useUwxEventModeStore = defineStore('UwxEventMode', () => {
+             presetId: preset.id,
+             name: title,
+             status: preset.status,
++            nowShowing: Boolean(preset.nowShowing),
+             startedAt,
+             before,
+             groupInvites: 0,
+@@ -211,6 +213,7 @@ export const useUwxEventModeStore = defineStore('UwxEventMode', () => {
+         await underweb.setGroupRecruitEnabled(Boolean(preset.recruit && useUwxAccessStore().showGroupInvites));
+         await underweb.setAutoInviteEnabled(preset.autoInvite);
+         osc.setEventStatus(preset.status);
++        osc.setEventVideo?.(Boolean(preset.nowShowing));
+         startTracking();
+         await configRepository.setString(CONFIG.active, JSON.stringify(active.value));
+         toast.success(`${title} started.`);
+@@ -231,6 +234,7 @@ export const useUwxEventModeStore = defineStore('UwxEventMode', () => {
+         active.value = null;
+         await configRepository.setString(CONFIG.active, '');
+         osc.setEventStatus('');
++        osc.setEventVideo?.(false);
+         const b = run.before || {};
+         await underweb.setGroupRecruitEnabled(Boolean(b.groupRecruitEnabled));
+         await underweb.setAutoInviteEnabled(Boolean(b.autoInviteEnabled));
+diff --git a/src/stores/uwxShare.js b/src/stores/uwxShare.js
+new file mode 100644
+index 0000000..5211512
+--- /dev/null
++++ b/src/stores/uwxShare.js
+@@ -0,0 +1,184 @@
++import { markRaw, ref, shallowRef } from 'vue';
++import { defineStore } from 'pinia';
++import { toast } from 'vue-sonner';
++
++import configRepository from '../services/config';
++import { encodePhoto } from '../services/uwxPhotoEncode';
++import { postError, SHOWCASE_BUCKET, showcasePath, showcaseRow, suggestTitle, validatePost } from '../shared/utils/uwxShare';
++import { useUwxAccountStore } from './uwxAccount';
++
++// Post VRChat photos to your UnderWeb showcase. Same flow as the website: the photo goes
++// to the pending bucket and staff approve it before it shows on your profile.
++
++const KEY = 'UWX_share';
++const MAX_RECENT = 20;
++
++const isLinux = () => typeof LINUX !== 'undefined' && Boolean(LINUX);
++
++export const useUwxShareStore = defineStore('UwxShare', () => {
++    const account = useUwxAccountStore();
++
++    const prefs = ref({ offerAfterScreenshot: false });
++    const recent = ref([]); // [{ at, title }]
++    const selectedPath = ref('');
++    // shallowRef + markRaw: the Blob must reach fetch() as a real Blob, not a Vue proxy.
++    const photo = shallowRef(null); // { blob, width, height, previewUrl }
++    const title = ref('');
++    const caption = ref('');
++    const loadingPhoto = ref(false);
++    const posting = ref(false);
++    const error = ref('');
++    /** Bumped when something asks the UnderWeb page to show the share card. */
++    const focusTick = ref(0);
++
++    async function init() {
++        try {
++            const raw = JSON.parse((await configRepository.getString(KEY, '')) || '{}');
++            prefs.value = { offerAfterScreenshot: Boolean(raw.offerAfterScreenshot) };
++            recent.value = Array.isArray(raw.recent) ? raw.recent.slice(0, MAX_RECENT) : [];
++        } catch {
++            prefs.value = { offerAfterScreenshot: false };
++        }
++    }
++
++    async function save() {
++        await configRepository.setString(KEY, JSON.stringify({ ...prefs.value, recent: recent.value }));
++    }
++
++    async function setOfferAfterScreenshot(value) {
++        prefs.value = { ...prefs.value, offerAfterScreenshot: Boolean(value) };
++        await save();
++    }
++
++    function clear() {
++        if (photo.value?.previewUrl) URL.revokeObjectURL(photo.value.previewUrl);
++        photo.value = null;
++        selectedPath.value = '';
++        title.value = '';
++        caption.value = '';
++        error.value = '';
++    }
++
++    async function eventName() {
++        try {
++            const { useUwxEventModeStore } = await import('./uwxEventMode');
++            return useUwxEventModeStore().active?.name || '';
++        } catch {
++            return '';
++        }
++    }
++
++    /** Load a photo from disk and prepare the clean copy that will be uploaded. */
++    async function select(path) {
++        if (!path) return false;
++        clear();
++        loadingPhoto.value = true;
++        try {
++            const base64 = await AppApi.GetFileBase64(path);
++            const encoded = await encodePhoto(base64);
++            photo.value = markRaw({ ...encoded, blob: markRaw(encoded.blob) });
++            selectedPath.value = path;
++            title.value = suggestTitle({ eventName: await eventName() });
++            return true;
++        } catch (e) {
++            error.value = e?.message || 'Could not read that photo.';
++            return false;
++        } finally {
++            loadingPhoto.value = false;
++        }
++    }
++
++    async function selectLatest() {
++        const path = await AppApi.GetLastScreenshot();
++        if (!path) {
++            toast.info('No VRChat photos found yet.');
++            return false;
++        }
++        return select(path);
++    }
++
++    async function selectFromFile() {
++        const path = isLinux()
++            ? await window.electron.openFileDialog()
++            : await AppApi.OpenFileSelectorDialog(await AppApi.GetVRChatPhotosLocation(), '.png', 'PNG Files (*.png)|*.png');
++        return path ? select(path) : false;
++    }
++
++    async function post() {
++        if (posting.value || !photo.value) return false;
++        const checked = validatePost({ title: title.value, caption: caption.value });
++        if ('error' in checked) {
++            error.value = checked.error;
++            return false;
++        }
++        posting.value = true;
++        error.value = '';
++        let path = '';
++        let uploaded = false;
++        try {
++            if (!account.signedIn) throw new Error('Sign in to UnderWeb first.');
++            path = showcasePath(account.userId);
++            await account.storageUpload(SHOWCASE_BUCKET, path, photo.value.blob, 'image/jpeg');
++            uploaded = true;
++            await account.api('creator_showcase', {
++                method: 'POST',
++                headers: { Prefer: 'return=minimal' },
++                body: JSON.stringify(showcaseRow(account.userId, path, checked))
++            });
++            recent.value = [{ at: Date.now(), title: checked.title }, ...recent.value].slice(0, MAX_RECENT);
++            await save();
++            toast.success('Sent to your showcase — it appears once staff approve it.');
++            clear();
++            return true;
++        } catch (e) {
++            if (uploaded) await account.storageRemove(SHOWCASE_BUCKET, [path]);
++            error.value = postError(e);
++            toast.error(error.value);
++            return false;
++        } finally {
++            posting.value = false;
++        }
++    }
++
++    /** Called after VRChat saves a photo. Only offers anything if you switched it on. */
++    function offer(path) {
++        if (!prefs.value.offerAfterScreenshot || !path) return;
++        toast('Photo saved', {
++            description: 'Post it to your UnderWeb showcase?',
++            action: { label: 'Post…', onClick: () => openComposer(path) }
++        });
++    }
++
++    async function openComposer(path) {
++        focusTick.value += 1;
++        try {
++            const { router } = await import('../plugins/router');
++            await router.push({ name: 'underweb' });
++        } catch {
++            // UnderWeb page not reachable (tests / overlay); the card still has the photo
++        }
++        await select(path);
++    }
++
++    return {
++        prefs,
++        recent,
++        selectedPath,
++        photo,
++        title,
++        caption,
++        loadingPhoto,
++        posting,
++        error,
++        focusTick,
++        init,
++        setOfferAfterScreenshot,
++        select,
++        selectLatest,
++        selectFromFile,
++        post,
++        clear,
++        offer,
++        openComposer
++    };
++});
+diff --git a/src/stores/vrcx.js b/src/stores/vrcx.js
+index e6b63e2..f2383f0 100644
+--- a/src/stores/vrcx.js
++++ b/src/stores/vrcx.js
+@@ -363,6 +363,8 @@ export const useVrcxStore = defineStore('Vrcx', () => {
+             await AppApi.CopyImageToClipboard(newPath);
+             console.log('Screenshot copied to clipboard', newPath);
+         }
++        // UWX: offer to post it to the UnderWeb showcase (only if switched on).
++        void import('./uwxShare').then((m) => m.useUwxShareStore().offer(newPath)).catch(() => {});
+     }
+ 
+     // use in C# side
+diff --git a/src/views/UnderWeb/UnderWeb.vue b/src/views/UnderWeb/UnderWeb.vue
+index a7be6fc..fb31ce5 100644
+--- a/src/views/UnderWeb/UnderWeb.vue
++++ b/src/views/UnderWeb/UnderWeb.vue
+@@ -175,6 +175,9 @@
+ 
+             <UwxLobbyBoard v-if="activePanel === 'command'" @report="prefillSafetyReport" />
+ 
++            <UwxCrewCard v-if="activePanel === 'command'" />
++            <UwxShareCard v-if="activePanel === 'command'" />
++
+             <p v-if="activePanel === 'invites' && !showGroupInvites" class="uwx-card-wide uwx-member-hint">
+                 <i class="ri-information-line" /> Group invites appear here automatically if your VRChat role in a group can send them.
+             </p>
+@@ -1049,6 +1052,9 @@
+     import UwxOscLab from './UwxOscLab.vue';
+     import UwxEventMode from './UwxEventMode.vue';
+     import UwxLobbyBoard from './UwxLobbyBoard.vue';
++    import UwxCrewCard from './UwxCrewCard.vue';
++    import UwxShareCard from './UwxShareCard.vue';
++    import { useUwxShareStore } from '../../stores/uwxShare';
+ 
+     import { UWX_VERSION } from '../../shared/constants/uwx';
+     import { UWX_RELEASES_PAGE } from '../../shared/utils/uwxRelease';
+@@ -1197,6 +1203,13 @@
+     const { rolesForUser, setNotificationRule, refreshNetwork } = networkStore;
+ 
+     const activePanel = ref('command');
++    // "Post…" on a new-photo toast brings you to the share card.
++    watch(
++        () => useUwxShareStore().focusTick,
++        () => {
++            activePanel.value = 'command';
++        }
++    );
+     const access = useUwxAccessStore();
+     access.init();
+     const { level: accessLevel, label: accessLabel, showGroupInvites, showGroupsTab } = storeToRefs(access);
+diff --git a/src/views/UnderWeb/UwxCrewCard.vue b/src/views/UnderWeb/UwxCrewCard.vue
+new file mode 100644
+index 0000000..dfb80ed
+--- /dev/null
++++ b/src/views/UnderWeb/UwxCrewCard.vue
+@@ -0,0 +1,152 @@
++<template>
++    <Card class="uwx-card uwx-crew">
++        <CardHeader>
++            <div class="flex flex-wrap items-start justify-between gap-3">
++                <div>
++                    <CardTitle>Your crew</CardTitle>
++                    <CardDescription>The people you actually hang out with — last {{ CREW_WINDOW_DAYS }} days, worked out on this PC.</CardDescription>
++                </div>
++                <Button size="sm" :disabled="!onlineNotHere.length || !canInviteHere || isManualInviting" @click="inviteCrew">
++                    <i class="ri-send-plane-line" /> Invite crew<template v-if="onlineNotHere.length"> ({{ onlineNotHere.length }})</template>
++                </Button>
++            </div>
++        </CardHeader>
++        <CardContent>
++            <p v-if="loading && !crew.length" class="text-sm text-muted-foreground">Reading your history…</p>
++            <p v-else-if="!crew.length" class="text-sm text-muted-foreground">
++                Nobody yet. Hang out for a bit and your regulars show up here — or pin someone from the lobby.
++            </p>
++            <ul v-else class="uwx-crew-list">
++                <li v-for="row in crew" :key="row.userId" class="uwx-crew-row" :class="row.presence">
++                    <span class="uwx-crew-dot" :title="PRESENCE_LABELS[row.presence]" />
++                    <div class="min-w-0 flex-1">
++                        <button type="button" class="uwx-crew-name" @click="showUserDialog(row.userId)">
++                            {{ row.displayName }} <i v-if="row.pinned" class="ri-pushpin-2-fill uwx-crew-pin" aria-label="Pinned" />
++                        </button>
++                        <small>{{ PRESENCE_LABELS[row.presence] }} · {{ togetherText(row) }}</small>
++                    </div>
++                    <Button
++                        v-if="row.presence === 'online' && canInviteHere"
++                        size="sm"
++                        variant="outline"
++                        :disabled="isManualInviting"
++                        @click="inviteOne(row)">
++                        Invite
++                    </Button>
++                    <Button size="icon-sm" variant="ghost" :title="row.pinned ? 'Unpin' : 'Pin to crew'" :aria-label="row.pinned ? 'Unpin' : 'Pin to crew'" @click="togglePin(row.userId)">
++                        <i :class="row.pinned ? 'ri-pushpin-2-fill' : 'ri-pushpin-2-line'" />
++                    </Button>
++                    <Button size="icon-sm" variant="ghost" title="Hide from crew" aria-label="Hide from crew" @click="hide(row.userId)"><i class="ri-eye-off-line" /></Button>
++                </li>
++            </ul>
++            <div class="uwx-crew-foot">
++                <label class="uwx-inline-toggle">
++                    <Switch :model-value="prefs.alerts" @update:modelValue="setAlerts" />
++                    <span><strong>Tell me when they come online</strong></span>
++                </label>
++                <Button v-if="prefs.hidden.length" size="sm" variant="ghost" @click="unhideAll">Show {{ prefs.hidden.length }} hidden</Button>
++            </div>
++        </CardContent>
++    </Card>
++</template>
++
++<script setup>
++    import { onMounted } from 'vue';
++    import { storeToRefs } from 'pinia';
++    import { Button } from '@/components/ui/button';
++    import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
++    import { Switch } from '@/components/ui/switch';
++
++    import { showUserDialog } from '../../coordinators/userCoordinator';
++    import { CREW_WINDOW_DAYS, PRESENCE_LABELS, togetherText } from '../../shared/utils/uwxCrew';
++    import { useUnderWebStore } from '../../stores';
++    import { useUwxCrewStore } from '../../stores/uwxCrew';
++
++    const store = useUwxCrewStore();
++    const { crew, prefs, loading, onlineNotHere } = storeToRefs(store);
++    const { togglePin, hide, unhideAll, setAlerts, inviteCrew } = store;
++    const underweb = useUnderWebStore();
++    const { canInviteHere, isManualInviting } = storeToRefs(underweb);
++
++    const inviteOne = (row) => underweb.inviteFriendsNow([row.userId]);
++
++    onMounted(() => store.refresh());
++</script>
++
++<style scoped>
++    .uwx-crew-list {
++        display: flex;
++        flex-direction: column;
++        gap: 2px;
++        max-height: 26rem;
++        overflow-y: auto;
++    }
++    .uwx-crew-row {
++        display: flex;
++        align-items: center;
++        gap: 10px;
++        padding: 6px 8px;
++        border-radius: 10px;
++    }
++    .uwx-crew-row:hover {
++        background: rgb(255 255 255 / 3%);
++    }
++    .uwx-crew-row.offline,
++    .uwx-crew-row.not-friend {
++        opacity: 0.6;
++    }
++    .uwx-crew-dot {
++        flex: none;
++        width: 9px;
++        height: 9px;
++        border-radius: 999px;
++        background: rgb(255 255 255 / 18%);
++    }
++    .here .uwx-crew-dot {
++        background: var(--uwx-accent);
++        box-shadow: 0 0 8px rgb(var(--uwx-accent-rgb) / 70%);
++    }
++    .online .uwx-crew-dot {
++        background: #4fb3ff;
++    }
++    .web .uwx-crew-dot {
++        background: #ffb84d;
++    }
++    .uwx-crew-name {
++        display: block;
++        max-width: 100%;
++        font-weight: 700;
++        text-align: left;
++        overflow: hidden;
++        text-overflow: ellipsis;
++        white-space: nowrap;
++    }
++    .uwx-crew-name:hover {
++        text-decoration: underline;
++    }
++    .uwx-crew-pin {
++        font-size: 11px;
++        color: var(--uwx-accent);
++    }
++    .uwx-crew-row small {
++        display: block;
++        font-size: 11.5px;
++        color: var(--muted-foreground);
++    }
++    .uwx-crew-foot {
++        display: flex;
++        flex-wrap: wrap;
++        align-items: center;
++        justify-content: space-between;
++        gap: 8px;
++        margin-top: 12px;
++        padding-top: 10px;
++        border-top: 1px solid var(--border);
++    }
++    .uwx-inline-toggle {
++        display: inline-flex;
++        align-items: center;
++        gap: 8px;
++        font-size: 13px;
++    }
++</style>
+diff --git a/src/views/UnderWeb/UwxEventMode.vue b/src/views/UnderWeb/UwxEventMode.vue
+index cb08992..215e2cc 100644
+--- a/src/views/UnderWeb/UwxEventMode.vue
++++ b/src/views/UnderWeb/UwxEventMode.vue
+@@ -65,6 +65,7 @@
+                                 <span v-if="showGroupInvites" :class="preset.recruit ? 'on group' : 'off'">{{ preset.recruit ? 'Group invites' : 'No group invites' }}</span>
+                                 <span :class="preset.autoInvite ? 'on instance' : 'off'">{{ preset.autoInvite ? 'Auto-invite ' + scopeLabel(preset.scope) : 'No auto friend invites' }}</span>
+                                 <span v-if="preset.messageSlot >= 0" class="on instance">Message {{ preset.messageSlot + 1 }}</span>
++                                <span v-if="preset.nowShowing" class="on instance">🍿 Now showing</span>
+                             </div>
+                             <div class="flex gap-2">
+                                 <Button class="flex-1" @click="startPreset(preset.id)"><i class="ri-play-fill" /> Start</Button>
+@@ -76,6 +77,7 @@
+                             <Input v-model="draft.status" placeholder="Chatbox line while it runs" aria-label="Chatbox line" />
+                             <label v-if="showGroupInvites" class="uwx-em-check"><Switch v-model="draft.recruit" /> Group invites (our instances only)</label>
+                             <label class="uwx-em-check"><Switch v-model="draft.autoInvite" /> Auto friend invites</label>
++                            <label class="uwx-em-check"><Switch v-model="draft.nowShowing" /> "Now showing" in chatbox (world video)</label>
+                             <NativeSelect v-model="draft.scope" aria-label="Who to invite">
+                                 <NativeSelectOption v-for="scope in scopes" :key="scope.id" :value="scope.id">{{ scope.label }}</NativeSelectOption>
+                             </NativeSelect>
+@@ -149,7 +151,7 @@
+     const eventName = ref('');
+     const editingId = ref('');
+     const showAllHistory = ref(false);
+-    const draft = reactive({ id: '', name: '', status: '', recruit: true, autoInvite: true, scope: 'favorites', messageSlot: -1 });
++    const draft = reactive({ id: '', name: '', status: '', recruit: true, autoInvite: true, scope: 'favorites', messageSlot: -1, nowShowing: false });
+ 
+     const scopes = [
+         { id: 'favorites', label: 'Favorite friends' },
+@@ -162,7 +164,7 @@
+     const scopeLabel = (id) => (scopes.find((s) => s.id === id)?.label || id).replace(/^(Favorite|All|Selected)/, (w) => w.toLowerCase());
+ 
+     function beginEdit(preset) {
+-        const p = preset || { id: '', name: '', status: '', recruit: true, autoInvite: true, scope: 'favorites', messageSlot: -1 };
++        const p = preset || { id: '', name: '', status: '', recruit: true, autoInvite: true, scope: 'favorites', messageSlot: -1, nowShowing: false };
+         Object.assign(draft, { ...p, messageSlot: Number(p.messageSlot) });
+         editingId.value = preset ? preset.id : '__new__';
+         if (!preset) presets.value.push({ ...draft, id: '__new__', name: 'New event' });
+diff --git a/src/views/UnderWeb/UwxLobbyBoard.vue b/src/views/UnderWeb/UwxLobbyBoard.vue
+index ab44a0d..aaf084d 100644
+--- a/src/views/UnderWeb/UwxLobbyBoard.vue
++++ b/src/views/UnderWeb/UwxLobbyBoard.vue
+@@ -60,6 +60,15 @@
+                             @click="inviteToGroup(row)">
+                             <i class="ri-user-add-line" /> Invite to group
+                         </Button>
++                        <Button
++                            v-if="!row.intel"
++                            size="icon-sm"
++                            variant="ghost"
++                            :title="isPinned(row.userId) ? 'Unpin from your crew' : 'Pin to your crew'"
++                            :aria-label="isPinned(row.userId) ? 'Unpin from your crew' : 'Pin to your crew'"
++                            @click="crew.togglePin(row.userId)">
++                            <i :class="isPinned(row.userId) ? 'ri-pushpin-2-fill' : 'ri-pushpin-2-line'" />
++                        </Button>
+                         <Button size="icon-sm" variant="ghost" title="Add a note" aria-label="Add a note" @click="addNote(row)"><i class="ri-sticky-note-add-line" /></Button>
+                         <Button size="icon-sm" variant="ghost" title="Report" aria-label="Report" @click="$emit('report', row.userId, row.displayName)"><i class="ri-flag-line" /></Button>
+                     </div>
+@@ -82,6 +91,7 @@
+     import { useGroupStore, useModalStore, useUnderWebStore } from '../../stores';
+     import { useUwxLobbyBoardStore } from '../../stores/uwxLobbyBoard';
+     import { useUwxMemberNotesStore } from '../../stores/uwxMemberNotes';
++    import { useUwxCrewStore } from '../../stores/uwxCrew';
+ 
+     defineEmits(['report']);
+ 
+@@ -92,6 +102,8 @@
+     const groupStore = useGroupStore();
+     const notes = useUwxMemberNotesStore();
+     const modalStore = useModalStore();
++    const crew = useUwxCrewStore();
++    const isPinned = (id) => crew.prefs.pinned.includes(id);
+ 
+     const filter = ref('all');
+     const busyId = ref('');
+diff --git a/src/views/UnderWeb/UwxOscLab.vue b/src/views/UnderWeb/UwxOscLab.vue
+index 108d90c..4a43537 100644
+--- a/src/views/UnderWeb/UwxOscLab.vue
++++ b/src/views/UnderWeb/UwxOscLab.vue
+@@ -115,6 +115,18 @@
+                             </p>
+                         </template>
+ 
++                        <template v-if="key === 'video'">
++                            <label class="uwx-osc3-check">
++                                <Switch :model-value="settings.modules.video.showRequester" @update:modelValue="(v) => setModuleOption('video', 'showRequester', v)" />
++                                Fill {by} with who queued it
++                            </label>
++                            <p class="uwx-help">
++                                What the world's video player is playing (cinema, MVN). Read from VRChat's log — links are never shown, only the title.
++                                Titles need the YouTube API key in VRCX settings; without it you'll see "a YouTube video".
++                                <template v-if="nowShowing"><br />Now: {{ nowShowing.title }}</template>
++                            </p>
++                        </template>
++
+                         <template v-if="key === 'weather'">
+                             <form class="flex flex-wrap gap-2" @submit.prevent="saveZip">
+                                 <Input v-model="zipDraft" inputmode="numeric" maxlength="5" placeholder="ZIP code" aria-label="ZIP code for weather" class="max-w-[140px]" />
+@@ -234,6 +246,7 @@
+         preview,
+         media,
+         mediaState,
++        nowShowing,
+         weather,
+         weatherState,
+         currentStatus,
+@@ -270,7 +283,7 @@
+         setPulsoidToken
+     } = store;
+ 
+-    const labels = { music: 'Now playing', weather: 'Weather', status: 'Statuses', heart: 'Heart rate', world: 'World name' };
++    const labels = { music: 'Now playing', video: 'Now showing', weather: 'Weather', status: 'Statuses', heart: 'Heart rate', world: 'World name' };
+ 
+     const zipDraft = ref(settings.value.modules.weather.zip);
+     watch(
+@@ -284,6 +297,7 @@
+     // ---------- chatbox themes ----------
+     const SAMPLE = {
+         media: { title: 'Midnight Signal', artist: 'Dаrko', status: 'Playing', positionSeconds: 102, durationSeconds: 208, sampledAt: 0 },
++        video: { title: 'Static Hearts (Official Video)', requestedBy: 'Vex', lengthSeconds: 241, startedAt: 0 },
+         weather: { icon: '🌧️', temp: '54°F', condition: 'Cloudy' },
+         status: 'Music Video Night — Thursdays',
+         heartRate: 88,
+@@ -312,6 +326,7 @@
+     function moduleState(key) {
+         if (!settings.value.modules[key].enabled) return 'off';
+         if (key === 'music') return media.value ? mediaState.value : 'nothing playing';
++        if (key === 'video') return nowShowing.value ? nowShowing.value.title : 'no world video';
+         if (key === 'weather') return weather.value ? `${weather.value.temp}` : 'no data yet';
+         if (key === 'status') return `${settings.value.statuses.filter((s) => s.favorite).length} rotating`;
+         if (key === 'heart') return heartRate.value ? `${heartRate.value} BPM` : heartRateState.value;
+diff --git a/src/views/UnderWeb/UwxShareCard.vue b/src/views/UnderWeb/UwxShareCard.vue
+new file mode 100644
+index 0000000..2536a10
+--- /dev/null
++++ b/src/views/UnderWeb/UwxShareCard.vue
+@@ -0,0 +1,126 @@
++<template>
++    <Card class="uwx-card uwx-share">
++        <CardHeader>
++            <CardTitle>Post to your showcase</CardTitle>
++            <CardDescription>Share a VRChat photo to your profile on underweb.cloud. Staff approve it before it shows.</CardDescription>
++        </CardHeader>
++        <CardContent class="space-y-3">
++            <p v-if="!signedIn" class="uwx-share-note">
++                <i class="ri-user-line" /> Sign in to your UnderWeb account on the <strong>System</strong> tab to post.
++            </p>
++
++            <div v-if="!photo" class="uwx-share-pick">
++                <Button :disabled="loadingPhoto" @click="selectLatest"><i class="ri-image-line" /> Latest photo</Button>
++                <Button variant="outline" :disabled="loadingPhoto" @click="selectFromFile"><i class="ri-folder-open-line" /> Choose…</Button>
++                <span v-if="loadingPhoto" class="text-sm text-muted-foreground">Preparing…</span>
++            </div>
++
++            <form v-else class="uwx-share-form" @submit.prevent="post">
++                <img :src="photo.previewUrl" alt="Photo to post" class="uwx-share-img" />
++                <div class="space-y-2 min-w-0">
++                    <Input v-model="title" maxlength="80" placeholder="Title" aria-label="Title" />
++                    <textarea v-model="caption" maxlength="500" rows="3" placeholder="Caption (optional)" aria-label="Caption" class="uwx-share-caption" />
++                    <p class="uwx-help"><i class="ri-shield-check-line" /> Only the picture is sent — the world, instance and player list VRCX saves inside the file are left out.</p>
++                    <div class="flex flex-wrap gap-2">
++                        <Button type="submit" :disabled="posting || !signedIn || !title.trim()"><i class="ri-upload-2-line" /> {{ posting ? 'Posting…' : 'Post for review' }}</Button>
++                        <Button type="button" variant="ghost" :disabled="posting" @click="clear">Cancel</Button>
++                    </div>
++                </div>
++            </form>
++
++            <p v-if="error" class="uwx-share-error" role="alert">{{ error }}</p>
++
++            <label class="uwx-inline-toggle">
++                <Switch :model-value="prefs.offerAfterScreenshot" @update:modelValue="setOfferAfterScreenshot" />
++                <span><strong>Offer after every photo</strong><small>A small pop-up with “Post…” when VRChat saves a photo.</small></span>
++            </label>
++            <p v-if="recent.length" class="uwx-help">Last posted: “{{ recent[0].title }}” · {{ ago(recent[0].at) }}</p>
++        </CardContent>
++    </Card>
++</template>
++
++<script setup>
++    import { storeToRefs } from 'pinia';
++    import { Button } from '@/components/ui/button';
++    import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
++    import { Input } from '@/components/ui/input';
++    import { Switch } from '@/components/ui/switch';
++
++    import { useUwxAccountStore } from '../../stores/uwxAccount';
++    import { useUwxShareStore } from '../../stores/uwxShare';
++
++    const store = useUwxShareStore();
++    const { photo, title, caption, loadingPhoto, posting, error, prefs, recent } = storeToRefs(store);
++    const { selectLatest, selectFromFile, post, clear, setOfferAfterScreenshot } = store;
++    const { signedIn } = storeToRefs(useUwxAccountStore());
++
++    function ago(at) {
++        const m = Math.round((Date.now() - at) / 60000);
++        if (m < 1) return 'just now';
++        if (m < 60) return `${m}m ago`;
++        const h = Math.round(m / 60);
++        return h < 24 ? `${h}h ago` : `${Math.round(h / 24)}d ago`;
++    }
++</script>
++
++<style scoped>
++    .uwx-share-pick {
++        display: flex;
++        flex-wrap: wrap;
++        align-items: center;
++        gap: 8px;
++    }
++    .uwx-share-form {
++        display: grid;
++        grid-template-columns: minmax(0, 220px) minmax(0, 1fr);
++        gap: 12px;
++        align-items: start;
++    }
++    @media (max-width: 700px) {
++        .uwx-share-form {
++            grid-template-columns: 1fr;
++        }
++    }
++    .uwx-share-img {
++        width: 100%;
++        aspect-ratio: 16 / 9;
++        object-fit: cover;
++        border-radius: 10px;
++        border: 1px solid rgb(var(--uwx-accent-rgb) / 35%);
++    }
++    .uwx-share-caption {
++        width: 100%;
++        resize: vertical;
++        padding: 8px 10px;
++        border-radius: 8px;
++        border: 1px solid var(--border);
++        background: transparent;
++        font-size: 13px;
++    }
++    .uwx-share-note,
++    .uwx-share-error {
++        font-size: 13px;
++        padding: 8px 10px;
++        border-radius: 8px;
++        border: 1px solid var(--border);
++    }
++    .uwx-share-error {
++        color: #ff8a8a;
++        border-color: rgb(255 107 107 / 45%);
++    }
++    .uwx-help {
++        font-size: 12px;
++        color: var(--muted-foreground);
++    }
++    .uwx-inline-toggle {
++        display: flex;
++        align-items: center;
++        gap: 10px;
++        font-size: 13px;
++    }
++    .uwx-inline-toggle small {
++        display: block;
++        color: var(--muted-foreground);
++        font-size: 11.5px;
++    }
++</style>
