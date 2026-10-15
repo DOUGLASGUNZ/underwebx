@@ -1785,6 +1785,19 @@ index 45447bd..784bb00 100644
          connectPulsoid,
          disconnectPulsoid
      };
+diff --git a/src/stores/underweb.js b/src/stores/underweb.js
+index 64c438e..83c6a49 100644
+--- a/src/stores/underweb.js
++++ b/src/stores/underweb.js
+@@ -103,7 +103,7 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+             currentLocationTag.value &&
+                 currentParsedLocation.value.isRealInstance &&
+                 checkCanInvite(currentLocationTag.value, {
+-                    currentUserId: userStore.currentUser.id,
++                    currentUserId: userStore.currentUser?.id,
+                     lastLocationStr: locationStore.lastLocation.location,
+                     cachedInstances: instanceStore.cachedInstances
+                 })
 diff --git a/src/stores/uwxGroupTools.js b/src/stores/uwxGroupTools.js
 index a404557..3feb5e1 100644
 --- a/src/stores/uwxGroupTools.js
@@ -1804,6 +1817,19 @@ index a404557..3feb5e1 100644
          } catch (error) {
              groupInfo.set(groupId, { ref: existing?.ref || null, loadedAt: Date.now(), error: errorMessage(error) });
              if (errorStatus(error) === 429) throw error;
+diff --git a/src/styles/uwx-premium.css b/src/styles/uwx-premium.css
+index f52a648..5c2feb8 100644
+--- a/src/styles/uwx-premium.css
++++ b/src/styles/uwx-premium.css
+@@ -249,7 +249,7 @@ select:focus-visible {
+ 
+ /* UWX rc10 — inviter + group tools */
+ .uwx-invite-permission { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+-.uwx-invite-permission.ok { color: var(--uwx-accent, #3df514); }
++.uwx-invite-permission.ok { color: #3df514; }
+ .uwx-invite-permission.blocked { color: #f2c14e; }
+ .uwx-inline-toggle { display: flex; gap: 12px; align-items: flex-start; cursor: pointer; }
+ .uwx-inline-toggle span { display: flex; flex-direction: column; gap: 2px; }
 diff --git a/src/views/UnderWeb/UnderWeb.vue b/src/views/UnderWeb/UnderWeb.vue
 index 1767361..60098a3 100644
 --- a/src/views/UnderWeb/UnderWeb.vue
@@ -2207,10 +2233,10 @@ index 1767361..60098a3 100644
          if (!event?.startAt) return 'Schedule pending';
 diff --git a/src/views/UnderWeb/UwxOscLab.vue b/src/views/UnderWeb/UwxOscLab.vue
 new file mode 100644
-index 0000000..02633ee
+index 0000000..be4aeae
 --- /dev/null
 +++ b/src/views/UnderWeb/UwxOscLab.vue
-@@ -0,0 +1,290 @@
+@@ -0,0 +1,390 @@
 +<template>
 +    <div class="uwx-grid">
 +        <Card class="uwx-card uwx-card-wide uwx-osc3">
@@ -2296,7 +2322,7 @@ index 0000000..02633ee
 +                                <Button size="sm" type="submit">Save</Button>
 +                            </form>
 +                            <p class="uwx-help">
-+                                {{ weatherState || (weather ? `${weather.temp} · ${weather.condition}` : '') }}
++                                <template v-if="weatherState || weather">{{ weatherState || `Now: ${weather.temp} · ${weather.condition}` }}<br /></template>
 +                                Your ZIP stays on this PC and is never shown in the chatbox. Updates every 20 minutes.
 +                            </p>
 +                        </template>
@@ -2501,3 +2527,103 @@ index 0000000..02633ee
 +        return new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 +    }
 +</script>
++
++<style scoped>
++    .uwx-osc3-preview {
++        display: flex;
++        flex-direction: column;
++        gap: 10px;
++    }
++    .uwx-osc3-bubble {
++        white-space: pre-line;
++        font-size: 15px;
++        line-height: 1.5;
++        padding: 14px 16px;
++        border-radius: 12px;
++        background: rgb(255 255 255 / 6%);
++        border: 1px solid rgb(61 245 20 / 35%);
++        max-width: 420px;
++        min-height: 54px;
++    }
++    .uwx-osc3-preview.off .uwx-osc3-bubble {
++        border-color: rgb(255 255 255 / 10%);
++        opacity: 0.6;
++    }
++    .uwx-osc3-meta {
++        display: flex;
++        flex-wrap: wrap;
++        gap: 6px 16px;
++        font-size: 12px;
++        color: var(--muted-foreground);
++    }
++    .uwx-osc3-meta .warn,
++    .warn {
++        color: #f2c14e;
++    }
++    .uwx-osc3-module {
++        border: 1px solid rgb(255 255 255 / 8%);
++        border-radius: 8px;
++        padding: 10px 12px;
++    }
++    .uwx-osc3-module.disabled {
++        opacity: 0.75;
++    }
++    .uwx-osc3-module-head {
++        display: flex;
++        align-items: center;
++        gap: 10px;
++    }
++    .uwx-osc3-module-state {
++        font-size: 12px;
++        color: var(--muted-foreground);
++    }
++    .uwx-osc3-module-body {
++        display: flex;
++        flex-direction: column;
++        gap: 10px;
++        margin-top: 12px;
++    }
++    .uwx-osc3-tokens {
++        display: flex;
++        flex-wrap: wrap;
++        gap: 6px;
++        margin-top: -4px;
++    }
++    .uwx-osc3-tokens span {
++        font-family: ui-monospace, monospace;
++        font-size: 11px;
++        padding: 1px 6px;
++        border-radius: 4px;
++        background: rgb(255 255 255 / 6%);
++        color: var(--muted-foreground);
++    }
++    .uwx-osc3-check {
++        display: flex;
++        align-items: center;
++        gap: 10px;
++        font-size: 13px;
++    }
++    .uwx-osc3-status-list {
++        list-style: none;
++        margin: 0;
++        padding: 0;
++        display: flex;
++        flex-direction: column;
++        gap: 4px;
++    }
++    .uwx-osc3-status-list li {
++        display: flex;
++        align-items: center;
++        gap: 4px;
++        padding: 2px 4px;
++        border-radius: 6px;
++    }
++    .uwx-osc3-status-list li.current {
++        background: rgb(61 245 20 / 8%);
++    }
++    .uwx-help {
++        font-size: 12px;
++        color: var(--muted-foreground);
++        margin: 0;
++    }
++</style>
