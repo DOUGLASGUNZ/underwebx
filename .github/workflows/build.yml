@@ -621,13 +621,31 @@ jobs:
           if ((Get-Content "src\stores\uwxAccount.js" -Raw) -match "service_role") { throw "RC15: a service-role key must never ship in UWX." }
           Write-Host "RC15 applied: UWX $version"
 
+      - name: Apply RC16 staff tools
+        shell: pwsh
+        working-directory: ${{ env.UWX_SOURCE }}
+        run: |
+          $patchFile = Join-Path $env:GITHUB_WORKSPACE "features\core\rc16-staff-tools.patch"
+          if (-not (Test-Path $patchFile)) { throw "RC16 patch not found." }
+          $patchText = [System.IO.File]::ReadAllText($patchFile).Replace("`r`n", "`n")
+          [System.IO.File]::WriteAllText($patchFile, $patchText, [System.Text.UTF8Encoding]::new($false))
+          git apply --check --verbose $patchFile
+          if ($LASTEXITCODE -ne 0) { throw "RC16 patch check failed." }
+          git apply --whitespace=nowarn $patchFile
+          if ($LASTEXITCODE -ne 0) { throw "RC16 patch failed." }
+          $version = (Get-Content "UWX_VERSION" -Raw).Trim()
+          if ($version -ne "0.5.7-rc16") { throw "RC16 version mismatch: $version" }
+          if (-not (Get-Content "src\stores\uwxGroupTools.js" -Raw).Contains("UNDO_MS")) { throw "RC16: undo window missing." }
+          if (-not (Get-Content "src\App.vue" -Raw).Contains("useUwxDiscordAlertsStore")) { throw "RC16: Discord alerts are not started with the app." }
+          Write-Host "RC16 applied: UWX $version"
+
       - name: Install dependencies and run UWX unit tests
         shell: pwsh
         working-directory: ${{ env.UWX_SOURCE }}
         run: |
           npm ci
           if ($LASTEXITCODE -ne 0) { throw "npm ci failed." }
-          npx vitest run src/stores/__tests__/uwxInviter.test.js src/stores/__tests__/uwxGroupTools.test.js src/shared/utils/__tests__/uwxOsc.test.js src/shared/utils/__tests__/uwxAudit.test.js src/stores/__tests__/uwxGroupAudit.test.js src/shared/utils/__tests__/uwxRelease.test.js src/stores/__tests__/vrcxUpdater.test.js src/shared/utils/__tests__/uwxEvent.test.js src/stores/__tests__/uwxEventMode.test.js src/stores/__tests__/uwxLobbyGuard.test.js src/stores/__tests__/uwxAccountLabels.test.js
+          npx vitest run src/stores/__tests__/uwxInviter.test.js src/stores/__tests__/uwxGroupTools.test.js src/shared/utils/__tests__/uwxOsc.test.js src/shared/utils/__tests__/uwxAudit.test.js src/stores/__tests__/uwxGroupAudit.test.js src/shared/utils/__tests__/uwxRelease.test.js src/stores/__tests__/vrcxUpdater.test.js src/shared/utils/__tests__/uwxEvent.test.js src/stores/__tests__/uwxEventMode.test.js src/stores/__tests__/uwxLobbyGuard.test.js src/stores/__tests__/uwxAccountLabels.test.js src/shared/utils/__tests__/uwxStaffInsights.test.js src/stores/__tests__/uwxDiscordAlerts.test.js src/stores/__tests__/uwxInvitePresets.test.js
           if ($LASTEXITCODE -ne 0) { throw "UWX unit tests failed." }
 
       - name: Build UnderWeb X

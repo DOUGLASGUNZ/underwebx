@@ -1,0 +1,1877 @@
+diff --git a/CHANGELOG_UWX.md b/CHANGELOG_UWX.md
+index dbaee06..08e9ad1 100644
+--- a/CHANGELOG_UWX.md
++++ b/CHANGELOG_UWX.md
+@@ -1,5 +1,13 @@
+ # UnderWeb X changelog
+ 
++## 0.5.7-rc16 — Staff tools: undo, dashboard, notes, Discord alerts, recruiting stats
++
++- **Undo**: Ban and Remove wait 10 seconds with an Undo button (in the pop-up and at the top of the Groups tab) before anything is sent to VRChat. Undone actions are logged as "undone". Unban runs right away.
++- **Saved invite setups** (Invites → Instance invites): one click switches who to invite and which message; the ➤ button switches and invites in one go. "Save current" stores what you have set.
++- **Staff & recruiting** (Groups, per group): unusual activity to look at (bursts of bans/removals, role permission changes, big group changes), staff activity table, and recruiting — group invites sent, how many of those people joined within 2 weeks, by who invited and by Event Mode event.
++- **History & notes** on any member you look up: first join, past bans/removals/kicks/warnings, their label if any, the group log about them, and private staff notes kept on this PC.
++- **Discord alerts**: paste a webhook from a private staff channel and pick a group. UWX checks every 2 minutes in the background and posts bans/removals/kicks/warnings, role changes, unusual activity and Event Mode recaps (each can be turned off). Optional: a heads-up when a labeled person is in an instance with you — names only, never where. Connecting doesn't dump old history; nobody gets pinged.
++
+ ## 0.5.6-rc15 — Bad news labels (synced) + UnderWeb sign-in
+ 
+ - **Lobby Guard**: everyone in your instance is checked automatically against the shared, staff-reviewed labels (crashers, doxxers, malicious clients, harassers, scammers, ban evaders…) as they join. You get a private pop-up; nobody is kicked, blocked or told. Choose every label / caution and up / high risk only, or turn it off. Only VRChat user IDs are looked up.
+diff --git a/UWX_VERSION b/UWX_VERSION
+index e90d14b..a728b83 100644
+--- a/UWX_VERSION
++++ b/UWX_VERSION
+@@ -1 +1 @@
+-0.5.6-rc15
++0.5.7-rc16
+diff --git a/src/App.vue b/src/App.vue
+index 371049c..190d6e0 100644
+--- a/src/App.vue
++++ b/src/App.vue
+@@ -36,6 +36,7 @@
+     import { useUwxEventModeStore } from './stores/uwxEventMode';
+     import { useUwxLobbyGuardStore } from './stores/uwxLobbyGuard';
+     import { useUwxAccountStore } from './stores/uwxAccount';
++    import { useUwxDiscordAlertsStore } from './stores/uwxDiscordAlerts';
+     import { initNoty } from './plugins/noty';
+ 
+     import AlertDialogModal from './components/ui/alert-dialog/AlertDialogModal.vue';
+@@ -89,6 +90,8 @@
+             await useUwxLobbyGuardStore().init();
+             // Resume the UnderWeb sign-in (staff tools) if you signed in before.
+             void useUwxAccountStore().init();
++            // Discord alerts keep watching the chosen group in the background.
++            void useUwxDiscordAlertsStore().init();
+         }
+ 
+         runCheckVRChatDebugLoggingFlow();
+diff --git a/src/shared/constants/uwx.js b/src/shared/constants/uwx.js
+index 444713b..ad586ab 100644
+--- a/src/shared/constants/uwx.js
++++ b/src/shared/constants/uwx.js
+@@ -1,2 +1,2 @@
+-export const UWX_VERSION = '0.5.6-rc15';
++export const UWX_VERSION = '0.5.7-rc16';
+ export const UWX_MANIFEST_URL = 'https://underweb.cloud/api/uwx/manifest';
+diff --git a/src/shared/utils/__tests__/uwxStaffInsights.test.js b/src/shared/utils/__tests__/uwxStaffInsights.test.js
+new file mode 100644
+index 0000000..f7d3063
+--- /dev/null
++++ b/src/shared/utils/__tests__/uwxStaffInsights.test.js
+@@ -0,0 +1,74 @@
++import { describe, expect, it } from 'vitest';
++import { memberHistory, memberSummary, recruitingStats, staffActivity, unusualActivity } from '../uwxStaffInsights';
++
++const MIN = 60 * 1000;
++const DAY = 24 * 60 * MIN;
++const T0 = Date.parse('2026-10-10T00:00:00Z');
++let n = 0;
++const e = (ts, eventType, actorId, actorName, targetId = '', data = {}) => ({ id: `e${++n}`, ts, eventType, actorId, actorName, targetId, description: '', data });
++
++describe('uwxStaffInsights', () => {
++    it('counts staff actions but not members joining or leaving', () => {
++        const list = [
++            e(T0, 'group.user.ban', 'usr_b', 'Blooty', 'usr_x'),
++            e(T0 + MIN, 'group.member.remove', 'usr_b', 'Blooty', 'usr_y'),
++            e(T0 + 2 * MIN, 'group.member.role.assign', 'usr_d', 'Darko', 'usr_z'),
++            e(T0 + 3 * MIN, 'group.member.join', 'usr_new', 'Newbie'),
++            e(T0 + 4 * MIN, 'group.invite.create', 'usr_d', 'Darko', 'usr_q')
++        ];
++        const act = staffActivity(list, 0);
++        expect(act.map((a) => [a.name, a.total])).toEqual([['Blooty', 2], ['Darko', 2]]);
++        expect(act[0].byCategory).toEqual({ moderation: 2 });
++    });
++
++    it('flags a burst of bans, permission changes and sensitive changes', () => {
++        const list = [];
++        for (let i = 0; i < 6; i++) list.push(e(T0 + i * MIN, 'group.user.ban', 'usr_b', 'Blooty', `usr_${i}`));
++        list.push(e(T0 + 2 * DAY, 'group.user.ban', 'usr_b', 'Blooty', 'usr_lone'));
++        list.push(e(T0 + DAY, 'group.role.update', 'usr_d', 'Darko', 'grol_mod', { permissions: { old: [], new: ['group-bans-manage'] } }));
++        list.push(e(T0 + DAY, 'group.role.update', 'usr_d', 'Darko', 'grol_mod', { name: { old: 'Mod', new: 'Moderator' } }));
++        list.push(e(T0 + DAY, 'group.role.delete', 'usr_d', 'Darko', 'grol_old'));
++        const flags = unusualActivity(list);
++        expect(flags.map((f) => f.kind).sort()).toEqual(['burst', 'permissions', 'sensitive']);
++        const burst = flags.find((f) => f.kind === 'burst');
++        expect(burst.entryIds).toHaveLength(6);
++        expect(burst.text).toMatch(/6 bans\/removals in 5 min/);
++    });
++
++    it('does not flag normal paced moderation', () => {
++        const list = [];
++        for (let i = 0; i < 6; i++) list.push(e(T0 + i * 30 * MIN, 'group.user.ban', 'usr_b', 'Blooty', `usr_${i}`));
++        expect(unusualActivity(list)).toEqual([]);
++    });
++
++    it('builds a member history and summary', () => {
++        const list = [
++            e(T0, 'group.member.join', 'usr_m', 'Member'),
++            e(T0 + DAY, 'group.instance.warn', 'usr_b', 'Blooty', 'usr_m'),
++            e(T0 + 2 * DAY, 'group.instance.kick', 'usr_b', 'Blooty', 'usr_m'),
++            e(T0 + 3 * DAY, 'group.user.ban', 'usr_d', 'Darko', 'usr_m'),
++            e(T0 + 3 * DAY, 'group.user.ban', 'usr_d', 'Darko', 'usr_other')
++        ];
++        expect(memberHistory(list, 'usr_m')).toHaveLength(4);
++        expect(memberSummary(list, 'usr_m')).toEqual({ firstJoinAt: T0, bans: 1, removals: 0, kicks: 1, warnings: 1 });
++    });
++
++    it('measures how many invited people joined, by staff and by event', () => {
++        const list = [
++            e(T0, 'group.invite.create', 'usr_d', 'Darko', 'usr_1'),
++            e(T0 + MIN, 'group.invite.create', 'usr_d', 'Darko', 'usr_2'),
++            e(T0 + 2 * MIN, 'group.invite.create', 'usr_b', 'Blooty', 'usr_3'),
++            e(T0 + DAY, 'group.member.join', 'usr_1', 'One'),
++            e(T0 + 20 * DAY, 'group.member.join', 'usr_2', 'Two'), // too late to count
++            e(T0 + DAY, 'group.member.join', 'usr_9', 'Walk-in')
++        ];
++        const stats = recruitingStats(list, { events: [{ name: 'MVN', startedAt: T0 - MIN, endedAt: T0 + 90 * MIN }] });
++        expect(stats).toMatchObject({ sent: 3, people: 3, accepted: 1, joinsTotal: 3 });
++        expect(stats.rate).toBeCloseTo(1 / 3);
++        expect(stats.byStaff).toEqual([
++            { actorId: 'usr_d', name: 'Darko', sent: 2, accepted: 1 },
++            { actorId: 'usr_b', name: 'Blooty', sent: 1, accepted: 0 }
++        ]);
++        expect(stats.byEvent).toEqual([{ name: 'MVN', sent: 3, accepted: 1 }]);
++    });
++});
+diff --git a/src/shared/utils/uwxStaffInsights.js b/src/shared/utils/uwxStaffInsights.js
+new file mode 100644
+index 0000000..3c3ff47
+--- /dev/null
++++ b/src/shared/utils/uwxStaffInsights.js
+@@ -0,0 +1,152 @@
++// Staff insights from the group audit archive (pure): who's moderating, unusual activity,
++// a member's history, and recruiting conversion. Input entries are normalized audit
++// entries (see uwxAudit.js): { id, ts, eventType, actorId, actorName, targetId, description, data }.
++
++import { categorizeEvent, eventLabel } from './uwxAudit';
++
++const MIN = 60 * 1000;
++const DAY = 24 * 60 * MIN;
++
++const INVITE_TYPES = new Set(['group.invite.create']);
++const JOIN_TYPES = new Set(['group.member.join']);
++const SENSITIVE_TYPES = new Set(['group.role.delete', 'group.update', 'group.transfer.start', 'group.transfer.accept', 'group.owner.change']);
++
++/** Per-staff activity since `sinceMs`: counts by category, total, last action. Self-service events excluded. */
++export function staffActivity(entries, sinceMs) {
++    const byActor = new Map();
++    for (const e of entries || []) {
++        if (e.ts < sinceMs || !e.actorId) continue;
++        const cat = categorizeEvent(e.eventType);
++        if (cat === 'members' && !INVITE_TYPES.has(e.eventType)) continue; // joins/leaves are done by members themselves
++        const a = byActor.get(e.actorId) || { actorId: e.actorId, name: e.actorName, total: 0, lastAt: 0, byCategory: {} };
++        a.total += 1;
++        a.byCategory[cat] = (a.byCategory[cat] || 0) + 1;
++        if (e.ts > a.lastAt) {
++            a.lastAt = e.ts;
++            a.name = e.actorName || a.name;
++        }
++        byActor.set(e.actorId, a);
++    }
++    return Array.from(byActor.values()).sort((a, b) => b.total - a.total);
++}
++
++/**
++ * Things a group owner would want to look at:
++ *  - burst: one person banning/removing/kicking many people quickly
++ *  - permissions: a role's permissions changed
++ *  - sensitive: role deleted, group settings changed, ownership moves
++ * @returns {Array<{ id: string, kind: string, ts: number, actorId: string, actorName: string, text: string, entryIds: string[] }>}
++ */
++export function unusualActivity(entries, { sinceMs = 0, burstCount = 5, burstWindowMs = 10 * MIN } = {}) {
++    const flags = [];
++    const recent = (entries || []).filter((e) => e.ts >= sinceMs).sort((a, b) => a.ts - b.ts);
++
++    const modByActor = new Map();
++    for (const e of recent) {
++        if (categorizeEvent(e.eventType) !== 'moderation' || /unban|unblock/.test(e.eventType)) continue;
++        if (!modByActor.has(e.actorId)) modByActor.set(e.actorId, []);
++        modByActor.get(e.actorId).push(e);
++    }
++    for (const [actorId, list] of modByActor) {
++        let start = 0;
++        let lastFlagEnd = -1;
++        for (let end = 0; end < list.length; end++) {
++            while (list[end].ts - list[start].ts > burstWindowMs) start++;
++            const count = end - start + 1;
++            if (count >= burstCount && start > lastFlagEnd) {
++                // extend to the whole burst
++                let stop = end;
++                while (stop + 1 < list.length && list[stop + 1].ts - list[start].ts <= burstWindowMs) stop++;
++                const slice = list.slice(start, stop + 1);
++                flags.push({
++                    id: `burst-${slice[0].id}`,
++                    kind: 'burst',
++                    ts: slice[slice.length - 1].ts,
++                    actorId,
++                    actorName: slice[0].actorName,
++                    text: `${slice[0].actorName} did ${slice.length} bans/removals in ${Math.max(1, Math.round((slice[slice.length - 1].ts - slice[0].ts) / MIN))} min`,
++                    entryIds: slice.map((x) => x.id)
++                });
++                lastFlagEnd = stop;
++                end = stop;
++            }
++        }
++    }
++
++    for (const e of recent) {
++        const permsChanged = e.eventType === 'group.role.update' && e.data && Object.keys(e.data).some((k) => /permission/i.test(k));
++        if (permsChanged) {
++            flags.push({ id: `perm-${e.id}`, kind: 'permissions', ts: e.ts, actorId: e.actorId, actorName: e.actorName, text: `${e.actorName} changed a role's permissions`, entryIds: [e.id] });
++        } else if (SENSITIVE_TYPES.has(e.eventType)) {
++            flags.push({ id: `sens-${e.id}`, kind: 'sensitive', ts: e.ts, actorId: e.actorId, actorName: e.actorName, text: `${e.actorName}: ${eventLabel(e.eventType)}`, entryIds: [e.id] });
++        }
++    }
++    return flags.sort((a, b) => b.ts - a.ts);
++}
++
++/** Everything the group log knows about one person (as target or actor), newest first. */
++export function memberHistory(entries, userId) {
++    return (entries || []).filter((e) => e.targetId === userId || e.actorId === userId).sort((a, b) => b.ts - a.ts);
++}
++
++/** Their first join and whether they've been banned/removed before, for the member card. */
++export function memberSummary(entries, userId) {
++    const history = memberHistory(entries, userId);
++    const joins = history.filter((e) => JOIN_TYPES.has(e.eventType) && e.actorId === userId);
++    const strikes = history.filter((e) => e.targetId === userId && /user\.ban|member\.remove|instance\.kick|instance\.warn/.test(e.eventType));
++    return {
++        firstJoinAt: joins.length ? Math.min(...joins.map((e) => e.ts)) : 0,
++        bans: strikes.filter((e) => /ban/.test(e.eventType)).length,
++        removals: strikes.filter((e) => /member\.remove/.test(e.eventType)).length,
++        kicks: strikes.filter((e) => /instance\.kick/.test(e.eventType)).length,
++        warnings: strikes.filter((e) => /instance\.warn/.test(e.eventType)).length
++    };
++}
++
++/**
++ * Group invites vs. joins. An invite counts as accepted if that person joined within `windowMs`.
++ * `events` (optional): Event Mode runs [{ name, startedAt, endedAt }] to credit invites sent during an event.
++ */
++export function recruitingStats(entries, { sinceMs = 0, windowMs = 14 * DAY, events = [] } = {}) {
++    const all = (entries || []).slice().sort((a, b) => a.ts - b.ts);
++    const joinsByUser = new Map();
++    for (const e of all) {
++        if (JOIN_TYPES.has(e.eventType) && e.actorId) {
++            if (!joinsByUser.has(e.actorId)) joinsByUser.set(e.actorId, []);
++            joinsByUser.get(e.actorId).push(e.ts);
++        }
++    }
++    const invites = all.filter((e) => INVITE_TYPES.has(e.eventType) && e.ts >= sinceMs && e.targetId);
++    const byStaff = new Map();
++    const byEvent = new Map();
++    let accepted = 0;
++    const seen = new Set();
++    for (const inv of invites) {
++        const key = `${inv.targetId}`;
++        const joined = (joinsByUser.get(inv.targetId) || []).some((t) => t >= inv.ts && t - inv.ts <= windowMs);
++        const firstForUser = !seen.has(key);
++        seen.add(key);
++        if (joined && firstForUser) accepted += 1;
++        const s = byStaff.get(inv.actorId) || { actorId: inv.actorId, name: inv.actorName, sent: 0, accepted: 0 };
++        s.sent += 1;
++        if (joined && firstForUser) s.accepted += 1;
++        byStaff.set(inv.actorId, s);
++        const ev = events.find((x) => inv.ts >= x.startedAt && inv.ts <= (x.endedAt || x.startedAt));
++        if (ev) {
++            const b = byEvent.get(ev.name) || { name: ev.name, sent: 0, accepted: 0 };
++            b.sent += 1;
++            if (joined && firstForUser) b.accepted += 1;
++            byEvent.set(ev.name, b);
++        }
++    }
++    const people = seen.size;
++    return {
++        sent: invites.length,
++        people,
++        accepted,
++        rate: people ? accepted / people : 0,
++        joinsTotal: all.filter((e) => JOIN_TYPES.has(e.eventType) && e.ts >= sinceMs).length,
++        byStaff: Array.from(byStaff.values()).sort((a, b) => b.sent - a.sent),
++        byEvent: Array.from(byEvent.values()).sort((a, b) => b.sent - a.sent)
++    };
++}
+diff --git a/src/stores/__tests__/uwxDiscordAlerts.test.js b/src/stores/__tests__/uwxDiscordAlerts.test.js
+new file mode 100644
+index 0000000..a259cda
+--- /dev/null
++++ b/src/stores/__tests__/uwxDiscordAlerts.test.js
+@@ -0,0 +1,90 @@
++import { beforeEach, describe, expect, test, vi } from 'vitest';
++import { createPinia, setActivePinia } from 'pinia';
++
++const config = {};
++vi.mock('../../services/config', () => ({
++    default: {
++        getString: vi.fn(async (k, d) => (k in config ? config[k] : d)),
++        setString: vi.fn(async (k, v) => (config[k] = v))
++    }
++}));
++vi.mock('vue-sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
++vi.mock('../../services/watchState', () => ({ watchState: { isLoggedIn: true } }));
++vi.mock('../../services/uwxAuditArchive', () => ({ default: { saveEntries: vi.fn(async () => {}) } }));
++let logRows = [];
++vi.mock('../../api', () => ({ groupRequest: { getGroupLogs: vi.fn(async () => ({ json: { results: logRows } })) } }));
++
++const { useUwxDiscordAlertsStore, isWebhookUrl, alertLine, DEFAULT_ALERT_SETTINGS } = await import('../uwxDiscordAlerts');
++
++const HOOK = 'https://discord.com/api/webhooks/123456789012345678/abcdefghijklmnopqrstuvwxyzABCDEF0123456789';
++let posts;
++global.fetch = vi.fn(async (url, init) => {
++    posts.push({ url, body: JSON.parse(init.body) });
++    return { ok: true, status: 204, json: async () => ({}) };
++});
++const row = (id, ts, eventType, description) => ({ id, created_at: new Date(ts).toISOString(), eventType, actorId: 'usr_b', actorDisplayName: 'Blooty', targetId: 'usr_x', description });
++
++describe('Discord alerts', () => {
++    beforeEach(() => {
++        vi.useFakeTimers();
++        vi.setSystemTime(new Date('2026-10-16T02:00:00Z'));
++        setActivePinia(createPinia());
++        for (const k of Object.keys(config)) delete config[k];
++        posts = [];
++        logRows = [];
++    });
++
++    test('only accepts real Discord webhook links', () => {
++        expect(isWebhookUrl(HOOK)).toBe(true);
++        expect(isWebhookUrl('https://evil.example/api/webhooks/1/abc')).toBe(false);
++        expect(isWebhookUrl('http://discord.com/api/webhooks/123456/abcdefghijklmnopqrstuvwxyz')).toBe(false);
++    });
++
++    test('lines respect the settings and never ping anyone', () => {
++        const ban = { ts: Date.now(), eventType: 'group.user.ban', actorName: 'Blooty', description: 'Blooty banned @everyone' };
++        expect(alertLine(ban, DEFAULT_ALERT_SETTINGS)).toMatch(/^🔨 <t:\d+:t> Blooty banned everyone$/);
++        expect(alertLine(ban, { ...DEFAULT_ALERT_SETTINGS, moderation: false })).toBe('');
++        expect(alertLine({ ...ban, eventType: 'group.member.join' }, DEFAULT_ALERT_SETTINGS)).toBe('');
++    });
++
++    test('connecting does not dump old history; new bans post once with a burst warning', async () => {
++        const store = useUwxDiscordAlertsStore();
++        await store.init();
++        await store.setSetting('groupId', 'grp_1');
++        await store.setSetting('groupName', 'The UnderWeb');
++        logRows = [row('old', Date.now() - 3600e3, 'group.user.ban', 'Blooty banned OldGuy')];
++        await store.setWebhook(HOOK);
++        await vi.advanceTimersByTimeAsync(10);
++        expect(posts).toHaveLength(0);
++
++        const t = Date.now() + 60e3;
++        logRows = [0, 1, 2, 3, 4].map((i) => row(`b${i}`, t + i * 30e3, 'group.user.ban', `Blooty banned Raider${i}`)).concat(logRows);
++        vi.setSystemTime(t + 5 * 60e3);
++        await store.poll();
++        await vi.advanceTimersByTimeAsync(5000);
++        expect(posts).toHaveLength(1);
++        const text = posts[0].body.content;
++        expect(text).toContain('**The UnderWeb** activity');
++        expect(text.match(/Blooty banned Raider/g)).toHaveLength(5);
++        expect(text).toContain('Unusual');
++        expect(posts[0].body.allowed_mentions).toEqual({ parse: [] });
++
++        await store.poll();
++        expect(posts).toHaveLength(1);
++    });
++
++    test('labeled-person alerts are off by default and never include where you are', async () => {
++        const store = useUwxDiscordAlertsStore();
++        await store.init();
++        await store.setWebhook(HOOK);
++        const person = { displayName: 'BadActor', userId: 'usr_x', intel: { verified_flags: ['crashing'], risk_level: 'high' } };
++        store.onLabeledPerson(person, 'Darko');
++        await vi.advanceTimersByTimeAsync(10);
++        expect(posts).toHaveLength(0);
++        await store.setSetting('labeled', true);
++        store.onLabeledPerson(person, 'Darko');
++        await vi.advanceTimersByTimeAsync(10);
++        expect(posts[0].body.content).toBe('🚨 **BadActor** (Crasher) is in an instance with Darko.');
++        expect(posts[0].body.content).not.toMatch(/wrld_|usr_/);
++    });
++});
+diff --git a/src/stores/__tests__/uwxEventMode.test.js b/src/stores/__tests__/uwxEventMode.test.js
+index fa29720..db5fc8b 100644
+--- a/src/stores/__tests__/uwxEventMode.test.js
++++ b/src/stores/__tests__/uwxEventMode.test.js
+@@ -3,6 +3,7 @@ import { createPinia, setActivePinia } from 'pinia';
+ import { nextTick, reactive } from 'vue';
+ 
+ const config = {};
++const discordStub = { onLabeledPerson: vi.fn(), onEventRecap: vi.fn() };
+ vi.mock('../../services/config', () => ({
+     default: {
+         getString: vi.fn(async (k, d) => (k in config ? config[k] : d)),
+@@ -11,6 +12,7 @@ vi.mock('../../services/config', () => ({
+         })
+     }
+ }));
++vi.mock('../uwxDiscordAlerts', () => ({ useUwxDiscordAlertsStore: () => discordStub }));
+ vi.mock('vue-sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }));
+ 
+ const underweb = reactive({
+diff --git a/src/stores/__tests__/uwxGroupTools.test.js b/src/stores/__tests__/uwxGroupTools.test.js
+index 11c6e9c..d1c0b14 100644
+--- a/src/stores/__tests__/uwxGroupTools.test.js
++++ b/src/stores/__tests__/uwxGroupTools.test.js
+@@ -1,4 +1,4 @@
+-import { beforeEach, describe, expect, test, vi } from 'vitest';
++import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+ import { createPinia, setActivePinia } from 'pinia';
+ import { reactive } from 'vue';
+ 
+@@ -22,7 +22,7 @@ vi.mock('../../services/config', () => ({
+     }
+ }));
+ vi.mock('../../services/watchState', () => ({ watchState: { isLoggedIn: true } }));
+-vi.mock('vue-sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }));
++vi.mock('vue-sonner', () => ({ toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn(), info: vi.fn() }) }));
+ vi.mock('../../shared/utils', async () => ({
+     ...(await vi.importActual('../../shared/utils/group')),
+     ...(await vi.importActual('../../shared/utils/location'))
+@@ -46,6 +46,7 @@ function groupWithPerms(permissions) {
+ }
+ 
+ describe('uwxGroupTools', () => {
++    afterEach(() => vi.useRealTimers());
+     beforeEach(() => {
+         setActivePinia(createPinia());
+         Object.values(groupRequest).forEach((fn) => fn.mockReset());
+@@ -78,37 +79,57 @@ describe('uwxGroupTools', () => {
+         expect(groupRequest.kickGroupMember).not.toHaveBeenCalled();
+     });
+ 
+-    test('cancelling the confirmation sends nothing', async () => {
++    test('undo within 10 seconds sends nothing', async () => {
+         groupRequest.getGroup.mockResolvedValue({ ref: groupWithPerms(['*']) });
+-        modalStore.confirm.mockResolvedValue({ ok: false });
+         const store = useUwxGroupToolsStore();
+         await store.loadAllPermissions();
+-        expect(await store.moderate('ban', { groupId: GROUP, groupName: 'The UnderWeb', userId: USER })).toBe(false);
++        vi.useFakeTimers();
++        const pending = store.moderate('ban', { groupId: GROUP, groupName: 'The UnderWeb', userId: USER, displayName: 'Oops' });
++        await vi.advanceTimersByTimeAsync(4000);
++        expect(store.pendingActions).toHaveLength(1);
++        store.undo(store.pendingActions[0].id);
++        expect(await pending).toBe(false);
++        await vi.advanceTimersByTimeAsync(20000);
+         expect(groupRequest.banGroupMember).not.toHaveBeenCalled();
+-        expect(store.moderationLog).toEqual([]);
++        expect(store.pendingActions).toEqual([]);
++        expect(store.moderationLog[0]).toMatchObject({ action: 'ban', result: 'undone' });
+     });
+ 
+-    test('a confirmed ban calls VRChat once and is logged persistently', async () => {
++    test('a ban runs once after the undo window and is logged persistently', async () => {
+         groupRequest.getGroup.mockResolvedValue({ ref: groupWithPerms(['group-bans-manage']) });
+         groupRequest.banGroupMember.mockResolvedValue({ json: {} });
+-        modalStore.confirm.mockResolvedValue({ ok: true });
+         const store = useUwxGroupToolsStore();
+         await store.init();
+         await store.loadAllPermissions();
+-        const ok = await store.moderate('ban', { groupId: GROUP, groupName: 'The UnderWeb', userId: USER, displayName: 'Troll' });
+-        expect(ok).toBe(true);
++        vi.useFakeTimers();
++        const pending = store.moderate('ban', { groupId: GROUP, groupName: 'The UnderWeb', userId: USER, displayName: 'Troll' });
++        await vi.advanceTimersByTimeAsync(9000);
++        expect(groupRequest.banGroupMember).not.toHaveBeenCalled();
++        await vi.advanceTimersByTimeAsync(2000);
++        expect(await pending).toBe(true);
++        expect(groupRequest.banGroupMember).toHaveBeenCalledTimes(1);
+         expect(groupRequest.banGroupMember).toHaveBeenCalledWith({ groupId: GROUP, userId: USER });
+         expect(store.moderationLog[0]).toMatchObject({ action: 'ban', result: 'ok', userId: USER });
+         expect(configStore.UWX_groupModerationLog).toHaveLength(1);
+     });
+ 
++    test('unban runs immediately (nothing to undo)', async () => {
++        groupRequest.getGroup.mockResolvedValue({ ref: groupWithPerms(['group-bans-manage']) });
++        groupRequest.unbanGroupMember.mockResolvedValue({ json: {} });
++        const store = useUwxGroupToolsStore();
++        await store.loadAllPermissions();
++        expect(await store.moderate('unban', { groupId: GROUP, groupName: 'The UnderWeb', userId: USER })).toBe(true);
++    });
++
+     test('a VRChat 403 is reported and logged as failed', async () => {
+         groupRequest.getGroup.mockResolvedValue({ ref: groupWithPerms(['group-members-remove']) });
+         groupRequest.kickGroupMember.mockRejectedValue({ status: 403 });
+-        modalStore.confirm.mockResolvedValue({ ok: true });
+         const store = useUwxGroupToolsStore();
+         await store.loadAllPermissions();
+-        expect(await store.moderate('kick', { groupId: GROUP, groupName: 'The UnderWeb', userId: USER })).toBe(false);
++        vi.useFakeTimers();
++        const pending = store.moderate('kick', { groupId: GROUP, groupName: 'The UnderWeb', userId: USER });
++        await vi.advanceTimersByTimeAsync(11000);
++        expect(await pending).toBe(false);
+         expect(store.moderationLog[0]).toMatchObject({ action: 'kick', result: 'failed' });
+         expect(store.moderationLog[0].error).toMatch(/permission/);
+     });
+diff --git a/src/stores/__tests__/uwxInvitePresets.test.js b/src/stores/__tests__/uwxInvitePresets.test.js
+new file mode 100644
+index 0000000..7a2e1b8
+--- /dev/null
++++ b/src/stores/__tests__/uwxInvitePresets.test.js
+@@ -0,0 +1,59 @@
++import { beforeEach, describe, expect, test, vi } from 'vitest';
++import { createPinia, setActivePinia } from 'pinia';
++import { reactive } from 'vue';
++
++const config = {};
++vi.mock('../../services/config', () => ({
++    default: {
++        getString: vi.fn(async (k, d) => (k in config ? config[k] : d)),
++        setString: vi.fn(async (k, v) => (config[k] = v))
++    }
++}));
++vi.mock('vue-sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
++const underweb = reactive({
++    inviteScope: 'selected',
++    inviteMessageSlot: -1,
++    invitePoolFriends: [{ id: 'usr_a' }, { id: 'usr_b' }],
++    setInviteScope: vi.fn(async (v) => (underweb.inviteScope = v)),
++    setInviteMessageSlot: vi.fn(async (v) => (underweb.inviteMessageSlot = v)),
++    inviteFriendsNow: vi.fn(async (ids) => ({ sent: ids.length, skipped: [], failed: [] }))
++});
++vi.mock('../underweb', () => ({ useUnderWebStore: () => underweb }));
++
++const { useUwxInvitePresetsStore, normalizeInvitePreset } = await import('../uwxInvitePresets');
++
++describe('UWX invite presets', () => {
++    beforeEach(() => {
++        setActivePinia(createPinia());
++        for (const k of Object.keys(config)) delete config[k];
++        underweb.inviteFriendsNow.mockClear();
++    });
++
++    test('cleans input', () => {
++        expect(normalizeInvitePreset({ name: ' ' })).toBeNull();
++        expect(normalizeInvitePreset({ name: 'X', scope: 'everyone', messageSlot: 40 })).toMatchObject({ scope: 'favorites', messageSlot: -1 });
++    });
++
++    test('save current setup, apply it, and invite in one click', async () => {
++        const store = useUwxInvitePresetsStore();
++        await store.load();
++        underweb.inviteScope = 'all-online';
++        underweb.inviteMessageSlot = 4;
++        const p = await store.saveCurrent('Cinema crowd');
++        expect(JSON.parse(config.UWX_invitePresets).map((x) => x.name)).toContain('Cinema crowd');
++        underweb.inviteScope = 'staff';
++        underweb.inviteMessageSlot = -1;
++        const result = await store.apply(p.id, { inviteNow: true });
++        expect(underweb.inviteScope).toBe('all-online');
++        expect(underweb.inviteMessageSlot).toBe(4);
++        expect(underweb.inviteFriendsNow).toHaveBeenCalledWith(['usr_a', 'usr_b']);
++        expect(result.sent).toBe(2);
++    });
++
++    test('saved presets survive a restart', async () => {
++        config.UWX_invitePresets = JSON.stringify([{ id: 'p1', name: 'Hub regulars', scope: 'selected', messageSlot: 2 }]);
++        const store = useUwxInvitePresetsStore();
++        await store.load();
++        expect(store.presets).toEqual([{ id: 'p1', name: 'Hub regulars', scope: 'selected', messageSlot: 2 }]);
++    });
++});
+diff --git a/src/stores/__tests__/uwxLobbyGuard.test.js b/src/stores/__tests__/uwxLobbyGuard.test.js
+index 6413d72..39ad52c 100644
+--- a/src/stores/__tests__/uwxLobbyGuard.test.js
++++ b/src/stores/__tests__/uwxLobbyGuard.test.js
+@@ -3,6 +3,7 @@ import { createPinia, setActivePinia } from 'pinia';
+ import { reactive } from 'vue';
+ 
+ const config = {};
++const discordStub = { onLabeledPerson: vi.fn(), onEventRecap: vi.fn() };
+ vi.mock('../../services/config', () => ({
+     default: {
+         getBool: vi.fn(async (k, d) => (k in config ? config[k] : d)),
+@@ -12,6 +13,7 @@ vi.mock('../../services/config', () => ({
+     }
+ }));
+ const toast = { error: vi.fn(), warning: vi.fn() };
++vi.mock('../uwxDiscordAlerts', () => ({ useUwxDiscordAlertsStore: () => discordStub }));
+ vi.mock('vue-sonner', () => ({ toast }));
+ 
+ const ME = 'usr_00000000-0000-0000-0000-000000000000';
+diff --git a/src/stores/uwxDiscordAlerts.js b/src/stores/uwxDiscordAlerts.js
+new file mode 100644
+index 0000000..cf0e70e
+--- /dev/null
++++ b/src/stores/uwxDiscordAlerts.js
+@@ -0,0 +1,213 @@
++import { reactive, ref } from 'vue';
++import { defineStore } from 'pinia';
++import { toast } from 'vue-sonner';
++
++import { groupRequest } from '../api';
++import auditArchive from '../services/uwxAuditArchive';
++import configRepository from '../services/config';
++import { watchState } from '../services/watchState';
++import { categorizeEvent, eventLabel, normalizeEntry } from '../shared/utils/uwxAudit';
++import { formatRecap } from '../shared/utils/uwxEvent';
++import { labelSummary } from '../shared/utils/uwxSafety';
++import { unusualActivity } from '../shared/utils/uwxStaffInsights';
++
++// Discord alerts: posts to a staff channel through a Discord webhook you create.
++// The webhook URL is a secret — it stays in UWX's local settings and is never logged.
++// Posts contain display names and what happened; never instance IDs, locations or IPs.
++
++const CONFIG = Object.freeze({
++    url: 'UWX_discordWebhookUrl',
++    settings: 'UWX_discordAlertSettings',
++    cursor: 'UWX_discordAlertCursor'
++});
++const WEBHOOK_RE = /^https:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com\/api\/webhooks\/\d{5,25}\/[\w-]{20,}$/;
++const POLL_MS = 2 * 60 * 1000;
++const SEND_GAP_MS = 2000;
++const MAX_LINES = 12;
++
++export const DEFAULT_ALERT_SETTINGS = Object.freeze({
++    groupId: '',
++    groupName: '',
++    moderation: true, // bans, removals, kicks, warnings
++    roles: true, // roles given/taken, role edits
++    flags: true, // unusual activity
++    labeled: false, // a labeled person is in your instance
++    recaps: true // Event Mode recaps
++});
++
++export function isWebhookUrl(url) {
++    return WEBHOOK_RE.test(String(url || '').trim());
++}
++
++/** One Discord line for an audit entry, or '' if the settings don't include it. */
++export function alertLine(entry, settings) {
++    const cat = categorizeEvent(entry.eventType);
++    const wanted = (cat === 'moderation' && settings.moderation) || (cat === 'roles' && settings.roles);
++    if (!wanted) return '';
++    const icon = cat === 'moderation' ? (/unban|unblock/.test(entry.eventType) ? '♻️' : '🔨') : '🎭';
++    const when = `<t:${Math.floor(entry.ts / 1000)}:t>`;
++    const text = entry.description || `${entry.actorName}: ${eventLabel(entry.eventType)}`;
++    return `${icon} ${when} ${text.replace(/[@`]/g, '')}`.slice(0, 300);
++}
++
++export const useUwxDiscordAlertsStore = defineStore('UwxDiscordAlerts', () => {
++    const webhookSet = ref(false);
++    const settings = reactive({ ...DEFAULT_ALERT_SETTINGS });
++    const lastPostAt = ref(0);
++    const lastError = ref('');
++    const initialized = ref(false);
++    let webhookUrl = '';
++    let cursorTs = 0;
++    let pollTimer = null;
++    const queue = [];
++    let sending = false;
++
++    async function persistSettings() {
++        await configRepository.setString(CONFIG.settings, JSON.stringify(settings));
++    }
++
++    async function send(content) {
++        if (!webhookUrl) return false;
++        queue.push(String(content).slice(0, 1900));
++        if (sending) return true;
++        sending = true;
++        try {
++            while (queue.length) {
++                const body = queue.shift();
++                const response = await fetch(webhookUrl, {
++                    method: 'POST',
++                    headers: { 'Content-Type': 'application/json' },
++                    body: JSON.stringify({ username: 'UnderWeb X', content: body, allowed_mentions: { parse: [] } })
++                });
++                if (response.status === 429) {
++                    const json = await response.json().catch(() => ({}));
++                    queue.unshift(body);
++                    await new Promise((r) => setTimeout(r, Math.ceil((Number(json.retry_after) || 2) * 1000)));
++                    continue;
++                }
++                if (!response.ok) {
++                    lastError.value =
++                        response.status === 404 || response.status === 401
++                            ? 'Discord says this webhook no longer exists. Paste a new one.'
++                            : `Discord refused the alert (${response.status}).`;
++                    queue.length = 0;
++                    return false;
++                }
++                lastError.value = '';
++                lastPostAt.value = Date.now();
++                if (queue.length) await new Promise((r) => setTimeout(r, SEND_GAP_MS));
++            }
++            return true;
++        } catch (error) {
++            lastError.value = error?.message || 'Could not reach Discord.';
++            return false;
++        } finally {
++            sending = false;
++        }
++    }
++
++    async function poll() {
++        if (!webhookUrl || !settings.groupId || !watchState.isLoggedIn) return;
++        let rows = [];
++        try {
++            const args = await groupRequest.getGroupLogs({ groupId: settings.groupId, n: 50, offset: 0 });
++            rows = (args?.json?.results || []).map((r) => normalizeEntry(r, settings.groupId)).filter(Boolean);
++        } catch {
++            return; // try again next poll (rate limit, offline, no permission)
++        }
++        if (!rows.length) return;
++        const fresh = rows.filter((e) => e.ts > cursorTs).sort((a, b) => a.ts - b.ts);
++        if (!fresh.length) return;
++        await auditArchive.saveEntries(fresh).catch(() => {});
++        cursorTs = fresh[fresh.length - 1].ts;
++        await configRepository.setString(CONFIG.cursor, String(cursorTs));
++
++        const lines = fresh.map((e) => alertLine(e, settings)).filter(Boolean);
++        if (settings.flags) {
++            for (const flag of unusualActivity(fresh, { sinceMs: 0 })) lines.push(`⚠️ **Unusual:** ${flag.text}`);
++        }
++        for (let i = 0; i < lines.length; i += MAX_LINES) {
++            const header = i === 0 ? `**${settings.groupName || 'Group'}** activity\n` : '';
++            await send(header + lines.slice(i, i + MAX_LINES).join('\n'));
++        }
++    }
++
++    function restartPolling() {
++        if (pollTimer) clearInterval(pollTimer);
++        pollTimer = null;
++        if (webhookUrl && settings.groupId) {
++            pollTimer = setInterval(() => void poll(), POLL_MS);
++            void poll();
++        }
++    }
++
++    async function init() {
++        if (initialized.value) return;
++        initialized.value = true;
++        webhookUrl = (await configRepository.getString(CONFIG.url, '')) || '';
++        webhookSet.value = isWebhookUrl(webhookUrl);
++        if (!webhookSet.value) webhookUrl = '';
++        try {
++            Object.assign(settings, DEFAULT_ALERT_SETTINGS, JSON.parse((await configRepository.getString(CONFIG.settings, '')) || '{}'));
++        } catch {
++            // defaults
++        }
++        cursorTs = Number(await configRepository.getString(CONFIG.cursor, '0')) || 0;
++        restartPolling();
++    }
++
++    async function setWebhook(url) {
++        const value = String(url || '').trim();
++        if (value && !isWebhookUrl(value)) {
++            toast.error('That isn’t a Discord webhook link. In Discord: channel settings → Integrations → Webhooks → Copy URL.');
++            return false;
++        }
++        webhookUrl = value;
++        webhookSet.value = Boolean(value);
++        await configRepository.setString(CONFIG.url, value);
++        // Start from "now" so connecting doesn't dump old history into the channel.
++        cursorTs = Date.now();
++        await configRepository.setString(CONFIG.cursor, String(cursorTs));
++        restartPolling();
++        if (value) toast.success('Discord alerts connected.');
++        return true;
++    }
++
++    async function setSetting(key, value) {
++        if (!(key in DEFAULT_ALERT_SETTINGS)) return;
++        settings[key] = value;
++        await persistSettings();
++        if (key === 'groupId') {
++            cursorTs = Date.now();
++            await configRepository.setString(CONFIG.cursor, String(cursorTs));
++            restartPolling();
++        }
++    }
++
++    async function sendTest() {
++        const ok = await send(`✅ UnderWeb X alerts are connected${settings.groupName ? ` for **${settings.groupName}**` : ''}.`);
++        if (ok) toast.success('Test message sent to Discord.');
++        else toast.error(lastError.value || 'Test failed.');
++        return ok;
++    }
++
++    /** Called by Lobby Guard. Names only — never where you are. */
++    function onLabeledPerson(person, selfName = '') {
++        if (!settings.labeled || !webhookUrl) return;
++        void send(`🚨 **${person.displayName}** (${labelSummary(person.intel)}) is in an instance with ${selfName || 'a staff member'}.`);
++    }
++
++    /** Called by Event Mode when an event ends. */
++    function onEventRecap(recap) {
++        if (!settings.recaps || !webhookUrl) return;
++        void send(formatRecap(recap));
++    }
++
++    function dispose() {
++        if (pollTimer) clearInterval(pollTimer);
++        pollTimer = null;
++        initialized.value = false;
++    }
++
++    return { webhookSet, settings, lastPostAt, lastError, init, setWebhook, setSetting, sendTest, poll, onLabeledPerson, onEventRecap, dispose };
++});
+diff --git a/src/stores/uwxEventMode.js b/src/stores/uwxEventMode.js
+index cbb63fd..d6b779d 100644
+--- a/src/stores/uwxEventMode.js
++++ b/src/stores/uwxEventMode.js
+@@ -18,6 +18,7 @@ import { useOscLabStore } from './oscLab';
+ import { useUnderWebStore } from './underweb';
+ import { useUnderWebNetworkStore } from './underwebNetwork';
+ import { useUserStore } from './user';
++import { useUwxDiscordAlertsStore } from './uwxDiscordAlerts';
+ 
+ // Event Mode: one button switches UWX into an event setup, tracks the night, and
+ // puts everything back the way it was when the event ends.
+@@ -234,6 +235,11 @@ export const useUwxEventModeStore = defineStore('UwxEventMode', () => {
+         if (b.inviteScope) await underweb.setInviteScope(b.inviteScope);
+         if (typeof b.inviteMessageSlot === 'number') await underweb.setInviteMessageSlot(b.inviteMessageSlot);
+         toast.success(`${run.name} ended — your usual settings are back.`);
++        try {
++            useUwxDiscordAlertsStore().onEventRecap(recap);
++        } catch {
++            // Discord alerts are optional.
++        }
+         return recap;
+     }
+ 
+diff --git a/src/stores/uwxGroupTools.js b/src/stores/uwxGroupTools.js
+index 3feb5e1..42e8b2d 100644
+--- a/src/stores/uwxGroupTools.js
++++ b/src/stores/uwxGroupTools.js
+@@ -9,7 +9,6 @@ import { watchState } from '../services/watchState';
+ import { showGroupMemberModerationDialog } from '../coordinators/groupCoordinator';
+ import { useGroupStore } from './group';
+ import { useLocationStore } from './location';
+-import { useModalStore } from './modal';
+ 
+ // UWX Group Tools: a dashboard over VRChat's real group moderation API.
+ // Every action here maps to a VRChat endpoint VRCX already uses:
+@@ -22,6 +21,8 @@ const CONFIG = Object.freeze({
+     log: 'UWX_groupModerationLog'
+ });
+ const MAX_LOG = 300;
++// Ban / remove wait this long before running, so a misclick can be undone.
++export const UNDO_MS = 10 * 1000;
+ const PERMISSION_TTL_MS = 10 * 60 * 1000;
+ const PERMISSION_FETCH_GAP_MS = 400;
+ 
+@@ -39,7 +40,6 @@ const errorMessage = (error) => error?.error?.message || error?.message || 'Unkn
+ export const useUwxGroupToolsStore = defineStore('UwxGroupTools', () => {
+     const groupStore = useGroupStore();
+     const locationStore = useLocationStore();
+-    const modalStore = useModalStore();
+ 
+     /** groupId -> { ref, loadedAt, error } */
+     const groupInfo = reactive(new Map());
+@@ -47,6 +47,9 @@ export const useUwxGroupToolsStore = defineStore('UwxGroupTools', () => {
+     const moderationLog = ref([]);
+     const initialized = ref(false);
+     const busyAction = ref('');
++    /** Actions waiting out the undo window: { id, action, label, groupName, runsAt } */
++    const pendingActions = ref([]);
++    const undoHandlers = new Map();
+ 
+     const myGroups = computed(() =>
+         Array.from(groupStore.currentUserGroups.values())
+@@ -212,13 +215,18 @@ export const useUwxGroupToolsStore = defineStore('UwxGroupTools', () => {
+             return false;
+         }
+         const label = displayName || userId;
+-        const { ok } = await modalStore.confirm({
+-            title: `${spec.title}?`,
+-            description: `${label} will be ${spec.verb} ${groupName}. This runs on VRChat immediately.`,
+-            confirmText: spec.title,
+-            destructive: action !== 'unban'
+-        });
+-        if (!ok) return false;
++        if (pendingActions.value.some((p) => p.userId === userId && p.groupId === groupId)) {
++            toast.info(`${label} already has an action pending.`);
++            return false;
++        }
++        if (action !== 'unban') {
++            const go = await waitForUndo({ action, spec, label, groupId, groupName, userId });
++            if (!go) {
++                await addLog({ action, groupId, groupName, userId, displayName: label, result: 'undone' });
++                toast.success(`Undone — ${label} was not ${spec.verb.replace(' from', '')}.`);
++                return false;
++            }
++        }
+         busyAction.value = `${action}:${userId}`;
+         try {
+             await spec.run(groupId, userId);
+@@ -245,6 +253,33 @@ export const useUwxGroupToolsStore = defineStore('UwxGroupTools', () => {
+         }
+     }
+ 
++    /** Resolves true when the undo window passes, false if undone. */
++    function waitForUndo({ action, spec, label, groupId, groupName, userId }) {
++        const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
++        const runsAt = Date.now() + UNDO_MS;
++        return new Promise((resolve) => {
++            const finish = (go) => {
++                if (!undoHandlers.has(id)) return;
++                undoHandlers.delete(id);
++                clearTimeout(timer);
++                pendingActions.value = pendingActions.value.filter((p) => p.id !== id);
++                resolve(go);
++            };
++            const timer = setTimeout(() => finish(true), UNDO_MS);
++            undoHandlers.set(id, finish);
++            pendingActions.value = [...pendingActions.value, { id, action, label, groupId, groupName, userId, runsAt }];
++            toast(`${spec.title}: ${label}`, {
++                description: `Runs in ${Math.round(UNDO_MS / 1000)} seconds in ${groupName}.`,
++                duration: UNDO_MS,
++                action: { label: 'Undo', onClick: () => finish(false) }
++            });
++        });
++    }
++
++    function undo(id) {
++        undoHandlers.get(id)?.(false);
++    }
++
+     function openFullModeration(groupId, userId = '') {
+         showGroupMemberModerationDialog(groupId, userId);
+     }
+@@ -265,6 +300,8 @@ export const useUwxGroupToolsStore = defineStore('UwxGroupTools', () => {
+         loadingPermissions,
+         moderationLog,
+         busyAction,
++        pendingActions,
++        undo,
+         myGroups,
+         moderatableGroups,
+         currentInstanceGroupId,
+diff --git a/src/stores/uwxInvitePresets.js b/src/stores/uwxInvitePresets.js
+new file mode 100644
+index 0000000..52bf4b3
+--- /dev/null
++++ b/src/stores/uwxInvitePresets.js
+@@ -0,0 +1,85 @@
++import { ref } from 'vue';
++import { defineStore } from 'pinia';
++import { toast } from 'vue-sonner';
++
++import configRepository from '../services/config';
++import { useUnderWebStore } from './underweb';
++
++// Saved instance-invite setups: who to invite + which saved invite message, one click.
++
++const KEY = 'UWX_invitePresets';
++const SCOPES = ['selected', 'favorites', 'all-online', 'staff', 'creators', 'partners'];
++
++export const DEFAULT_INVITE_PRESETS = Object.freeze([
++    { id: 'staff-call', name: 'Staff call', scope: 'staff', messageSlot: -1 },
++    { id: 'favorites', name: 'Favorites', scope: 'favorites', messageSlot: -1 },
++    { id: 'creators', name: 'Creators', scope: 'creators', messageSlot: -1 }
++]);
++
++export function normalizeInvitePreset(raw) {
++    const name = String(raw?.name || '').trim().slice(0, 40);
++    if (!name) return null;
++    const slot = Number(raw?.messageSlot);
++    return {
++        id: String(raw?.id || `preset-${Date.now()}`),
++        name,
++        scope: SCOPES.includes(raw?.scope) ? raw.scope : 'favorites',
++        messageSlot: Number.isInteger(slot) && slot >= 0 && slot < 12 ? slot : -1
++    };
++}
++
++export const useUwxInvitePresetsStore = defineStore('UwxInvitePresets', () => {
++    const underweb = useUnderWebStore();
++    const presets = ref(DEFAULT_INVITE_PRESETS.map((p) => ({ ...p })));
++    const loaded = ref(false);
++
++    async function load() {
++        if (loaded.value) return;
++        loaded.value = true;
++        try {
++            const raw = JSON.parse((await configRepository.getString(KEY, '')) || 'null');
++            if (Array.isArray(raw)) {
++                const list = raw.map(normalizeInvitePreset).filter(Boolean);
++                presets.value = list;
++            }
++        } catch {
++            // keep defaults
++        }
++    }
++
++    async function save() {
++        await configRepository.setString(KEY, JSON.stringify(presets.value));
++    }
++
++    /** Save what the inviter is set to right now as a preset. */
++    async function saveCurrent(name) {
++        const preset = normalizeInvitePreset({ name, scope: underweb.inviteScope, messageSlot: underweb.inviteMessageSlot });
++        if (!preset) {
++            toast.error('Give the preset a name.');
++            return null;
++        }
++        presets.value = [...presets.value.filter((p) => p.name.toLowerCase() !== preset.name.toLowerCase()), preset];
++        await save();
++        toast.success(`Saved "${preset.name}".`);
++        return preset;
++    }
++
++    async function remove(id) {
++        presets.value = presets.value.filter((p) => p.id !== id);
++        await save();
++    }
++
++    /** Switch the inviter to a preset. With inviteNow, also sends the invites. */
++    async function apply(id, { inviteNow = false } = {}) {
++        const preset = presets.value.find((p) => p.id === id);
++        if (!preset) return null;
++        await underweb.setInviteScope(preset.scope);
++        await underweb.setInviteMessageSlot(preset.messageSlot);
++        if (inviteNow) {
++            return underweb.inviteFriendsNow(underweb.invitePoolFriends.map((f) => f.id));
++        }
++        return { applied: true };
++    }
++
++    return { presets, load, saveCurrent, remove, apply };
++});
+diff --git a/src/stores/uwxLobbyGuard.js b/src/stores/uwxLobbyGuard.js
+index 39ac4cb..8ef48bb 100644
+--- a/src/stores/uwxLobbyGuard.js
++++ b/src/stores/uwxLobbyGuard.js
+@@ -7,6 +7,7 @@ import { labelSummary, pendingAlerts, riskLabel, riskRank } from '../shared/util
+ import { useLocationStore } from './location';
+ import { useSafetyIntelStore } from './safetyIntel';
+ import { useUserStore } from './user';
++import { useUwxDiscordAlertsStore } from './uwxDiscordAlerts';
+ 
+ // Lobby Guard: checks everyone in your instance against the shared, staff-reviewed
+ // "bad news" labels as they join, and warns you privately. It never kicks, bans,
+@@ -76,6 +77,11 @@ export const useUwxLobbyGuardStore = defineStore('UwxLobbyGuard', () => {
+             };
+             if (level === 'high') toast.error(message, options);
+             else toast.warning(message, options);
++            try {
++                useUwxDiscordAlertsStore().onLabeledPerson(person, userStore.currentUser?.displayName || '');
++            } catch {
++                // Discord alerts are optional.
++            }
+         }
+     }
+ 
+diff --git a/src/stores/uwxMemberNotes.js b/src/stores/uwxMemberNotes.js
+new file mode 100644
+index 0000000..96c880c
+--- /dev/null
++++ b/src/stores/uwxMemberNotes.js
+@@ -0,0 +1,53 @@
++import { ref } from 'vue';
++import { defineStore } from 'pinia';
++
++import configRepository from '../services/config';
++
++// Private staff notes about members, kept on this PC (not shared, not sent anywhere).
++
++const KEY = 'UWX_memberNotes';
++const MAX_PER_USER = 50;
++
++export const useUwxMemberNotesStore = defineStore('UwxMemberNotes', () => {
++    const notes = ref({}); // userId -> [{ id, at, text }]
++    const loaded = ref(false);
++
++    async function load() {
++        if (loaded.value) return;
++        loaded.value = true;
++        try {
++            const raw = JSON.parse((await configRepository.getString(KEY, '')) || '{}');
++            notes.value = raw && typeof raw === 'object' ? raw : {};
++        } catch {
++            notes.value = {};
++        }
++    }
++
++    async function save() {
++        await configRepository.setString(KEY, JSON.stringify(notes.value));
++    }
++
++    function forUser(userId) {
++        return notes.value[userId] || [];
++    }
++
++    async function add(userId, text) {
++        const value = String(text || '').trim().slice(0, 1000);
++        if (!value || !String(userId).startsWith('usr_')) return false;
++        const list = [{ id: `${Date.now()}`, at: Date.now(), text: value }, ...forUser(userId)].slice(0, MAX_PER_USER);
++        notes.value = { ...notes.value, [userId]: list };
++        await save();
++        return true;
++    }
++
++    async function remove(userId, id) {
++        const list = forUser(userId).filter((n) => n.id !== id);
++        const next = { ...notes.value };
++        if (list.length) next[userId] = list;
++        else delete next[userId];
++        notes.value = next;
++        await save();
++    }
++
++    return { notes, load, forUser, add, remove };
++});
+diff --git a/src/views/UnderWeb/UnderWeb.vue b/src/views/UnderWeb/UnderWeb.vue
+index dac99df..630e7ad 100644
+--- a/src/views/UnderWeb/UnderWeb.vue
++++ b/src/views/UnderWeb/UnderWeb.vue
+@@ -342,6 +342,20 @@
+                             <div class="uwx-stat"><span class="uwx-stat-label">SENT</span><strong>{{ sessionInvitesSent }}</strong></div>
+                         </div>
+ 
++                        <div class="uwx-preset-row mt-4">
++                            <div class="uwx-section-label">SAVED SETUPS</div>
++                            <div class="flex flex-wrap gap-2 mt-2">
++                                <div v-for="preset in invitePresets" :key="preset.id" class="uwx-preset-chip">
++                                    <button type="button" class="uwx-preset-apply" :title="presetHint(preset)" @click="applyInvitePreset(preset.id)">{{ preset.name }}</button>
++                                    <button type="button" class="uwx-preset-go" :disabled="isManualInviting || !canInviteHere" title="Use this and invite now" @click="applyInvitePreset(preset.id, true)">
++                                        <i class="ri-send-plane-2-line" />
++                                    </button>
++                                    <button type="button" class="uwx-preset-x" title="Delete" @click="invitePresetsStore.remove(preset.id)"><i class="ri-close-line" /></button>
++                                </div>
++                                <Button size="sm" variant="ghost" @click="saveInvitePreset"><i class="ri-add-line" /> Save current</Button>
++                            </div>
++                        </div>
++
+                         <div class="uwx-scope-grid mt-4">
+                             <div>
+                                 <div class="uwx-section-label">FRIEND AUDIENCES</div>
+@@ -1033,6 +1047,7 @@
+     import { LABEL_DURATIONS, useUwxLabelsStore } from '../../stores/uwxLabels';
+     import { useModalStore } from '../../stores/modal';
+     import UwxAccountCard from './UwxAccountCard.vue';
++    import { useUwxInvitePresetsStore } from '../../stores/uwxInvitePresets';
+     import UwxLabelReviewQueue from './UwxLabelReviewQueue.vue';
+     import { useUserStore } from '../../stores/user';
+     import { categoryLabel } from '../../shared/utils/uwxSafety';
+@@ -1128,6 +1143,26 @@
+         writeInviteMessage
+     } = underWebStore;
+ 
++    const invitePresetsStore = useUwxInvitePresetsStore();
++    const { presets: invitePresets } = storeToRefs(invitePresetsStore);
++    void invitePresetsStore.load();
++    const scopeNames = { selected: 'selected friends', favorites: 'favorite friends', 'all-online': 'all online friends', staff: 'UnderWeb staff', creators: 'UnderWeb creators', partners: 'UnderWeb partners' };
++    function presetHint(preset) {
++        const msg = preset.messageSlot >= 0 ? ` with message ${preset.messageSlot + 1}` : ', no message';
++        return `Invite ${scopeNames[preset.scope] || preset.scope}${msg}`;
++    }
++    async function applyInvitePreset(id, now = false) {
++        await invitePresetsStore.apply(id, { inviteNow: now });
++    }
++    async function saveInvitePreset() {
++        const { ok, value } = await modalStore.prompt({
++            title: 'Save this invite setup',
++            description: `Saves the current audience (${scopeNames[inviteScope.value]}) and invite message. Name it:`,
++            confirmText: 'Save'
++        });
++        if (ok) await invitePresetsStore.saveCurrent(value);
++    }
++
+     const newInviteMessage = ref('');
+     const savingInviteMessage = ref(false);
+     function messageText(slot) {
+@@ -1857,6 +1892,28 @@
+         gap: 8px;
+         padding: 2px 0;
+     }
++    .uwx-preset-chip {
++        display: inline-flex;
++        align-items: stretch;
++        border-radius: 999px;
++        border: 1px solid rgb(79 179 255 / 40%);
++        overflow: hidden;
++        font-size: 13px;
++    }
++    .uwx-preset-chip button {
++        padding: 4px 10px;
++    }
++    .uwx-preset-chip button:hover:not(:disabled) {
++        background: rgb(79 179 255 / 12%);
++    }
++    .uwx-preset-go,
++    .uwx-preset-x {
++        border-left: 1px solid rgb(79 179 255 / 25%);
++        color: #4fb3ff;
++    }
++    .uwx-preset-x {
++        color: var(--muted-foreground);
++    }
+     .uwx-staff-publish {
+         display: flex;
+         flex-direction: column;
+diff --git a/src/views/UnderWeb/UwxAccountCard.vue b/src/views/UnderWeb/UwxAccountCard.vue
+index bdc4afd..5d062fd 100644
+--- a/src/views/UnderWeb/UwxAccountCard.vue
++++ b/src/views/UnderWeb/UwxAccountCard.vue
+@@ -70,6 +70,11 @@
+ </script>
+ 
+ <style scoped>
++    .uwx-help {
++        color: var(--muted-foreground);
++        font-size: 11px;
++        line-height: 1.45;
++    }
+     .uwx-acct-row {
+         display: flex;
+         align-items: center;
+diff --git a/src/views/UnderWeb/UwxDiscordAlertsCard.vue b/src/views/UnderWeb/UwxDiscordAlertsCard.vue
+new file mode 100644
+index 0000000..fd5138e
+--- /dev/null
++++ b/src/views/UnderWeb/UwxDiscordAlertsCard.vue
+@@ -0,0 +1,110 @@
++<template>
++    <Card class="uwx-card uwx-card-wide">
++        <CardHeader>
++            <div class="flex flex-wrap items-start justify-between gap-3">
++                <div>
++                    <CardTitle>Discord alerts</CardTitle>
++                    <CardDescription>
++                        Post group activity to a private staff channel. In Discord: channel settings → Integrations → Webhooks → New Webhook → Copy URL.
++                        The link stays on this PC.
++                    </CardDescription>
++                </div>
++                <Badge :variant="webhookSet ? 'default' : 'outline'">{{ webhookSet ? 'CONNECTED' : 'OFF' }}</Badge>
++            </div>
++        </CardHeader>
++        <CardContent class="space-y-4">
++            <form class="flex flex-wrap gap-2" @submit.prevent="saveHook">
++                <Input v-model="hookDraft" type="password" class="flex-1 min-w-[16rem]" :placeholder="webhookSet ? 'Webhook saved — paste a new one to replace it' : 'https://discord.com/api/webhooks/…'" aria-label="Discord webhook link" autocomplete="off" />
++                <Button type="submit" :disabled="!hookDraft.trim()">Save</Button>
++                <Button v-if="webhookSet" type="button" variant="outline" @click="sendTest">Send test</Button>
++                <Button v-if="webhookSet" type="button" variant="ghost" @click="disconnect">Disconnect</Button>
++            </form>
++
++            <div class="flex flex-wrap items-center gap-2">
++                <span class="text-sm">Watch group</span>
++                <NativeSelect :model-value="settings.groupId" aria-label="Group to watch" @update:modelValue="pickGroup">
++                    <NativeSelectOption value="">Choose a group…</NativeSelectOption>
++                    <NativeSelectOption v-for="g in auditGroups" :key="g.id" :value="g.id">{{ g.name }}</NativeSelectOption>
++                </NativeSelect>
++                <span class="uwx-help">Checks every 2 minutes in the background, even when this tab is closed.</span>
++            </div>
++
++            <div class="uwx-alert-toggles">
++                <label v-for="item in toggles" :key="item.key" class="uwx-alert-toggle">
++                    <Switch :model-value="settings[item.key]" @update:modelValue="(v) => setSetting(item.key, v)" />
++                    <span><strong>{{ item.label }}</strong><small>{{ item.help }}</small></span>
++                </label>
++            </div>
++
++            <p v-if="lastError" class="uwx-invite-permission blocked">{{ lastError }}</p>
++            <p v-else-if="lastPostAt" class="uwx-help">Last alert sent {{ new Date(lastPostAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }}.</p>
++        </CardContent>
++    </Card>
++</template>
++
++<script setup>
++    import { computed, onMounted, ref } from 'vue';
++    import { storeToRefs } from 'pinia';
++    import { Badge } from '@/components/ui/badge';
++    import { Button } from '@/components/ui/button';
++    import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
++    import { Input } from '@/components/ui/input';
++    import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
++    import { Switch } from '@/components/ui/switch';
++
++    import { useUwxDiscordAlertsStore } from '../../stores/uwxDiscordAlerts';
++    import { useUwxGroupToolsStore } from '../../stores/uwxGroupTools';
++
++    const alerts = useUwxDiscordAlertsStore();
++    const { webhookSet, settings, lastPostAt, lastError } = storeToRefs(alerts);
++    const { setSetting, sendTest } = alerts;
++    const tools = useUwxGroupToolsStore();
++    const { moderatableGroups } = storeToRefs(tools);
++    const auditGroups = computed(() => moderatableGroups.value.filter((g) => tools.can(g.id, 'audit')));
++
++    const hookDraft = ref('');
++    const toggles = [
++        { key: 'moderation', label: 'Bans, removals, kicks & warnings', help: 'From the group audit log.' },
++        { key: 'roles', label: 'Role changes', help: 'Roles given or taken away, roles edited.' },
++        { key: 'flags', label: 'Unusual activity', help: 'Ban bursts, permission changes, big group changes.' },
++        { key: 'recaps', label: 'Event recaps', help: 'Posted when you end an Event Mode event.' },
++        { key: 'labeled', label: 'Labeled person near you', help: 'Names only — never which world or instance.' }
++    ];
++
++    async function saveHook() {
++        if (await alerts.setWebhook(hookDraft.value)) hookDraft.value = '';
++    }
++    async function disconnect() {
++        await alerts.setWebhook('');
++    }
++    async function pickGroup(id) {
++        await setSetting('groupId', id);
++        await setSetting('groupName', auditGroups.value.find((g) => g.id === id)?.name || '');
++    }
++
++    onMounted(() => alerts.init());
++</script>
++
++<style scoped>
++    .uwx-help {
++        color: var(--muted-foreground);
++        font-size: 11px;
++        line-height: 1.45;
++    }
++    .uwx-alert-toggles {
++        display: grid;
++        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
++        gap: 10px;
++    }
++    .uwx-alert-toggle {
++        display: flex;
++        align-items: flex-start;
++        gap: 10px;
++        font-size: 13px;
++    }
++    .uwx-alert-toggle small {
++        display: block;
++        font-size: 11px;
++        color: var(--muted-foreground);
++    }
++</style>
+diff --git a/src/views/UnderWeb/UwxGroupTools.vue b/src/views/UnderWeb/UwxGroupTools.vue
+index 22bf5c2..ad780a0 100644
+--- a/src/views/UnderWeb/UwxGroupTools.vue
++++ b/src/views/UnderWeb/UwxGroupTools.vue
+@@ -1,5 +1,15 @@
+ <template>
+     <div class="uwx-grid">
++        <div v-if="pendingActions.length" class="uwx-card-wide uwx-undo-bar" role="status">
++            <div v-for="item in pendingActions" :key="item.id" class="uwx-undo-item">
++                <i :class="item.action === 'ban' ? 'ri-forbid-2-line' : 'ri-user-unfollow-line'" />
++                <span class="min-w-0 flex-1 truncate">
++                    <strong>{{ item.action === 'ban' ? 'Banning' : 'Removing' }} {{ item.label }}</strong>
++                    from {{ item.groupName }} in {{ secondsLeft(item) }}s
++                </span>
++                <Button size="sm" @click="undo(item.id)">Undo</Button>
++            </div>
++        </div>
+         <Card class="uwx-card uwx-card-wide">
+             <CardHeader>
+                 <div class="flex items-start justify-between gap-4">
+@@ -75,12 +85,16 @@
+                 </form>
+                 <p v-if="lookupNote" class="text-sm text-muted-foreground">{{ lookupNote }}</p>
+                 <div v-if="lookupResults.length" class="uwx-member-results">
+-                    <div v-for="member in lookupResults" :key="member.userId" class="uwx-member-row">
++                    <template v-for="member in lookupResults" :key="member.userId">
++                    <div class="uwx-member-row">
+                         <div class="min-w-0 flex-1">
+                             <strong class="block truncate">{{ member.displayName }}</strong>
+                             <small class="text-muted-foreground">{{ member.userId }} · {{ member.membershipStatus }}</small>
+                         </div>
+                         <div class="flex flex-wrap gap-2 justify-end">
++                            <Button size="sm" :variant="historyOpenId === member.userId ? 'secondary' : 'ghost'" @click="historyOpenId = historyOpenId === member.userId ? '' : member.userId">
++                                History & notes
++                            </Button>
+                             <Button size="sm" variant="ghost" @click="openFullModeration(selectedGroup.id, member.userId)">Details</Button>
+                             <Button
+                                 v-if="member.membershipStatus === 'member' && can(selectedGroup.id, 'kick')"
+@@ -102,6 +116,8 @@
+                                 @click="act('unban', member)">Unban</Button>
+                         </div>
+                     </div>
++                    <UwxMemberHistory v-if="historyOpenId === member.userId" :user-id="member.userId" :group-id="selectedGroup.id" />
++                    </template>
+                 </div>
+ 
+                 <div v-if="currentInstanceGroupId === selectedGroup.id && instanceOccupants.length">
+@@ -136,11 +152,15 @@
+             </CardContent>
+         </Card>
+ 
++        <UwxStaffInsights v-if="selectedGroup && can(selectedGroup.id, 'audit')" :group-name="selectedGroup.name" />
++
+         <UwxGroupAudit
+             v-if="selectedGroup && can(selectedGroup.id, 'audit')"
+             :group-id="selectedGroup.id"
+             :group-name="selectedGroup.name" />
+ 
++        <UwxDiscordAlertsCard v-if="moderatableGroups.length" />
++
+         <Card class="uwx-card uwx-card-wide">
+             <CardHeader>
+                 <div class="flex items-start justify-between gap-4">
+@@ -157,10 +177,12 @@
+                 <div v-if="moderationLog.length" class="uwx-log-list">
+                     <div v-for="entry in moderationLog.slice(0, 60)" :key="entry.id" class="uwx-log-row">
+                         <span class="uwx-log-time">{{ formatWhen(entry.at) }}</span>
+-                        <Badge :variant="entry.result === 'ok' ? 'outline' : 'destructive'">{{ entry.action }}</Badge>
++                        <Badge :variant="entry.result === 'ok' ? 'outline' : entry.result === 'undone' ? 'secondary' : 'destructive'">
++                            {{ entry.action }}{{ entry.result === 'undone' ? ' · undone' : '' }}
++                        </Badge>
+                         <span class="min-w-0 break-words">
+                             {{ entry.displayName }} · {{ entry.groupName }}
+-                            <template v-if="entry.result !== 'ok'"> — {{ entry.error }}</template>
++                            <template v-if="entry.result === 'failed'"> — {{ entry.error }}</template>
+                         </span>
+                     </div>
+                 </div>
+@@ -171,7 +193,7 @@
+ </template>
+ 
+ <script setup>
+-    import { computed, onMounted, ref, watch } from 'vue';
++    import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+     import { storeToRefs } from 'pinia';
+     import { Badge } from '@/components/ui/badge';
+     import { Button } from '@/components/ui/button';
+@@ -183,19 +205,38 @@
+     import { labelSummary } from '../../shared/utils/uwxSafety';
+     import { useUwxGroupAuditStore } from '../../stores/uwxGroupAudit';
+     import UwxGroupAudit from './UwxGroupAudit.vue';
++    import UwxStaffInsights from './UwxStaffInsights.vue';
++    import UwxDiscordAlertsCard from './UwxDiscordAlertsCard.vue';
++    import UwxMemberHistory from './UwxMemberHistory.vue';
+ 
+     const store = useUwxGroupToolsStore();
+     const safety = useSafetyIntelStore();
+     const auditStore = useUwxGroupAuditStore();
+-    const { loadingPermissions, moderationLog, busyAction, myGroups, moderatableGroups, currentInstanceGroupId, instanceOccupants } =
++    const { loadingPermissions, moderationLog, busyAction, myGroups, moderatableGroups, currentInstanceGroupId, instanceOccupants, pendingActions } =
+         storeToRefs(store);
+-    const { can, clearLog, lookupMember, moderate, openFullModeration, loadAllPermissions } = store;
++    const { can, clearLog, lookupMember, moderate, openFullModeration, loadAllPermissions, undo } = store;
++
++    const nowTick = ref(Date.now());
++    let tickTimer = null;
++    watch(
++        () => pendingActions.value.length,
++        (n) => {
++            if (n && !tickTimer) tickTimer = setInterval(() => (nowTick.value = Date.now()), 250);
++            if (!n && tickTimer) {
++                clearInterval(tickTimer);
++                tickTimer = null;
++            }
++        }
++    );
++    onBeforeUnmount(() => tickTimer && clearInterval(tickTimer));
++    const secondsLeft = (item) => Math.max(0, Math.ceil((item.runsAt - nowTick.value) / 1000));
+ 
+     const selectedGroupId = ref('');
+     const lookupQuery = ref('');
+     const lookupResults = ref([]);
+     const lookupNote = ref('');
+     const lookingUp = ref(false);
++    const historyOpenId = ref('');
+ 
+     const selectedGroup = computed(() => moderatableGroups.value.find((group) => group.id === selectedGroupId.value) || null);
+ 
+@@ -266,6 +307,29 @@
+ </script>
+ 
+ <style scoped>
++    /* Wide cards span both columns (the page grid's rule doesn't reach inside this component). */
++    .uwx-card-wide {
++        grid-column: 1 / -1;
++    }
++    .uwx-undo-bar {
++        display: flex;
++        flex-direction: column;
++        gap: 6px;
++        padding: 10px 12px;
++        border-radius: 12px;
++        border: 1px solid rgb(255 107 107 / 50%);
++        background: rgb(255 107 107 / 8%);
++    }
++    .uwx-undo-item {
++        display: flex;
++        align-items: center;
++        gap: 10px;
++        font-size: 13px;
++    }
++    .uwx-undo-item i {
++        color: #ff6b6b;
++        font-size: 16px;
++    }
+     .uwx-label-chip {
+         display: inline-flex;
+         align-items: center;
+diff --git a/src/views/UnderWeb/UwxMemberHistory.vue b/src/views/UnderWeb/UwxMemberHistory.vue
+new file mode 100644
+index 0000000..39a88f5
+--- /dev/null
++++ b/src/views/UnderWeb/UwxMemberHistory.vue
+@@ -0,0 +1,146 @@
++<template>
++    <div class="uwx-mh">
++        <div class="uwx-mh-facts">
++            <span v-if="intel" class="uwx-mh-label" :class="intel.risk_level"><i class="ri-alarm-warning-line" /> {{ labelSummary(intel) }}</span>
++            <span>Joined: <strong>{{ summary.firstJoinAt ? date(summary.firstJoinAt) : 'not in saved log' }}</strong></span>
++            <span>Bans <strong>{{ summary.bans }}</strong></span>
++            <span>Removals <strong>{{ summary.removals }}</strong></span>
++            <span>Kicks <strong>{{ summary.kicks }}</strong></span>
++            <span>Warnings <strong>{{ summary.warnings }}</strong></span>
++        </div>
++
++        <div class="uwx-mh-cols">
++            <section>
++                <div class="uwx-mh-label-sm">STAFF NOTES (THIS PC)</div>
++                <form class="flex gap-2" @submit.prevent="addNote">
++                    <Input v-model="draft" placeholder="e.g. warned for mic spam at MVN" aria-label="Add a note" />
++                    <Button type="submit" size="sm" :disabled="!draft.trim()">Add</Button>
++                </form>
++                <div v-for="note in userNotes" :key="note.id" class="uwx-mh-note">
++                    <span class="min-w-0 flex-1">{{ note.text }}</span>
++                    <time>{{ date(note.at) }}</time>
++                    <button type="button" aria-label="Delete note" @click="notesStore.remove(userId, note.id)"><i class="ri-close-line" /></button>
++                </div>
++                <p v-if="!userNotes.length" class="text-xs text-muted-foreground mt-1">No notes yet.</p>
++            </section>
++
++            <section>
++                <div class="uwx-mh-label-sm">GROUP HISTORY</div>
++                <p v-if="!hasLog" class="text-xs text-muted-foreground">Open Group activity for this group to load its log.</p>
++                <div v-else-if="history.length" class="uwx-mh-log">
++                    <div v-for="e in history.slice(0, 15)" :key="e.id" class="uwx-mh-entry">
++                        <time>{{ date(e.ts) }}</time>
++                        <span class="min-w-0 flex-1">{{ e.description || eventLabel(e.eventType) }}</span>
++                    </div>
++                </div>
++                <p v-else class="text-xs text-muted-foreground">Nothing about them in the saved log.</p>
++            </section>
++        </div>
++    </div>
++</template>
++
++<script setup>
++    import { computed, onMounted, ref } from 'vue';
++    import { storeToRefs } from 'pinia';
++    import { Button } from '@/components/ui/button';
++    import { Input } from '@/components/ui/input';
++
++    import { eventLabel } from '../../shared/utils/uwxAudit';
++    import { labelSummary } from '../../shared/utils/uwxSafety';
++    import { memberHistory, memberSummary } from '../../shared/utils/uwxStaffInsights';
++    import { useSafetyIntelStore } from '../../stores/safetyIntel';
++    import { useUwxGroupAuditStore } from '../../stores/uwxGroupAudit';
++    import { useUwxMemberNotesStore } from '../../stores/uwxMemberNotes';
++
++    const props = defineProps({
++        userId: { type: String, required: true },
++        groupId: { type: String, required: true }
++    });
++
++    const audit = useUwxGroupAuditStore();
++    const { entries, groupId: auditGroupId } = storeToRefs(audit);
++    const notesStore = useUwxMemberNotesStore();
++    const { notes } = storeToRefs(notesStore);
++    const safety = useSafetyIntelStore();
++    const draft = ref('');
++
++    const hasLog = computed(() => auditGroupId.value === props.groupId && entries.value.length > 0);
++    const history = computed(() => (hasLog.value ? memberHistory(entries.value, props.userId) : []));
++    const summary = computed(() => memberSummary(hasLog.value ? entries.value : [], props.userId));
++    const userNotes = computed(() => notes.value[props.userId] || []);
++    const intel = computed(() => safety.getIntel(props.userId));
++
++    async function addNote() {
++        if (await notesStore.add(props.userId, draft.value)) draft.value = '';
++    }
++    function date(ts) {
++        return new Date(ts).toLocaleDateString([], { month: 'short', day: 'numeric', year: '2-digit' });
++    }
++
++    onMounted(() => {
++        void notesStore.load();
++        void safety.lookupUser(props.userId).catch(() => {});
++    });
++</script>
++
++<style scoped>
++    .uwx-mh {
++        display: flex;
++        flex-direction: column;
++        gap: 12px;
++        margin-top: 8px;
++        padding: 12px;
++        border-radius: 10px;
++        background: rgb(0 0 0 / 22%);
++        border: 1px solid var(--border);
++    }
++    .uwx-mh-facts {
++        display: flex;
++        flex-wrap: wrap;
++        gap: 6px 14px;
++        font-size: 12px;
++        color: var(--muted-foreground);
++    }
++    .uwx-mh-facts strong {
++        color: var(--foreground);
++    }
++    .uwx-mh-label {
++        color: #ffb84d;
++        font-weight: 700;
++    }
++    .uwx-mh-label.high {
++        color: #ff6b6b;
++    }
++    .uwx-mh-cols {
++        display: grid;
++        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
++        gap: 14px;
++    }
++    .uwx-mh-label-sm {
++        color: #76ff00;
++        font-size: 10px;
++        font-weight: 900;
++        letter-spacing: 0.12em;
++        margin-bottom: 6px;
++    }
++    .uwx-mh-note,
++    .uwx-mh-entry {
++        display: flex;
++        align-items: baseline;
++        gap: 8px;
++        padding: 4px 0;
++        font-size: 12px;
++        border-bottom: 1px solid rgb(255 255 255 / 5%);
++        overflow-wrap: anywhere;
++    }
++    .uwx-mh-note time,
++    .uwx-mh-entry time {
++        font-size: 11px;
++        color: var(--muted-foreground);
++        white-space: nowrap;
++    }
++    .uwx-mh-log {
++        max-height: 14rem;
++        overflow-y: auto;
++    }
++</style>
+diff --git a/src/views/UnderWeb/UwxStaffInsights.vue b/src/views/UnderWeb/UwxStaffInsights.vue
+new file mode 100644
+index 0000000..8c74e17
+--- /dev/null
++++ b/src/views/UnderWeb/UwxStaffInsights.vue
+@@ -0,0 +1,227 @@
++<template>
++    <Card class="uwx-card uwx-card-wide">
++        <CardHeader>
++            <div class="flex flex-wrap items-start justify-between gap-3">
++                <div>
++                    <CardTitle>Staff & recruiting</CardTitle>
++                    <CardDescription>Built from {{ groupName }}'s audit log saved on this PC ({{ entries.length }} entries).</CardDescription>
++                </div>
++                <NativeSelect v-model="range" aria-label="Time range">
++                    <NativeSelectOption value="7">Last 7 days</NativeSelectOption>
++                    <NativeSelectOption value="30">Last 30 days</NativeSelectOption>
++                    <NativeSelectOption value="90">Last 90 days</NativeSelectOption>
++                </NativeSelect>
++            </div>
++        </CardHeader>
++        <CardContent class="uwx-si">
++            <section>
++                <div class="uwx-si-label">NEEDS A LOOK</div>
++                <div v-if="flags.length" class="uwx-si-flags">
++                    <div v-for="flag in flags.slice(0, 8)" :key="flag.id" class="uwx-si-flag" :class="flag.kind">
++                        <i :class="flagIcon(flag.kind)" />
++                        <span class="min-w-0 flex-1">{{ flag.text }}</span>
++                        <time>{{ when(flag.ts) }}</time>
++                    </div>
++                </div>
++                <p v-else class="text-sm text-muted-foreground">Nothing unusual: no ban bursts, permission changes or big group changes.</p>
++            </section>
++
++            <section>
++                <div class="uwx-si-label">STAFF ACTIVITY</div>
++                <table v-if="staff.length" class="uwx-si-table">
++                    <thead>
++                        <tr><th>Staff</th><th>Actions</th><th>Bans & removals</th><th>Roles</th><th>Instances</th><th>Last</th></tr>
++                    </thead>
++                    <tbody>
++                        <tr v-for="row in staff.slice(0, 10)" :key="row.actorId">
++                            <td class="truncate">{{ row.name }}</td>
++                            <td><strong>{{ row.total }}</strong></td>
++                            <td>{{ row.byCategory.moderation || 0 }}</td>
++                            <td>{{ row.byCategory.roles || 0 }}</td>
++                            <td>{{ row.byCategory.instances || 0 }}</td>
++                            <td class="text-muted-foreground">{{ when(row.lastAt) }}</td>
++                        </tr>
++                    </tbody>
++                </table>
++                <p v-else class="text-sm text-muted-foreground">No staff actions in this period.</p>
++            </section>
++
++            <section>
++                <div class="uwx-si-label">RECRUITING</div>
++                <div class="uwx-si-stats">
++                    <div><strong>{{ recruiting.sent }}</strong><span>group invites</span></div>
++                    <div><strong>{{ recruiting.accepted }}</strong><span>joined within 2 weeks</span></div>
++                    <div><strong>{{ Math.round(recruiting.rate * 100) }}%</strong><span>of invited people</span></div>
++                    <div><strong>{{ recruiting.joinsTotal }}</strong><span>joins total</span></div>
++                </div>
++                <div class="uwx-si-cols">
++                    <div v-if="recruiting.byStaff.length">
++                        <div class="text-xs text-muted-foreground mb-1">By who invited</div>
++                        <div v-for="row in recruiting.byStaff.slice(0, 6)" :key="row.actorId" class="uwx-si-bar">
++                            <span class="truncate">{{ row.name }}</span>
++                            <span class="uwx-si-track"><span :style="{ width: pct(row.sent, recruiting.byStaff[0].sent) }" /></span>
++                            <span>{{ row.accepted }}/{{ row.sent }}</span>
++                        </div>
++                    </div>
++                    <div v-if="recruiting.byEvent.length">
++                        <div class="text-xs text-muted-foreground mb-1">By event (Event Mode)</div>
++                        <div v-for="row in recruiting.byEvent.slice(0, 6)" :key="row.name" class="uwx-si-bar">
++                            <span class="truncate">{{ row.name }}</span>
++                            <span class="uwx-si-track"><span :style="{ width: pct(row.sent, recruiting.byEvent[0].sent) }" /></span>
++                            <span>{{ row.accepted }}/{{ row.sent }}</span>
++                        </div>
++                    </div>
++                </div>
++            </section>
++        </CardContent>
++    </Card>
++</template>
++
++<script setup>
++    import { computed, ref } from 'vue';
++    import { storeToRefs } from 'pinia';
++    import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
++    import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
++
++    import { recruitingStats, staffActivity, unusualActivity } from '../../shared/utils/uwxStaffInsights';
++    import { useUwxGroupAuditStore } from '../../stores/uwxGroupAudit';
++    import { useUwxEventModeStore } from '../../stores/uwxEventMode';
++
++    defineProps({ groupName: { type: String, default: 'This group' } });
++
++    const { entries, lastSyncAt } = storeToRefs(useUwxGroupAuditStore());
++    const { history } = storeToRefs(useUwxEventModeStore());
++    const range = ref('7');
++    const DAY = 24 * 60 * 60 * 1000;
++    const since = computed(() => (lastSyncAt.value, Date.now() - Number(range.value) * DAY));
++
++    const staff = computed(() => staffActivity(entries.value, since.value));
++    const flags = computed(() => unusualActivity(entries.value, { sinceMs: since.value }));
++    const recruiting = computed(() =>
++        recruitingStats(entries.value, {
++            sinceMs: since.value,
++            events: history.value.map((r) => ({ name: r.name, startedAt: r.startedAt, endedAt: r.endedAt }))
++        })
++    );
++
++    const pct = (v, max) => `${Math.max(4, Math.round((v / Math.max(1, max)) * 100))}%`;
++    const flagIcon = (kind) => ({ burst: 'ri-flashlight-line', permissions: 'ri-key-2-line', sensitive: 'ri-settings-4-line' })[kind] || 'ri-error-warning-line';
++    function when(ts) {
++        return ts ? new Date(ts).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
++    }
++</script>
++
++<style scoped>
++    .uwx-si {
++        display: flex;
++        flex-direction: column;
++        gap: 18px;
++    }
++    .uwx-si-label {
++        color: #76ff00;
++        font-size: 10px;
++        font-weight: 900;
++        letter-spacing: 0.12em;
++        margin-bottom: 8px;
++    }
++    .uwx-si-flags {
++        display: flex;
++        flex-direction: column;
++        gap: 4px;
++    }
++    .uwx-si-flag {
++        display: flex;
++        align-items: center;
++        gap: 10px;
++        padding: 6px 10px;
++        border-radius: 8px;
++        font-size: 13px;
++        border-left: 3px solid #ffb84d;
++        background: rgb(255 184 77 / 6%);
++    }
++    .uwx-si-flag.burst {
++        border-left-color: #ff6b6b;
++        background: rgb(255 107 107 / 7%);
++    }
++    .uwx-si-flag i {
++        color: #ffb84d;
++    }
++    .uwx-si-flag.burst i {
++        color: #ff6b6b;
++    }
++    .uwx-si-flag time {
++        font-size: 11px;
++        color: var(--muted-foreground);
++        white-space: nowrap;
++    }
++    .uwx-si-table {
++        width: 100%;
++        font-size: 13px;
++        border-collapse: collapse;
++        table-layout: fixed;
++    }
++    .uwx-si-table th {
++        text-align: left;
++        font-weight: 500;
++        font-size: 11px;
++        color: var(--muted-foreground);
++        padding: 4px 6px;
++    }
++    .uwx-si-table td {
++        padding: 6px;
++        border-top: 1px solid var(--border);
++        font-variant-numeric: tabular-nums;
++    }
++    .uwx-si-stats {
++        display: grid;
++        grid-template-columns: repeat(4, minmax(0, 1fr));
++        gap: 8px;
++    }
++    @media (max-width: 700px) {
++        .uwx-si-stats {
++            grid-template-columns: repeat(2, minmax(0, 1fr));
++        }
++    }
++    .uwx-si-stats div {
++        display: flex;
++        flex-direction: column;
++        padding: 10px 12px;
++        border-radius: 10px;
++        border: 1px solid var(--border);
++    }
++    .uwx-si-stats strong {
++        font-size: 22px;
++        color: #3df514;
++        font-variant-numeric: tabular-nums;
++    }
++    .uwx-si-stats span {
++        font-size: 11px;
++        color: var(--muted-foreground);
++    }
++    .uwx-si-cols {
++        display: grid;
++        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
++        gap: 16px;
++        margin-top: 12px;
++    }
++    .uwx-si-bar {
++        display: grid;
++        grid-template-columns: 7rem 1fr 3.5rem;
++        align-items: center;
++        gap: 8px;
++        font-size: 12px;
++        padding: 2px 0;
++    }
++    .uwx-si-track {
++        height: 6px;
++        border-radius: 999px;
++        background: rgb(255 255 255 / 6%);
++        overflow: hidden;
++    }
++    .uwx-si-track span {
++        display: block;
++        height: 100%;
++        background: #3df514;
++        border-radius: 999px;
++    }
++</style>
