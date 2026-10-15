@@ -2,6 +2,15 @@ name: Build UnderWeb X
 
 on:
   workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish this build as a GitHub release (UWX updates come from these)"
+        type: choice
+        options:
+          - none
+          - beta
+          - stable
+        default: none
   push:
     branches:
       - main
@@ -24,7 +33,7 @@ on:
       - ".github/workflows/build.yml"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -555,13 +564,33 @@ jobs:
           if (-not (Get-Content "src\views\UnderWeb\UwxGroupTools.vue" -Raw).Contains("<UwxGroupAudit")) { throw "RC12: Group activity panel is not wired into Groups." }
           Write-Host "RC12 applied: UWX $version"
 
+      - name: Apply RC13 safe updates
+        shell: pwsh
+        working-directory: ${{ env.UWX_SOURCE }}
+        run: |
+          $patchFile = Join-Path $env:GITHUB_WORKSPACE "features\core\rc13-updates.patch"
+          if (-not (Test-Path $patchFile)) { throw "RC13 patch not found." }
+          $patchText = [System.IO.File]::ReadAllText($patchFile).Replace("`r`n", "`n")
+          [System.IO.File]::WriteAllText($patchFile, $patchText, [System.Text.UTF8Encoding]::new($false))
+          git apply --check --verbose $patchFile
+          if ($LASTEXITCODE -ne 0) { throw "RC13 patch check failed." }
+          git apply --whitespace=nowarn $patchFile
+          if ($LASTEXITCODE -ne 0) { throw "RC13 patch failed." }
+          $version = (Get-Content "UWX_VERSION" -Raw).Trim()
+          if ($version -ne "0.5.4-rc13") { throw "RC13 version mismatch: $version" }
+          $settings = Get-Content "src\shared\constants\settings.js" -Raw
+          if ($settings.Contains("api0.vrcx.app")) { throw "RC13: updater still points at VRCX's update server." }
+          if (-not $settings.Contains("DOUGLASGUNZ/underwebx/releases")) { throw "RC13: updater is not pointed at UWX releases." }
+          if (-not (Get-Content "src\stores\vrcxUpdater.js" -Raw).Contains("pickUpdate")) { throw "RC13: updater does not use UWX version checks." }
+          Write-Host "RC13 applied: UWX $version"
+
       - name: Install dependencies and run UWX unit tests
         shell: pwsh
         working-directory: ${{ env.UWX_SOURCE }}
         run: |
           npm ci
           if ($LASTEXITCODE -ne 0) { throw "npm ci failed." }
-          npx vitest run src/stores/__tests__/uwxInviter.test.js src/stores/__tests__/uwxGroupTools.test.js src/shared/utils/__tests__/uwxOsc.test.js src/shared/utils/__tests__/uwxAudit.test.js src/stores/__tests__/uwxGroupAudit.test.js
+          npx vitest run src/stores/__tests__/uwxInviter.test.js src/stores/__tests__/uwxGroupTools.test.js src/shared/utils/__tests__/uwxOsc.test.js src/shared/utils/__tests__/uwxAudit.test.js src/stores/__tests__/uwxGroupAudit.test.js src/shared/utils/__tests__/uwxRelease.test.js src/stores/__tests__/vrcxUpdater.test.js
           if ($LASTEXITCODE -ne 0) { throw "UWX unit tests failed." }
 
       - name: Build UnderWeb X
@@ -593,3 +622,35 @@ jobs:
             ${{ env.UWX_SOURCE }}/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14
+
+      - name: Publish GitHub release
+        if: github.event_name == 'workflow_dispatch' && inputs.publish != 'none'
+        shell: pwsh
+        working-directory: ${{ env.UWX_SOURCE }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHANNEL: ${{ inputs.publish }}
+        run: |
+          $version = (Get-Content "UWX_VERSION" -Raw).Trim()
+          $tag = "v$version"
+          $setup = Get-ChildItem -Path . -Filter "UnderWebX_*_Setup.exe" | Select-Object -First 1
+          $zip = Get-ChildItem -Path . -Filter "UnderWebX_*.zip" | Select-Object -First 1
+          if (-not $setup) { throw "No installer to publish." }
+          if ($env:CHANNEL -eq "stable" -and $version -match "-") { Write-Warning "Publishing a pre-release version ($version) to the Stable channel." }
+          # Release notes: this version's section of CHANGELOG_UWX.md.
+          $lines = Get-Content "CHANGELOG_UWX.md"
+          $start = ($lines | Select-String -Pattern ("^## " + [regex]::Escape($version)) | Select-Object -First 1).LineNumber
+          $notes = if ($start) {
+            $rest = $lines[$start..($lines.Length - 1)]
+            $next = ($rest | Select-String -Pattern "^## " | Select-Object -First 1).LineNumber
+            if ($next) { $rest[0..($next - 2)] } else { $rest }
+          } else { @("UnderWeb X $version") }
+          $notes -join "`n" | Set-Content -Path release-notes.md -Encoding utf8
+          $files = @($setup.FullName, "SHA256SUMS.txt")
+          if ($zip) { $files += $zip.FullName }
+          $flag = if ($env:CHANNEL -eq "beta") { "--prerelease" } else { "--latest" }
+          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) { throw "Release $tag already exists. Bump the version before publishing again." }
+          gh release create $tag @files --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --title "UnderWeb X $tag" --notes-file release-notes.md $flag
+          if ($LASTEXITCODE -ne 0) { throw "gh release create failed." }
+          Write-Host "Published $tag ($env:CHANNEL)"

@@ -1,0 +1,663 @@
+diff --git a/CHANGELOG_UWX.md b/CHANGELOG_UWX.md
+index 4580278..06c57a0 100644
+--- a/CHANGELOG_UWX.md
++++ b/CHANGELOG_UWX.md
+@@ -1,5 +1,13 @@
+ # UnderWeb X changelog
+ 
++## 0.5.4-rc13 — Safe, automatic updates
++
++- **Fixed a serious updater bug**: UWX was still checking VRCX's update server. As soon as stock VRCX published a newer version, UWX would have downloaded it and offered to install it, replacing UnderWeb X. UWX now only updates from UnderWeb X's own releases on GitHub.
++- Only the UnderWeb X installer from this project's releases is downloaded, and only with a SHA-256 checksum, which is verified before installing. Anything else is ignored.
++- Versions are compared properly (rc9 < rc10 < final release), so you're never "updated" to an older build.
++- **Channels**: Stable (finished releases) or Beta (also test builds). Your choice is remembered.
++- System → **Updates**: installed vs latest, channel, automatic download on/off, download progress, and Restart & install. Settings and data are kept when updating.
++
+ ## 0.5.3-rc12 — Group activity (audit log) + clearer invites
+ 
+ Layout:
+diff --git a/UWX_VERSION b/UWX_VERSION
+index 9e8c2d2..ae2fe4e 100644
+--- a/UWX_VERSION
++++ b/UWX_VERSION
+@@ -1 +1 @@
+-0.5.3-rc12
++0.5.4-rc13
+diff --git a/src/shared/constants/settings.js b/src/shared/constants/settings.js
+index 720f847..e97df40 100644
+--- a/src/shared/constants/settings.js
++++ b/src/shared/constants/settings.js
+@@ -13,23 +13,20 @@ const VRChatCameraResolutions = [
+     { name: '7680x4320 (8K)', width: 7680, height: 4320 }
+ ];
+ 
++// UWX: updates come from UnderWeb X's own GitHub releases (see shared/utils/uwxRelease.js),
++// never from VRCX's update server — that would offer stock VRCX and replace UWX.
++const UWX_RELEASES_API = 'https://api.github.com/repos/DOUGLASGUNZ/underwebx/releases?per_page=30';
+ const branches = {
+     Stable: {
+         name: 'Stable',
+-        urlReleases: 'https://api0.vrcx.app/releases/stable',
+-        urlLatest: 'https://api0.vrcx.app/releases/stable/latest'
++        urlReleases: UWX_RELEASES_API,
++        urlLatest: UWX_RELEASES_API
+     },
+-    Nightly: {
+-        name: 'Nightly',
+-        urlReleases: 'https://api0.vrcx.app/releases/nightly',
+-        urlLatest: 'https://api0.vrcx.app/releases/nightly/latest'
++    Beta: {
++        name: 'Beta',
++        urlReleases: UWX_RELEASES_API,
++        urlLatest: UWX_RELEASES_API
+     }
+-    // LinuxTest: {
+-    //     name: 'LinuxTest',
+-    //     urlReleases: 'https://api.github.com/repos/rs189/VRCX/releases',
+-    //     urlLatest:
+-    //         'https://api.github.com/repos/rs189/VRCX/releases/latest'
+-    // }
+ };
+ 
+ const TABLE_MAX_SIZE_MIN = 100;
+diff --git a/src/shared/constants/uwx.js b/src/shared/constants/uwx.js
+index 25cce08..fd7b6f6 100644
+--- a/src/shared/constants/uwx.js
++++ b/src/shared/constants/uwx.js
+@@ -1,2 +1,2 @@
+-export const UWX_VERSION = '0.5.3-rc12';
++export const UWX_VERSION = '0.5.4-rc13';
+ export const UWX_MANIFEST_URL = 'https://underweb.cloud/api/uwx/manifest';
+diff --git a/src/shared/utils/__tests__/uwxRelease.test.js b/src/shared/utils/__tests__/uwxRelease.test.js
+new file mode 100644
+index 0000000..d547770
+--- /dev/null
++++ b/src/shared/utils/__tests__/uwxRelease.test.js
+@@ -0,0 +1,79 @@
++import { describe, expect, it } from 'vitest';
++import { channelReleases, compareUwxVersions, parseUwxVersion, pickUpdate, setupAsset } from '../uwxRelease';
++
++const HASH = 'a'.repeat(64);
++const asset = (over = {}) => ({
++    name: 'UnderWebX_20261015_Setup.exe',
++    state: 'uploaded',
++    size: 205880620,
++    digest: `sha256:${HASH}`,
++    browser_download_url: 'https://github.com/DOUGLASGUNZ/underwebx/releases/download/v0.5.4-rc13/UnderWebX_20261015_Setup.exe',
++    ...over
++});
++const release = (tag, over = {}) => ({
++    tag_name: tag,
++    name: `UnderWeb X ${tag}`,
++    draft: false,
++    prerelease: /-/.test(tag),
++    body: 'notes',
++    assets: [asset()],
++    ...over
++});
++
++describe('uwxRelease', () => {
++    it('parses tags, names and bare versions', () => {
++        expect(parseUwxVersion('v0.5.4-rc13')).toEqual({ major: 0, minor: 5, patch: 4, pre: ['rc', 13] });
++        expect(parseUwxVersion('UnderWeb X v0.5.0')).toEqual({ major: 0, minor: 5, patch: 0, pre: [] });
++        expect(parseUwxVersion('VRCX 2026.09.16')).toEqual({ major: 2026, minor: 9, patch: 16, pre: [] });
++        expect(parseUwxVersion('nonsense')).toBeNull();
++    });
++
++    it('orders versions like semver, with rc9 < rc10 and rc < final', () => {
++        expect(compareUwxVersions('0.5.2-rc9', '0.5.2-rc10')).toBe(-1);
++        expect(compareUwxVersions('0.5.3-rc12', '0.5.2-rc11')).toBe(1);
++        expect(compareUwxVersions('0.5.4', '0.5.4-rc13')).toBe(1);
++        expect(compareUwxVersions('0.5.0', '0.5.3-rc12')).toBe(-1);
++        expect(compareUwxVersions('v0.5.3-rc12', '0.5.3-rc12')).toBe(0);
++    });
++
++    it('only accepts the UWX installer from this repo with a sha256 digest', () => {
++        expect(setupAsset(release('v0.5.4-rc13'))).toMatchObject({ hashString: HASH, size: 205880620 });
++        expect(setupAsset({ assets: [asset({ digest: '' })] })).toBeNull();
++        expect(setupAsset({ assets: [asset({ name: 'VRCX_Setup.exe' })] })).toBeNull();
++        expect(setupAsset({ assets: [asset({ browser_download_url: 'https://github.com/vrcx-team/VRCX/releases/download/x/UnderWebX_1_Setup.exe' })] })).toBeNull();
++        expect(setupAsset({ assets: [asset({ browser_download_url: 'http://github.com/DOUGLASGUNZ/underwebx/releases/download/x/UnderWebX_1_Setup.exe' })] })).toBeNull();
++        expect(setupAsset({ assets: [asset({ name: 'UnderWebX_20261015.zip' })] })).toBeNull();
++        expect(setupAsset({ assets: [asset({ state: 'starter' })] })).toBeNull();
++    });
++
++    it('Stable ignores pre-releases; Beta includes them; drafts never count', () => {
++        const list = [release('v0.5.4-rc13'), release('v0.5.0'), release('v0.6.0', { draft: true })];
++        expect(channelReleases(list, 'Stable').map((r) => r.tag_name)).toEqual(['v0.5.0']);
++        expect(channelReleases(list, 'Beta').map((r) => r.tag_name)).toEqual(['v0.5.4-rc13', 'v0.5.0']);
++    });
++
++    it('sorts by version, not by publish order', () => {
++        const list = [release('v0.5.2-rc11'), release('v0.5.4-rc13'), release('v0.5.3-rc12')];
++        expect(channelReleases(list, 'Beta')[0].tag_name).toBe('v0.5.4-rc13');
++    });
++
++    it('offers an update only when the channel has something newer than what is installed', () => {
++        const list = [release('v0.5.4-rc13'), release('v0.5.0')];
++        expect(pickUpdate(list, 'Beta', '0.5.3-rc12')).toMatchObject({ isNewer: true });
++        expect(pickUpdate(list, 'Beta', '0.5.4-rc13')).toMatchObject({ isNewer: false });
++        // Stable user on an rc build is never "updated" backwards to an older stable.
++        expect(pickUpdate(list, 'Stable', '0.5.3-rc12')).toMatchObject({ isNewer: false });
++        expect(pickUpdate([], 'Stable', '0.5.0')).toEqual({ release: null, isNewer: false });
++    });
++
++    it('never treats a stock VRCX release as an update', () => {
++        const vrcx = {
++            tag_name: 'v2026.10.20',
++            name: 'VRCX 2026.10.20',
++            draft: false,
++            prerelease: false,
++            assets: [asset({ name: 'VRCX_20261020_Setup.exe', browser_download_url: 'https://github.com/vrcx-team/VRCX/releases/download/v2026.10.20/VRCX_20261020_Setup.exe' })]
++        };
++        expect(pickUpdate([vrcx], 'Stable', '0.5.3-rc12')).toEqual({ release: null, isNewer: false });
++    });
++});
+diff --git a/src/shared/utils/uwxRelease.js b/src/shared/utils/uwxRelease.js
+new file mode 100644
+index 0000000..8fa9c33
+--- /dev/null
++++ b/src/shared/utils/uwxRelease.js
+@@ -0,0 +1,96 @@
++// UWX updates come from UnderWeb X's own GitHub releases — never from VRCX's update server,
++// which would offer stock VRCX and replace UWX.
++//   Stable channel: normal releases only.  Beta channel: also pre-releases (rc builds).
++// Release data is untrusted input: only an UnderWebX_*_Setup.exe asset hosted on
++// github.com with a SHA-256 digest is ever downloaded, and the hash is checked before install.
++
++export const UWX_RELEASES_URL = 'https://api.github.com/repos/DOUGLASGUNZ/underwebx/releases?per_page=30';
++export const UWX_RELEASES_PAGE = 'https://github.com/DOUGLASGUNZ/underwebx/releases';
++export const UWX_CHANNELS = Object.freeze(['Stable', 'Beta']);
++
++const SETUP_NAME = /^UnderWebX_[\w.-]*_Setup\.exe$/i;
++const DOWNLOAD_ORIGIN = /^https:\/\/github\.com\/DOUGLASGUNZ\/underwebx\/releases\/download\//i;
++
++/**
++ * "v0.5.4-rc13", "UnderWeb X v0.5.4-rc13", "0.5.2-rc11" -> { major, minor, patch, pre }
++ * @returns {{ major: number, minor: number, patch: number, pre: (string|number)[] } | null}
++ */
++export function parseUwxVersion(value) {
++    const match = String(value || '').match(/(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?/);
++    if (!match) return null;
++    const pre = match[4]
++        ? match[4].split(/[.-]/).flatMap((part) => {
++              // "rc13" -> ["rc", 13] so rc9 < rc10
++              const m = part.match(/^([A-Za-z]+)(\d+)$/);
++              if (m) return [m[1].toLowerCase(), Number(m[2])];
++              return [/^\d+$/.test(part) ? Number(part) : part.toLowerCase()];
++          })
++        : [];
++    return { major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3]), pre };
++}
++
++/** Semver-style compare. A release without a pre-release tag is newer than its rc builds. */
++export function compareUwxVersions(a, b) {
++    const A = typeof a === 'string' ? parseUwxVersion(a) : a;
++    const B = typeof b === 'string' ? parseUwxVersion(b) : b;
++    if (!A && !B) return 0;
++    if (!A) return -1;
++    if (!B) return 1;
++    for (const key of ['major', 'minor', 'patch']) {
++        if (A[key] !== B[key]) return A[key] > B[key] ? 1 : -1;
++    }
++    if (!A.pre.length && !B.pre.length) return 0;
++    if (!A.pre.length) return 1;
++    if (!B.pre.length) return -1;
++    const len = Math.max(A.pre.length, B.pre.length);
++    for (let i = 0; i < len; i++) {
++        const x = A.pre[i];
++        const y = B.pre[i];
++        if (x === undefined) return -1;
++        if (y === undefined) return 1;
++        if (x === y) continue;
++        if (typeof x === 'number' && typeof y === 'number') return x > y ? 1 : -1;
++        if (typeof x === 'number') return -1;
++        if (typeof y === 'number') return 1;
++        return x > y ? 1 : -1;
++    }
++    return 0;
++}
++
++/** The installer asset of a release, or null if it isn't safe to download. */
++export function setupAsset(release) {
++    for (const asset of release?.assets || []) {
++        if (asset?.state && asset.state !== 'uploaded') continue;
++        if (!SETUP_NAME.test(String(asset?.name || ''))) continue;
++        const url = String(asset?.browser_download_url || '');
++        if (!DOWNLOAD_ORIGIN.test(url)) continue;
++        const digest = String(asset?.digest || '');
++        if (!/^sha256:[0-9a-f]{64}$/i.test(digest)) continue;
++        const size = Number(asset?.size) || 0;
++        if (size <= 0) continue;
++        return { downloadUrl: url, hashString: digest.slice(7), size, name: asset.name };
++    }
++    return null;
++}
++
++export function releaseVersion(release) {
++    return parseUwxVersion(release?.tag_name) || parseUwxVersion(release?.name);
++}
++
++/** Releases usable on a channel, newest version first. */
++export function channelReleases(releases, channel = 'Stable') {
++    return (Array.isArray(releases) ? releases : [])
++        .filter((r) => r && !r.draft && (channel === 'Beta' || !r.prerelease))
++        .filter((r) => releaseVersion(r) && setupAsset(r))
++        .sort((a, b) => compareUwxVersions(releaseVersion(b), releaseVersion(a)));
++}
++
++/**
++ * Newest release on the channel and whether it's newer than what's installed.
++ * @returns {{ release: object|null, isNewer: boolean }}
++ */
++export function pickUpdate(releases, channel, installedVersion) {
++    const [release] = channelReleases(releases, channel);
++    if (!release) return { release: null, isNewer: false };
++    return { release, isNewer: compareUwxVersions(releaseVersion(release), installedVersion) > 0 };
++}
+diff --git a/src/stores/vrcxUpdater.js b/src/stores/vrcxUpdater.js
+index e03547c..57209fc 100644
+--- a/src/stores/vrcxUpdater.js
++++ b/src/stores/vrcxUpdater.js
+@@ -7,6 +7,8 @@ import { logWebRequest } from '../services/appConfig';
+ import { branches } from '../shared/constants';
+ import { getWhatsNewRelease, normalizeReleaseVersion } from '../shared/constants/whatsNewReleases';
+ import { changeLogRemoveLinks } from '../shared/utils';
++import { channelReleases, pickUpdate, setupAsset, UWX_CHANNELS } from '../shared/utils/uwxRelease';
++import { UWX_VERSION } from '../shared/constants/uwx';
+ 
+ import configRepository from '../services/config';
+ 
+@@ -123,19 +125,15 @@ export const useVRCXUpdaterStore = defineStore('VRCXUpdater', () => {
+      * @param {string} value
+      */
+     function setBranch(value) {
+-        branch.value = value;
+-        configRepository.setString('VRCX_branch', value);
++        branch.value = UWX_CHANNELS.includes(value) ? value : 'Stable';
++        configRepository.setString('VRCX_branch', branch.value);
++        configRepository.setString('UWX_updateChannel', branch.value);
+     }
+ 
+     async function initBranch() {
+-        if (!appVersion.value) {
+-            return;
+-        }
+-        if (currentVersion.value.includes('VRCX Nightly')) {
+-            branch.value = 'Nightly';
+-        } else {
+-            branch.value = 'Stable';
+-        }
++        // UWX channel (Stable / Beta) is the user's choice and survives updates.
++        const saved = await configRepository.getString('UWX_updateChannel', 'Stable');
++        branch.value = UWX_CHANNELS.includes(saved) ? saved : 'Stable';
+         await configRepository.setString('VRCX_branch', branch.value);
+     }
+ 
+@@ -223,125 +221,80 @@ export const useVRCXUpdaterStore = defineStore('VRCXUpdater', () => {
+         }
+     }
+     function getAssetOfInterest(assets) {
+-        let downloadUrl = '';
+-        let hashString = '';
+-        let size = 0;
+-        for (const asset of assets) {
+-            if (asset.state !== 'uploaded') {
+-                continue;
+-            }
+-            if (
+-                WINDOWS &&
+-                asset.name.endsWith('.exe') &&
+-                (asset.content_type === 'application/x-msdownload' ||
+-                    asset.content_type === 'application/x-msdos-program')
+-            ) {
+-                downloadUrl = asset.browser_download_url;
+-                if (asset.digest && asset.digest.startsWith('sha256:')) {
+-                    hashString = asset.digest.replace('sha256:', '');
+-                }
+-                size = asset.size;
+-                break;
+-            }
+-            if (
+-                LINUX &&
+-                asset.name.endsWith(`${arch.value}.AppImage`) &&
+-                asset.content_type === 'application/octet-stream'
+-            ) {
+-                downloadUrl = asset.browser_download_url;
+-                if (asset.digest && asset.digest.startsWith('sha256:')) {
+-                    hashString = asset.digest.replace('sha256:', '');
+-                }
+-                size = asset.size;
+-                break;
+-            }
++        // UWX ships a Windows installer only; anything else is never downloaded.
++        const asset = WINDOWS ? setupAsset({ assets }) : null;
++        return asset ? { downloadUrl: asset.downloadUrl, hashString: asset.hashString, size: asset.size } : { downloadUrl: '', hashString: '', size: 0 };
++    }
++
++    async function fetchUwxReleases() {
++        const url = branches[branch.value]?.urlReleases || branches.Stable.urlReleases;
++        const response = await webApiService.execute({
++            url,
++            method: 'GET',
++            headers: { Accept: 'application/vnd.github+json' }
++        });
++        let json = null;
++        try {
++            json = JSON.parse(response.data);
++        } catch {
++            json = null;
+         }
+-        return { downloadUrl, hashString, size };
++        logWebRequest('[EXTERNAL GET]', url, `(${response.status})`, Array.isArray(json) ? `${json.length} releases` : json);
++        return { status: response.status, json };
+     }
++
+     async function checkForVRCXUpdate() {
+-        if (
+-            !currentVersion.value ||
+-            currentVersion.value === 'VRCX Nightly Build' ||
+-            currentVersion.value === 'VRCX Build'
+-        ) {
+-            // ignore custom builds
+-            return false;
+-        }
+-        if (branch.value === 'Beta') {
+-            // move Beta users to stable
+-            setBranch('Stable');
+-        }
+-        if (typeof branches[branch.value] === 'undefined') {
+-            // handle invalid branch
+-            setBranch('Stable');
+-        }
+-        const url = branches[branch.value].urlLatest;
++        if (!UWX_CHANNELS.includes(branch.value)) setBranch('Stable');
+         checkingForVRCXUpdate.value = true;
+-        let response;
+-        let json;
++        let result;
+         try {
+-            response = await webApiService.execute({
+-                url,
+-                method: 'GET',
+-                headers: {
+-                    'VRCX-ID': vrcxId.value
+-                }
+-            });
+-            json = JSON.parse(response.data);
++            result = await fetchUwxReleases();
+         } catch (error) {
+-            console.error('Failed to check for VRCX update', error);
++            console.error('Failed to check for UWX update', error);
+             return false;
+         } finally {
+             checkingForVRCXUpdate.value = false;
+         }
+-        if (response.status !== 200) {
+-            toast.error(
+-                t('message.vrcx_updater.failed', {
+-                    message: `${response.status} ${response.data}`
+-                })
+-            );
++        if (result.status !== 200 || !Array.isArray(result.json)) {
++            // GitHub rate limit or outage: stay quiet, try again next launch.
++            console.warn('UWX update check unavailable', result.status);
+             return false;
+         }
+         pendingVRCXUpdate.value = false;
+-        logWebRequest('[EXTERNAL GET]', url, `(${response.status})`, json);
+-        if (json === Object(json) && json.name && json.published_at) {
+-            changeLogDialog.value.buildName = json.name;
+-            changeLogDialog.value.changeLog = changeLogRemoveLinks(json.body);
+-            const releaseName = json.name;
+-            setLatestAppVersion(releaseName);
+-            VRCXUpdateDialog.value.updatePendingIsLatest = false;
+-            if (autoUpdateVRCX.value === 'Off') {
+-                return true;
+-            }
+-            if (releaseName === pendingVRCXInstall.value) {
+-                // update already downloaded
+-                VRCXUpdateDialog.value.updatePendingIsLatest = true;
+-            } else if (releaseName > currentVersion.value) {
+-                const { downloadUrl, hashString, size } = getAssetOfInterest(json.assets);
+-                if (!downloadUrl) {
+-                    return true;
+-                }
+-                pendingVRCXUpdate.value = true;
+-                if (updateToastRelease.value !== releaseName) {
+-                    updateToastRelease.value = releaseName;
+-                    toast(t('nav_menu.update_available'), {
+-                        description: releaseName,
+-                        duration: 5000,
+-                        action: {
+-                            label: t('nav_menu.update'),
+-                            onClick: () => showVRCXUpdateDialog()
+-                        }
+-                    });
+-                }
+-                if (autoUpdateVRCX.value === 'Notify') {
+-                    // this.showVRCXUpdateDialog();
+-                } else if (autoUpdateVRCX.value === 'Auto Download') {
+-                    await downloadVRCXUpdate(downloadUrl, hashString, size, releaseName);
+-                }
+-            }
++        const { release, isNewer } = pickUpdate(result.json, branch.value, UWX_VERSION);
++        if (!release) return true;
++        const releaseName = release.name || release.tag_name;
++        changeLogDialog.value.buildName = releaseName;
++        changeLogDialog.value.changeLog = changeLogRemoveLinks(release.body || '');
++        setLatestAppVersion(releaseName);
++        VRCXUpdateDialog.value.updatePendingIsLatest = false;
++        if (autoUpdateVRCX.value === 'Off' || !isNewer) {
+             return true;
+         }
+-        return false;
++        if (releaseName === pendingVRCXInstall.value) {
++            VRCXUpdateDialog.value.updatePendingIsLatest = true;
++            return true;
++        }
++        const { downloadUrl, hashString, size } = getAssetOfInterest(release.assets);
++        if (!downloadUrl || !hashString) {
++            return true;
++        }
++        pendingVRCXUpdate.value = true;
++        if (updateToastRelease.value !== releaseName) {
++            updateToastRelease.value = releaseName;
++            toast(t('nav_menu.update_available'), {
++                description: releaseName,
++                duration: 5000,
++                action: {
++                    label: t('nav_menu.update'),
++                    onClick: () => showVRCXUpdateDialog()
++                }
++            });
++        }
++        if (autoUpdateVRCX.value === 'Auto Download') {
++            await downloadVRCXUpdate(downloadUrl, hashString, size, releaseName);
++        }
++        return true;
+     }
+     async function showVRCXUpdateDialog() {
+         const D = VRCXUpdateDialog.value;
+@@ -356,59 +309,29 @@ export const useVRCXUpdaterStore = defineStore('VRCXUpdater', () => {
+ 
+     async function loadBranchVersions() {
+         const D = VRCXUpdateDialog.value;
+-        const url = branches[branch.value].urlReleases;
+         checkingForVRCXUpdate.value = true;
+-        let response;
+-        let json;
++        let result;
+         try {
+-            response = await webApiService.execute({
+-                url,
+-                method: 'GET',
+-                headers: {
+-                    'VRCX-ID': vrcxId.value
+-                }
+-            });
+-            json = JSON.parse(response.data);
++            result = await fetchUwxReleases();
+         } catch (error) {
+-            console.error('Failed to check for VRCX update', error);
++            console.error('Failed to load UWX releases', error);
+             return;
+         } finally {
+             checkingForVRCXUpdate.value = false;
+         }
+-        if (response.status !== 200) {
+-            toast.error(
+-                t('message.vrcx_updater.failed', {
+-                    message: `${response.status} ${response.data}`
+-                })
+-            );
+-            return;
+-        }
+-        logWebRequest('[EXTERNAL GET]', url, `(${response.status})`, json);
+-        const releases = [];
+-        if (typeof json !== 'object' || json.message) {
++        if (result.status !== 200 || !Array.isArray(result.json)) {
+             toast.error(
+                 t('message.vrcx_updater.failed', {
+-                    message: json.message
++                    message: `${result.status} ${result.json?.message || 'GitHub unavailable'}`
+                 })
+             );
+             return;
+         }
+-        for (const release of json) {
+-            if (release.prerelease) {
+-                continue;
+-            }
+-            assetLoop: for (const asset of release.assets) {
+-                if (asset.state === 'uploaded') {
+-                    releases.push(release);
+-                    break assetLoop;
+-                }
+-            }
+-        }
++        const releases = channelReleases(result.json, branch.value);
+         D.releases = releases;
+-        D.release = json[0].name;
++        D.release = releases[0]?.name || '';
+         VRCXUpdateDialog.value.updatePendingIsLatest = false;
+-        if (D.release === pendingVRCXInstall.value) {
+-            // update already downloaded and latest version
++        if (D.release && D.release === pendingVRCXInstall.value) {
+             VRCXUpdateDialog.value.updatePendingIsLatest = true;
+         }
+         setBranch(branch.value);
+diff --git a/src/views/UnderWeb/UnderWeb.vue b/src/views/UnderWeb/UnderWeb.vue
+index 7d1b01d..a472b17 100644
+--- a/src/views/UnderWeb/UnderWeb.vue
++++ b/src/views/UnderWeb/UnderWeb.vue
+@@ -793,30 +793,52 @@
+ 
+             <Card v-show="activePanel === 'system'" class="uwx-card">
+                 <CardHeader>
+-                    <CardTitle>Release Channel</CardTitle>
+-                    <CardDescription>UWX update status from the UnderWeb network manifest.</CardDescription>
++                    <CardTitle>Updates</CardTitle>
++                    <CardDescription>From UnderWeb X's own releases on GitHub. Your settings and data are kept when updating.</CardDescription>
+                 </CardHeader>
+-                <CardContent>
+-                    <div class="uwx-release-card" :class="{ available: updateAvailable }">
++                <CardContent class="space-y-4">
++                    <div class="uwx-release-card" :class="{ available: updateReady || pendingUpdate }">
+                         <div>
+                             <div class="uwx-section-label">INSTALLED</div>
+                             <strong>UnderWeb X {{ UWX_VERSION }}</strong>
+                         </div>
+                         <i class="ri-arrow-right-line" />
+                         <div>
+-                            <div class="uwx-section-label">LATEST</div>
+-                            <strong>{{ latestRelease?.version || 'Feed unavailable' }}</strong>
++                            <div class="uwx-section-label">LATEST {{ updateChannel.toUpperCase() }}</div>
++                            <strong>{{ latestUwxRelease || (checkingUpdate ? 'Checking…' : 'Not checked yet') }}</strong>
+                         </div>
+                     </div>
+-                    <div class="flex flex-wrap gap-2 mt-4">
+-                        <Button size="sm" variant="outline" :disabled="isRefreshing" @click="refreshNetwork({ quiet: false })">
+-                            Check now
+-                        </Button>
+-                        <Button v-if="updateAvailable && latestRelease?.downloadUrl" size="sm" @click="openExternalLink(latestRelease.downloadUrl)">
+-                            Get update
++
++                    <div class="flex flex-wrap items-center gap-2">
++                        <span class="text-sm">Channel</span>
++                        <Button size="sm" :variant="updateChannel === 'Stable' ? 'default' : 'outline'" @click="chooseChannel('Stable')">Stable</Button>
++                        <Button size="sm" :variant="updateChannel === 'Beta' ? 'default' : 'outline'" @click="chooseChannel('Beta')">Beta</Button>
++                    </div>
++                    <p class="uwx-help">Stable gets finished releases. Beta also gets test builds (rc) as soon as they're published.</p>
++
++                    <label class="uwx-inline-toggle">
++                        <Switch :model-value="autoUpdateMode === 'Auto Download'" @update:modelValue="(v) => setAutoUpdateVRCX(v ? 'Auto Download' : 'Notify')" />
++                        <span>
++                            <strong>Download updates automatically</strong>
++                            <small>Off: UWX only tells you an update is available. Updates are never installed without you restarting.</small>
++                        </span>
++                    </label>
++
++                    <div v-if="updateDownloading" class="uwx-invite-permission ok">
++                        <i class="ri-download-2-line" /> Downloading update… {{ updateProgressValue }}%
++                    </div>
++                    <div v-else-if="updateReady" class="uwx-invite-permission ok">
++                        <i class="ri-checkbox-circle-line" /> {{ pendingInstallName }} is downloaded and verified. Restart to install it.
++                    </div>
++
++                    <div class="flex flex-wrap gap-2">
++                        <Button size="sm" variant="outline" :disabled="checkingUpdate || updateDownloading" @click="checkUpdatesNow">
++                            <i :class="checkingUpdate ? 'ri-loader-4-line animate-spin' : 'ri-refresh-line'" /> Check now
+                         </Button>
++                        <Button v-if="updateReady" size="sm" @click="restartVRCX(true)"><i class="ri-restart-line" /> Restart & install</Button>
++                        <Button v-else-if="pendingUpdate && !updateDownloading" size="sm" @click="showVRCXUpdateDialog">Download update</Button>
++                        <Button size="sm" variant="ghost" @click="openExternalLink(UWX_RELEASES_PAGE)">All releases</Button>
+                     </div>
+-                    <p v-if="lastNetworkError" class="mt-3 text-xs text-muted-foreground">{{ lastNetworkError }}</p>
+                 </CardContent>
+             </Card>
+ 
+@@ -998,6 +1020,8 @@
+     import UwxOscLab from './UwxOscLab.vue';
+ 
+     import { UWX_VERSION } from '../../shared/constants/uwx';
++    import { UWX_RELEASES_PAGE } from '../../shared/utils/uwxRelease';
++    import { useVRCXUpdaterStore } from '../../stores/vrcxUpdater';
+     import { watchState } from '../../services/watchState';
+     import { openExternalLink, parseLocation } from '../../shared/utils';
+     import { useFriendStore, useGroupStore, useLocationStore, useOscLabStore, useUnderWebNetworkStore, useUnderWebStore } from '../../stores';
+@@ -1245,11 +1269,29 @@
+         return labels[inviteScope.value] || 'Selected friends';
+     });
+ 
+-    const updateAvailable = computed(() => {
+-        const latest = String(latestRelease.value?.version || '').replace(/^v/i, '');
+-        if (!latest) return false;
+-        return latest !== UWX_VERSION;
+-    });
++    const updaterStore = useVRCXUpdaterStore();
++    const {
++        branch: updateChannel,
++        latestAppVersion: latestUwxRelease,
++        checkingForVRCXUpdate: checkingUpdate,
++        pendingVRCXUpdate: pendingUpdate,
++        pendingVRCXInstall: pendingInstallName,
++        updateInProgress: updateDownloading,
++        updateProgress: updateProgressValue,
++        autoUpdateVRCX: autoUpdateMode
++    } = storeToRefs(updaterStore);
++    const { setBranch, setAutoUpdateVRCX, checkForVRCXUpdate, restartVRCX, showVRCXUpdateDialog } = updaterStore;
++    const updateReady = computed(() => Boolean(pendingInstallName.value) && !updateDownloading.value);
++    async function chooseChannel(channel) {
++        if (updateChannel.value === channel) return;
++        setBranch(channel);
++        await checkForVRCXUpdate();
++    }
++    async function checkUpdatesNow() {
++        const ok = await checkForVRCXUpdate();
++        if (!ok) toast.error("Couldn't reach GitHub to check for updates. Try again in a minute.");
++        else if (!pendingUpdate.value && !updateReady.value) toast.success(`You're on the latest ${updateChannel.value} version.`);
++    }
+ 
+ 
+     function includeInRadar(friend) {
