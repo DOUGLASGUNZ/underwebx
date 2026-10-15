@@ -535,13 +535,33 @@ jobs:
           if (-not (Get-Content "src\App.vue" -Raw).Contains("initOscLab")) { throw "RC11: OSC Lab is not started with the app." }
           Write-Host "RC11 applied: UWX $version"
 
+      - name: Apply RC12 Group Activity
+        shell: pwsh
+        working-directory: ${{ env.UWX_SOURCE }}
+        run: |
+          $patchFile = Join-Path $env:GITHUB_WORKSPACE "features\core\rc12-group-activity.patch"
+          if (-not (Test-Path $patchFile)) { throw "RC12 patch not found." }
+          $patchText = [System.IO.File]::ReadAllText($patchFile).Replace("`r`n", "`n")
+          [System.IO.File]::WriteAllText($patchFile, $patchText, [System.Text.UTF8Encoding]::new($false))
+          git apply --check --verbose $patchFile
+          if ($LASTEXITCODE -ne 0) { throw "RC12 patch check failed." }
+          git apply --whitespace=nowarn $patchFile
+          if ($LASTEXITCODE -ne 0) { throw "RC12 patch failed." }
+          $version = (Get-Content "UWX_VERSION" -Raw).Trim()
+          if ($version -ne "0.5.3-rc12") { throw "RC12 version mismatch: $version" }
+          foreach ($needle in @("getGroupLogs","saveSafely","syncNewest")) {
+            if (-not (Get-Content "src\stores\uwxGroupAudit.js" -Raw).Contains($needle)) { throw "RC12 store missing '$needle'." }
+          }
+          if (-not (Get-Content "src\views\UnderWeb\UwxGroupTools.vue" -Raw).Contains("<UwxGroupAudit")) { throw "RC12: Group activity panel is not wired into Groups." }
+          Write-Host "RC12 applied: UWX $version"
+
       - name: Install dependencies and run UWX unit tests
         shell: pwsh
         working-directory: ${{ env.UWX_SOURCE }}
         run: |
           npm ci
           if ($LASTEXITCODE -ne 0) { throw "npm ci failed." }
-          npx vitest run src/stores/__tests__/uwxInviter.test.js src/stores/__tests__/uwxGroupTools.test.js src/shared/utils/__tests__/uwxOsc.test.js
+          npx vitest run src/stores/__tests__/uwxInviter.test.js src/stores/__tests__/uwxGroupTools.test.js src/shared/utils/__tests__/uwxOsc.test.js src/shared/utils/__tests__/uwxAudit.test.js src/stores/__tests__/uwxGroupAudit.test.js
           if ($LASTEXITCODE -ne 0) { throw "UWX unit tests failed." }
 
       - name: Build UnderWeb X

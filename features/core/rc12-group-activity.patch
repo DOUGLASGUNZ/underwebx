@@ -1,0 +1,1561 @@
+diff --git a/CHANGELOG_UWX.md b/CHANGELOG_UWX.md
+index 33dc685..a11f42b 100644
+--- a/CHANGELOG_UWX.md
++++ b/CHANGELOG_UWX.md
+@@ -1,5 +1,17 @@
+ # UnderWeb X changelog
+ 
++## 0.5.3-rc12 — Group activity (audit log)
++
++New in Groups → pick a group → **Group activity**:
++- Shows VRChat's official group audit log, read with your own VRChat login (the session UWX already uses). Nothing goes through an UnderWeb server.
++- Only appears for groups where your role has VRChat's “View audit log” permission; VRChat enforces it.
++- Exact times (to the second, with the original UTC timestamp), who did it, who or what it targeted, and before → after details for edits (role names resolved, permission lists shown as added/removed).
++- Filters: type (bans & removals, joins/leaves/invites, roles, instances, posts, group settings), time range, staff member, and text search (names, usr_ IDs, descriptions).
++- Last-24-hour summary and the most active staff.
++- Auto-checks every 2 minutes while open and right after you ban/remove from UWX. Pages gently (one request at a time) and stops on VRChat rate limits.
++- Every entry is archived in UWX's local database on this PC, so history keeps building up beyond what VRChat returns. “Load older” walks further back.
++- Export the filtered view as CSV or JSON; copy any single entry.
++
+ ## 0.5.2-rc11 — OSC Lab 3: music, weather and statuses together
+ 
+ Root causes fixed from 0.5.0:
+diff --git a/UWX_VERSION b/UWX_VERSION
+index 59c7cf5..9e8c2d2 100644
+--- a/UWX_VERSION
++++ b/UWX_VERSION
+@@ -1 +1 @@
+-0.5.2-rc11
++0.5.3-rc12
+diff --git a/src/services/uwxAuditArchive.js b/src/services/uwxAuditArchive.js
+new file mode 100644
+index 0000000..0df34b9
+--- /dev/null
++++ b/src/services/uwxAuditArchive.js
+@@ -0,0 +1,78 @@
++// Local archive of VRChat group audit log entries, stored in UWX's own SQLite database
++// on this PC. Nothing here leaves the machine. Keeping a copy means the history UWX
++// shows can go further back than what VRChat still returns.
++
++import sqliteService from './sqlite.js';
++
++const TABLE = 'uwx_group_audit';
++let ready = false;
++
++async function ensureTable() {
++    if (ready) return;
++    await sqliteService.executeNonQuery(
++        `CREATE TABLE IF NOT EXISTS ${TABLE} (id TEXT PRIMARY KEY, group_id TEXT, created_at TEXT, ts INTEGER, event_type TEXT, actor_id TEXT, actor_name TEXT, target_id TEXT, description TEXT, data_json TEXT)`
++    );
++    await sqliteService.executeNonQuery(`CREATE INDEX IF NOT EXISTS ${TABLE}_group_ts_idx ON ${TABLE} (group_id, ts)`);
++    ready = true;
++}
++
++/** @param {object[]} entries normalized entries (see shared/utils/uwxAudit.js) */
++async function saveEntries(entries) {
++    if (!entries?.length) return;
++    await ensureTable();
++    for (const e of entries) {
++        await sqliteService.executeNonQuery(
++            `INSERT OR REPLACE INTO ${TABLE} (id, group_id, created_at, ts, event_type, actor_id, actor_name, target_id, description, data_json) VALUES (@id, @group_id, @created_at, @ts, @event_type, @actor_id, @actor_name, @target_id, @description, @data_json)`,
++            {
++                '@id': e.id,
++                '@group_id': e.groupId,
++                '@created_at': e.createdAt,
++                '@ts': e.ts,
++                '@event_type': e.eventType,
++                '@actor_id': e.actorId,
++                '@actor_name': e.actorName,
++                '@target_id': e.targetId,
++                '@description': e.description,
++                '@data_json': JSON.stringify(e.data || {})
++            }
++        );
++    }
++}
++
++/** Newest first. */
++async function loadGroup(groupId, limit = 5000) {
++    await ensureTable();
++    const rows = [];
++    await sqliteService.execute(
++        (row) => {
++            let data = {};
++            try {
++                data = JSON.parse(row[9] || '{}');
++            } catch {
++                data = {};
++            }
++            rows.push({
++                id: row[0],
++                groupId: row[1],
++                createdAt: row[2],
++                ts: Number(row[3]) || 0,
++                eventType: row[4] || '',
++                actorId: row[5] || '',
++                actorName: row[6] || '',
++                targetId: row[7] || '',
++                description: row[8] || '',
++                data
++            });
++        },
++        `SELECT id, group_id, created_at, ts, event_type, actor_id, actor_name, target_id, description, data_json FROM ${TABLE} WHERE group_id = @group_id ORDER BY ts DESC LIMIT ${Math.max(1, Math.min(20000, Number(limit) || 5000))}`,
++        { '@group_id': groupId }
++    );
++    return rows;
++}
++
++async function clearGroup(groupId) {
++    await ensureTable();
++    await sqliteService.executeNonQuery(`DELETE FROM ${TABLE} WHERE group_id = @group_id`, { '@group_id': groupId });
++}
++
++export default { saveEntries, loadGroup, clearGroup };
+diff --git a/src/shared/constants/uwx.js b/src/shared/constants/uwx.js
+index 00bea8a..25cce08 100644
+--- a/src/shared/constants/uwx.js
++++ b/src/shared/constants/uwx.js
+@@ -1,2 +1,2 @@
+-export const UWX_VERSION = '0.5.2-rc11';
++export const UWX_VERSION = '0.5.3-rc12';
+ export const UWX_MANIFEST_URL = 'https://underweb.cloud/api/uwx/manifest';
+diff --git a/src/shared/utils/__tests__/uwxAudit.test.js b/src/shared/utils/__tests__/uwxAudit.test.js
+new file mode 100644
+index 0000000..896a616
+--- /dev/null
++++ b/src/shared/utils/__tests__/uwxAudit.test.js
+@@ -0,0 +1,126 @@
++import { describe, expect, it } from 'vitest';
++import {
++    categorizeEvent,
++    describeChanges,
++    eventLabel,
++    filterEntries,
++    listActors,
++    mergeEntries,
++    normalizeEntry,
++    summarize,
++    targetKind,
++    toCsv
++} from '../uwxAudit';
++
++const raw = (over = {}) => ({
++    id: 'gaud_1',
++    created_at: '2026-10-15T18:04:11.123Z',
++    groupId: 'grp_a',
++    actorId: 'usr_staff',
++    actorDisplayName: 'Darko',
++    targetId: 'usr_target',
++    eventType: 'group.user.ban',
++    description: 'Darko banned Troll',
++    data: {},
++    ...over
++});
++
++describe('uwxAudit', () => {
++    it('categorizes VRChat event types, including unknown ones', () => {
++        expect(categorizeEvent('group.user.ban')).toBe('moderation');
++        expect(categorizeEvent('group.user.unban')).toBe('moderation');
++        expect(categorizeEvent('group.member.remove')).toBe('moderation');
++        expect(categorizeEvent('group.instance.kick')).toBe('moderation');
++        expect(categorizeEvent('group.request.block')).toBe('moderation');
++        expect(categorizeEvent('group.member.join')).toBe('members');
++        expect(categorizeEvent('group.invite.create')).toBe('members');
++        expect(categorizeEvent('group.member.role.assign')).toBe('roles');
++        expect(categorizeEvent('group.role.update')).toBe('roles');
++        expect(categorizeEvent('group.instance.create')).toBe('instances');
++        expect(categorizeEvent('group.announcement.create')).toBe('content');
++        expect(categorizeEvent('group.update')).toBe('group');
++        expect(categorizeEvent('group.something.new')).toBe('other');
++        expect(categorizeEvent('')).toBe('other');
++    });
++
++    it('labels known and unknown events', () => {
++        expect(eventLabel('group.user.ban')).toBe('Banned');
++        expect(eventLabel('group.calendar.event.create')).toBe('Calendar Event Create');
++    });
++
++    it('normalizes entries with an exact timestamp and parses string data', () => {
++        const e = normalizeEntry(raw({ data: '{"name":{"old":"A","new":"B"}}' }));
++        expect(e.ts).toBe(Date.parse('2026-10-15T18:04:11.123Z'));
++        expect(e.actorName).toBe('Darko');
++        expect(e.data.name.new).toBe('B');
++        expect(normalizeEntry({})).toBeNull();
++    });
++
++    it('merges without duplicates, newest first', () => {
++        const a = normalizeEntry(raw({ id: 'a', created_at: '2026-10-15T10:00:00Z' }));
++        const b = normalizeEntry(raw({ id: 'b', created_at: '2026-10-15T12:00:00Z' }));
++        const b2 = { ...b, description: 'updated' };
++        const merged = mergeEntries([a, b], [b2]);
++        expect(merged.map((e) => e.id)).toEqual(['b', 'a']);
++        expect(merged[0].description).toBe('updated');
++    });
++
++    it('describes old/new changes, list diffs and resolves role names', () => {
++        const roleName = (id) => ({ grol_mod: 'Moderator', grol_dj: 'DJ' })[id] || '';
++        const rows = describeChanges(
++            {
++                name: { old: 'Staff', new: 'Senior Staff' },
++                roleIds: { old: ['grol_mod'], new: ['grol_mod', 'grol_dj'] },
++                isPublic: { old: false, new: true },
++                note: 'hello'
++            },
++            roleName
++        );
++        expect(rows[0]).toMatchObject({ label: 'Name', kind: 'change', before: 'Staff', after: 'Senior Staff' });
++        expect(rows[1]).toMatchObject({ label: 'Role Ids', kind: 'list', added: ['DJ'], removed: [] });
++        expect(rows[2]).toMatchObject({ kind: 'change', before: 'off', after: 'on' });
++        expect(rows[3]).toMatchObject({ kind: 'value', value: 'hello' });
++        expect(describeChanges(null)).toEqual([]);
++    });
++
++    it('filters by category, actor, text and time', () => {
++        const list = [
++            normalizeEntry(raw({ id: '1', eventType: 'group.user.ban', created_at: '2026-10-15T10:00:00Z' })),
++            normalizeEntry(raw({ id: '2', eventType: 'group.member.join', actorId: 'usr_x', actorDisplayName: 'Newbie', description: 'Newbie joined', created_at: '2026-10-10T10:00:00Z' }))
++        ];
++        expect(filterEntries(list, { category: 'moderation' }).map((e) => e.id)).toEqual(['1']);
++        expect(filterEntries(list, { actorId: 'usr_x' }).map((e) => e.id)).toEqual(['2']);
++        expect(filterEntries(list, { query: 'newbie' }).map((e) => e.id)).toEqual(['2']);
++        expect(filterEntries(list, { query: 'usr_target' }).length).toBe(2);
++        expect(filterEntries(list, { sinceMs: Date.parse('2026-10-14T00:00:00Z') }).map((e) => e.id)).toEqual(['1']);
++    });
++
++    it('summarizes counts and only counts staff actions for top actors', () => {
++        const list = [
++            normalizeEntry(raw({ id: '1' })),
++            normalizeEntry(raw({ id: '2', eventType: 'group.member.remove' })),
++            normalizeEntry(raw({ id: '3', eventType: 'group.member.join', actorId: 'usr_x', actorDisplayName: 'Newbie' }))
++        ];
++        const s = summarize(list);
++        expect(s.total).toBe(3);
++        expect(s.byCategory).toEqual({ moderation: 2, members: 1 });
++        expect(s.topActors).toEqual([{ actorId: 'usr_staff', name: 'Darko', count: 2 }]);
++        expect(listActors(list).map((a) => a.name)).toEqual(['Darko', 'Newbie']);
++    });
++
++    it('identifies target kinds', () => {
++        expect(targetKind('usr_123')).toBe('user');
++        expect(targetKind('wrld_123')).toBe('world');
++        expect(targetKind('grol_123')).toBe('role');
++        expect(targetKind('')).toBe('');
++    });
++
++    it('exports CSV with escaping and flattened details', () => {
++        const csv = toCsv([normalizeEntry(raw({ description: 'Said "hi", left', data: { name: { old: 'A', new: 'B' } } }))]);
++        const [header, row] = csv.split('\r\n');
++        expect(header.startsWith('time_utc,event,')).toBe(true);
++        expect(row).toContain('"Said ""hi"", left"');
++        expect(row).toContain('Name: A -> B');
++        expect(row.startsWith('2026-10-15T18:04:11.123Z,Banned,group.user.ban')).toBe(true);
++    });
++});
+diff --git a/src/shared/utils/uwxAudit.js b/src/shared/utils/uwxAudit.js
+new file mode 100644
+index 0000000..dd846b5
+--- /dev/null
++++ b/src/shared/utils/uwxAudit.js
+@@ -0,0 +1,269 @@
++// UWX group audit log helpers (pure — no Vue, no network).
++// Entries come from VRChat's official GET /groups/{groupId}/auditLogs endpoint,
++// requested with the signed-in user's own session. Shape (as returned by VRChat):
++//   { id, created_at, groupId, actorId, actorDisplayName, targetId, eventType, description, data }
++
++export const AUDIT_CATEGORIES = Object.freeze([
++    { id: 'all', label: 'Everything' },
++    { id: 'moderation', label: 'Bans & removals' },
++    { id: 'members', label: 'Joins, leaves & invites' },
++    { id: 'roles', label: 'Roles' },
++    { id: 'instances', label: 'Instances' },
++    { id: 'content', label: 'Posts & gallery' },
++    { id: 'group', label: 'Group settings' },
++    { id: 'other', label: 'Other' }
++]);
++
++const KNOWN_LABELS = Object.freeze({
++    'group.user.ban': 'Banned',
++    'group.user.unban': 'Unbanned',
++    'group.member.remove': 'Removed from group',
++    'group.member.join': 'Joined',
++    'group.member.leave': 'Left',
++    'group.member.user.update': 'Member updated',
++    'group.member.role.assign': 'Role given',
++    'group.member.role.unassign': 'Role taken away',
++    'group.role.create': 'Role created',
++    'group.role.update': 'Role edited',
++    'group.role.delete': 'Role deleted',
++    'group.instance.create': 'Instance opened',
++    'group.instance.close': 'Instance closed',
++    'group.instance.kick': 'Kicked from instance',
++    'group.instance.warn': 'Warned in instance',
++    'group.invite.create': 'Invite sent',
++    'group.invite.cancel': 'Invite cancelled',
++    'group.request.create': 'Join request',
++    'group.request.reject': 'Join request rejected',
++    'group.request.block': 'Join requests blocked',
++    'group.request.unblock': 'Join requests unblocked',
++    'group.post.create': 'Post created',
++    'group.post.delete': 'Post deleted',
++    'group.announcement.create': 'Announcement posted',
++    'group.announcement.delete': 'Announcement removed',
++    'group.gallery.create': 'Gallery created',
++    'group.gallery.delete': 'Gallery deleted',
++    'group.update': 'Group settings changed'
++});
++
++/** @param {string} eventType */
++export function categorizeEvent(eventType) {
++    const t = String(eventType || '').toLowerCase();
++    if (!t) return 'other';
++    if (/\.(ban|unban)$/.test(t) || t === 'group.member.remove' || /instance\.(kick|warn)$/.test(t) || /request\.(block|unblock)$/.test(t)) {
++        return 'moderation';
++    }
++    if (t.includes('.role.')) return 'roles';
++    if (t.includes('.instance.')) return 'instances';
++    if (t.startsWith('group.member.') || t.includes('.invite.') || t.includes('.request.') || t.includes('.joinrequest')) {
++        return 'members';
++    }
++    if (t.includes('.post.') || t.includes('.announcement.') || t.includes('.gallery.')) return 'content';
++    if (t === 'group.update' || t.startsWith('group.transfer') || t.startsWith('group.settings') || t.startsWith('group.language') || t.startsWith('group.link')) {
++        return 'group';
++    }
++    return 'other';
++}
++
++/** Human label for an event type; unknown types are prettified, never hidden. */
++export function eventLabel(eventType) {
++    const t = String(eventType || '');
++    if (KNOWN_LABELS[t]) return KNOWN_LABELS[t];
++    if (!t) return 'Unknown event';
++    return t
++        .replace(/^group\./, '')
++        .split('.')
++        .join(' ')
++        .replace(/\b\w/g, (c) => c.toUpperCase());
++}
++
++/** @returns {object|null} normalized entry, or null if the row is unusable */
++export function normalizeEntry(json, groupId = '') {
++    if (!json || !json.id) return null;
++    const createdAt = String(json.created_at || json.createdAt || '');
++    const ts = Date.parse(createdAt);
++    let data = json.data;
++    if (typeof data === 'string') {
++        try {
++            data = JSON.parse(data);
++        } catch {
++            data = { value: data };
++        }
++    }
++    return {
++        id: String(json.id),
++        groupId: String(json.groupId || groupId || ''),
++        createdAt,
++        ts: Number.isFinite(ts) ? ts : 0,
++        eventType: String(json.eventType || ''),
++        actorId: String(json.actorId || ''),
++        actorName: String(json.actorDisplayName || json.actorId || ''),
++        targetId: String(json.targetId || ''),
++        description: String(json.description || ''),
++        data: data && typeof data === 'object' ? data : {}
++    };
++}
++
++/** Merge two entry lists, newest first, de-duplicated by VRChat's entry id. */
++export function mergeEntries(existing, incoming) {
++    const byId = new Map();
++    for (const entry of existing || []) if (entry?.id) byId.set(entry.id, entry);
++    for (const entry of incoming || []) if (entry?.id) byId.set(entry.id, entry);
++    return Array.from(byId.values()).sort((a, b) => b.ts - a.ts || (a.id < b.id ? 1 : -1));
++}
++
++const ID_PATTERN = /^(grol|usr|wrld|grp|gpst|ganc|ggal)_[0-9a-f-]{8,}/i;
++
++function formatValue(value, roleName) {
++    if (value === null || value === undefined || value === '') return '—';
++    if (typeof value === 'boolean') return value ? 'on' : 'off';
++    if (typeof value === 'string') {
++        if (value.startsWith('grol_') && roleName) return roleName(value) || value;
++        return value;
++    }
++    if (typeof value === 'number') return String(value);
++    if (Array.isArray(value)) {
++        if (!value.length) return 'none';
++        return value.map((v) => formatValue(v, roleName)).join(', ');
++    }
++    try {
++        return JSON.stringify(value);
++    } catch {
++        return String(value);
++    }
++}
++
++function prettyField(field) {
++    return String(field)
++        .replace(/([a-z])([A-Z])/g, '$1 $2')
++        .replace(/[_.-]+/g, ' ')
++        .trim()
++        .replace(/^\w/, (c) => c.toUpperCase());
++}
++
++/**
++ * Turn VRChat's `data` payload into readable change rows.
++ * VRChat sends changes as { field: { old, new } }; anything else is shown as a plain value.
++ * @param {object} data
++ * @param {(id: string) => string} [roleName] resolves grol_ ids to names
++ * @returns {{ field: string, label: string, kind: 'change'|'list'|'value', before?: string, after?: string, added?: string[], removed?: string[], value?: string }[]}
++ */
++export function describeChanges(data, roleName) {
++    if (!data || typeof data !== 'object') return [];
++    const rows = /** @type {any[]} */ ([]);
++    for (const [field, raw] of Object.entries(data)) {
++        const label = prettyField(field);
++        const isChange = raw && typeof raw === 'object' && !Array.isArray(raw) && ('old' in raw || 'new' in raw);
++        if (isChange) {
++            const before = raw.old;
++            const after = raw.new;
++            if (Array.isArray(before) || Array.isArray(after)) {
++                const b = Array.isArray(before) ? before : [];
++                const a = Array.isArray(after) ? after : [];
++                const added = a.filter((x) => !b.some((y) => JSON.stringify(y) === JSON.stringify(x)));
++                const removed = b.filter((x) => !a.some((y) => JSON.stringify(y) === JSON.stringify(x)));
++                rows.push({
++                    field,
++                    label,
++                    kind: 'list',
++                    added: added.map((x) => formatValue(x, roleName)),
++                    removed: removed.map((x) => formatValue(x, roleName))
++                });
++                continue;
++            }
++            rows.push({ field, label, kind: 'change', before: formatValue(before, roleName), after: formatValue(after, roleName) });
++            continue;
++        }
++        rows.push({ field, label, kind: 'value', value: formatValue(raw, roleName) });
++    }
++    return rows;
++}
++
++/** Kind of thing a target id points at, for linking in the UI. */
++export function targetKind(targetId) {
++    const id = String(targetId || '');
++    if (id.startsWith('usr_')) return 'user';
++    if (id.startsWith('wrld_')) return 'world';
++    if (id.startsWith('grol_')) return 'role';
++    if (id.startsWith('grp_')) return 'group';
++    if (ID_PATTERN.test(id)) return 'other';
++    return id ? 'other' : '';
++}
++
++/**
++ * @param {object[]} entries
++ * @param {{ category?: string, actorId?: string, query?: string, sinceMs?: number }} filters
++ */
++export function filterEntries(entries, { category = 'all', actorId = '', query = '', sinceMs = 0 } = {}) {
++    const q = String(query || '').trim().toLowerCase();
++    return (entries || []).filter((entry) => {
++        if (sinceMs && entry.ts < sinceMs) return false;
++        if (category && category !== 'all' && categorizeEvent(entry.eventType) !== category) return false;
++        if (actorId && entry.actorId !== actorId) return false;
++        if (q) {
++            const hay = `${entry.description} ${entry.actorName} ${entry.actorId} ${entry.targetId} ${entry.eventType} ${eventLabel(entry.eventType)}`.toLowerCase();
++            if (!hay.includes(q)) return false;
++        }
++        return true;
++    });
++}
++
++/** Counts per category and the most active staff, over entries since `sinceMs`. */
++export function summarize(entries, sinceMs = 0) {
++    const byCategory = {};
++    const actors = new Map();
++    let total = 0;
++    for (const entry of entries || []) {
++        if (sinceMs && entry.ts < sinceMs) continue;
++        total += 1;
++        const cat = categorizeEvent(entry.eventType);
++        byCategory[cat] = (byCategory[cat] || 0) + 1;
++        // Joins/leaves/requests are done by the member themselves; only count staff-ish actions.
++        if (cat !== 'members' && entry.actorId) {
++            const a = actors.get(entry.actorId) || { actorId: entry.actorId, name: entry.actorName, count: 0 };
++            a.count += 1;
++            actors.set(entry.actorId, a);
++        }
++    }
++    const topActors = Array.from(actors.values()).sort((a, b) => b.count - a.count).slice(0, 5);
++    return { total, byCategory, topActors };
++}
++
++/** Distinct actors in a list, for the "who did it" filter. */
++export function listActors(entries) {
++    const map = new Map();
++    for (const e of entries || []) {
++        if (!e.actorId) continue;
++        const a = map.get(e.actorId) || { actorId: e.actorId, name: e.actorName, count: 0 };
++        a.count += 1;
++        map.set(e.actorId, a);
++    }
++    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
++}
++
++function csvCell(value) {
++    const s = String(value ?? '');
++    return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
++}
++
++/** CSV with exact UTC timestamps and the change details flattened. */
++export function toCsv(entries, roleName) {
++    const header = ['time_utc', 'event', 'event_type', 'actor', 'actor_id', 'target_id', 'description', 'details', 'entry_id'];
++    const lines = [header.join(',')];
++    for (const e of entries || []) {
++        const details = describeChanges(e.data, roleName)
++            .map((r) =>
++                r.kind === 'change'
++                    ? `${r.label}: ${r.before} -> ${r.after}`
++                    : r.kind === 'list'
++                      ? `${r.label}: +[${r.added.join('; ')}] -[${r.removed.join('; ')}]`
++                      : `${r.label}: ${r.value}`
++            )
++            .join(' | ');
++        lines.push(
++            [e.createdAt, eventLabel(e.eventType), e.eventType, e.actorName, e.actorId, e.targetId, e.description, details, e.id]
++                .map(csvCell)
++                .join(',')
++        );
++    }
++    return lines.join('\r\n');
++}
+diff --git a/src/stores/__tests__/uwxGroupAudit.test.js b/src/stores/__tests__/uwxGroupAudit.test.js
+new file mode 100644
+index 0000000..d31ef38
+--- /dev/null
++++ b/src/stores/__tests__/uwxGroupAudit.test.js
+@@ -0,0 +1,141 @@
++import { beforeEach, describe, expect, test, vi } from 'vitest';
++import { createPinia, setActivePinia } from 'pinia';
++
++const groupRequest = { getGroupLogs: vi.fn() };
++vi.mock('../../api', () => ({ groupRequest }));
++
++const archive = { rows: [], saveEntries: vi.fn(), loadGroup: vi.fn(), clearGroup: vi.fn() };
++vi.mock('../../services/uwxAuditArchive', () => ({ default: archive }));
++vi.mock('../../services/watchState', () => ({ watchState: { isLoggedIn: true } }));
++vi.mock('vue-sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), message: vi.fn() } }));
++
++const tools = { canAudit: true, groupInfo: new Map(), can: (gid, action) => action === 'audit' && tools.canAudit };
++vi.mock('../uwxGroupTools', () => ({ useUwxGroupToolsStore: () => tools }));
++
++vi.useFakeTimers();
++const { useUwxGroupAuditStore } = await import('../uwxGroupAudit');
++
++const GROUP = 'grp_11111111-1111-1111-1111-111111111111';
++
++/** Fake VRChat log: `total` entries, newest = index 0. */
++function fakeLog(total, startMs = Date.parse('2026-10-15T20:00:00Z')) {
++    return Array.from({ length: total }, (_, i) => ({
++        id: `gaud_${total - i}`,
++        created_at: new Date(startMs - i * 60000).toISOString(),
++        groupId: GROUP,
++        actorId: 'usr_staff',
++        actorDisplayName: 'Darko',
++        eventType: 'group.member.join',
++        description: `entry ${total - i}`
++    }));
++}
++
++function serve(log) {
++    groupRequest.getGroupLogs.mockImplementation(async ({ n, offset }) => ({
++        json: { results: log.slice(offset, offset + n), hasNext: offset + n < log.length }
++    }));
++}
++
++async function flush(promise) {
++    // Let paging sleeps resolve.
++    for (let i = 0; i < 40; i++) {
++        await vi.advanceTimersByTimeAsync(1000);
++    }
++    return promise;
++}
++
++describe('uwxGroupAudit', () => {
++    beforeEach(() => {
++        setActivePinia(createPinia());
++        groupRequest.getGroupLogs.mockReset();
++        archive.saveEntries.mockReset();
++        archive.loadGroup.mockReset().mockResolvedValue([]);
++        tools.canAudit = true;
++    });
++
++    test('first open pulls pages until VRChat has no more, then archives them', async () => {
++        serve(fakeLog(250));
++        const store = useUwxGroupAuditStore();
++        await flush(store.open(GROUP));
++        expect(store.entries.length).toBe(250);
++        expect(store.entries[0].id).toBe('gaud_250');
++        expect(store.reachedEnd).toBe(true);
++        expect(groupRequest.getGroupLogs).toHaveBeenCalledTimes(3);
++        expect(archive.saveEntries).toHaveBeenCalledTimes(1);
++        expect(archive.saveEntries.mock.calls[0][0].length).toBe(250);
++        store.close();
++    });
++
++    test('later checks stop at the first page that overlaps saved history', async () => {
++        const log = fakeLog(300);
++        archive.loadGroup.mockResolvedValue([]);
++        serve(log);
++        const store = useUwxGroupAuditStore();
++        await flush(store.open(GROUP));
++        groupRequest.getGroupLogs.mockClear();
++        archive.saveEntries.mockClear();
++
++        // 5 new entries arrive at the top.
++        serve(fakeLog(305));
++        await flush(store.syncNewest());
++        expect(groupRequest.getGroupLogs).toHaveBeenCalledTimes(1);
++        expect(store.lastNewCount).toBe(5);
++        expect(store.entries.length).toBe(305);
++        expect(archive.saveEntries.mock.calls[0][0].map((e) => e.id)).toEqual([
++            'gaud_305',
++            'gaud_304',
++            'gaud_303',
++            'gaud_302',
++            'gaud_301'
++        ]);
++        store.close();
++    });
++
++    test('shows the saved archive straight away, even before VRChat answers', async () => {
++        archive.loadGroup.mockResolvedValue([
++            { id: 'gaud_old', groupId: GROUP, createdAt: '2026-01-01T00:00:00Z', ts: Date.parse('2026-01-01T00:00:00Z'), eventType: 'group.user.ban', actorId: 'usr_staff', actorName: 'Darko', targetId: '', description: 'old ban', data: {} }
++        ]);
++        serve(fakeLog(3));
++        const store = useUwxGroupAuditStore();
++        await flush(store.open(GROUP));
++        expect(store.entries.map((e) => e.id)).toEqual(['gaud_3', 'gaud_2', 'gaud_1', 'gaud_old']);
++        store.close();
++    });
++
++    test('never calls VRChat without the audit permission', async () => {
++        tools.canAudit = false;
++        serve(fakeLog(3));
++        const store = useUwxGroupAuditStore();
++        await flush(store.open(GROUP));
++        expect(groupRequest.getGroupLogs).not.toHaveBeenCalled();
++        expect(store.error).toMatch(/audit log/);
++        store.close();
++    });
++
++    test('a 403 or rate limit is reported, and entries fetched before it are kept', async () => {
++        const log = fakeLog(250);
++        groupRequest.getGroupLogs.mockImplementation(async ({ n, offset }) => {
++            if (offset >= 100) throw { status: 429 };
++            return { json: { results: log.slice(offset, offset + n), hasNext: true } };
++        });
++        const store = useUwxGroupAuditStore();
++        await flush(store.open(GROUP));
++        expect(store.entries.length).toBe(100);
++        expect(store.error).toMatch(/rate limit/);
++        expect(archive.saveEntries).toHaveBeenCalled();
++        store.close();
++    });
++
++    test('load older walks past saved pages to fetch history beyond them', async () => {
++        const log = fakeLog(1500);
++        serve(log);
++        const store = useUwxGroupAuditStore();
++        await flush(store.open(GROUP)); // first sync caps at 10 pages = 1000
++        expect(store.entries.length).toBe(1000);
++        expect(store.reachedEnd).toBe(false);
++        await flush(store.loadOlder());
++        expect(store.entries.length).toBe(1100);
++        expect(store.entries.at(-1).id).toBe('gaud_401');
++        store.close();
++    });
++});
+diff --git a/src/stores/uwxGroupAudit.js b/src/stores/uwxGroupAudit.js
+new file mode 100644
+index 0000000..c66777d
+--- /dev/null
++++ b/src/stores/uwxGroupAudit.js
+@@ -0,0 +1,280 @@
++import { computed, ref } from 'vue';
++import { defineStore } from 'pinia';
++import { toast } from 'vue-sonner';
++
++import { groupRequest } from '../api';
++import auditArchive from '../services/uwxAuditArchive';
++import { watchState } from '../services/watchState';
++import { mergeEntries, normalizeEntry, toCsv } from '../shared/utils/uwxAudit';
++import { useUwxGroupToolsStore } from './uwxGroupTools';
++
++// UWX group activity: VRChat's official group audit log (GET /groups/{id}/auditLogs),
++// read with your own signed-in VRChat session — the same session UWX already uses.
++// It needs the "group-audit-view" permission in that group; VRChat enforces it.
++// Entries are archived locally (SQLite on this PC) so history keeps growing over time.
++
++const PAGE_SIZE = 100;
++const PAGE_GAP_MS = 600;
++const MAX_PAGES_PER_SYNC = 10; // up to 1000 entries per refresh
++const AUTO_REFRESH_MS = 2 * 60 * 1000;
++
++const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
++const errorStatus = (error) => error?.status || error?.statusCode || error?.response?.status || 0;
++
++export const useUwxGroupAuditStore = defineStore('UwxGroupAudit', () => {
++    const tools = useUwxGroupToolsStore();
++
++    const groupId = ref('');
++    const entries = ref([]);
++    const loading = ref(false);
++    const loadingOlder = ref(false);
++    const reachedEnd = ref(false);
++    const error = ref('');
++    const lastSyncAt = ref(0);
++    const lastNewCount = ref(0);
++    const autoRefresh = ref(true);
++
++    // How far down VRChat's list (newest = offset 0) we've walked this session.
++    let serverOffset = 0;
++    let timer = null;
++    let syncToken = 0;
++
++    const canView = computed(() => Boolean(groupId.value && tools.can(groupId.value, 'audit')));
++
++    const roles = computed(() => {
++        const ref = tools.groupInfo.get(groupId.value)?.ref;
++        return Array.isArray(ref?.roles) ? ref.roles : [];
++    });
++
++    function roleName(id) {
++        return roles.value.find((role) => role?.id === id)?.name || '';
++    }
++
++    async function fetchPage(gid, offset) {
++        const args = await groupRequest.getGroupLogs({ groupId: gid, n: PAGE_SIZE, offset });
++        const json = args?.json || {};
++        const results = Array.isArray(json.results) ? json.results : Array.isArray(json) ? json : [];
++        return {
++            rows: results.map((row) => normalizeEntry(row, gid)).filter(Boolean),
++            hasNext: Boolean(json.hasNext ?? results.length === PAGE_SIZE)
++        };
++    }
++
++    /** Saving to the local archive must never break showing the live log. */
++    async function saveSafely(list) {
++        try {
++            await auditArchive.saveEntries(list);
++        } catch (err) {
++            console.warn('UWX audit archive save failed', err?.message || err);
++        }
++    }
++
++    function friendlyError(err) {
++        const status = errorStatus(err);
++        if (status === 403) return "VRChat says your role in this group can't view the audit log.";
++        if (status === 429) return 'VRChat rate limit — UWX will try again shortly.';
++        if (status === 401) return 'Your VRChat session expired. Log in again.';
++        return err?.error?.message || err?.message || 'Could not load the audit log.';
++    }
++
++    /** Pull everything newer than what we have (walks pages until it overlaps the archive). */
++    async function syncNewest({ quiet = false } = {}) {
++        const gid = groupId.value;
++        if (!gid || loading.value || !watchState.isLoggedIn) return;
++        if (!canView.value) {
++            error.value = "Your role in this group doesn't include viewing the audit log.";
++            return;
++        }
++        const token = ++syncToken;
++        loading.value = true;
++        error.value = '';
++        let fresh = [];
++        try {
++            const known = new Set(entries.value.map((e) => e.id));
++            for (let page = 0; page < MAX_PAGES_PER_SYNC; page++) {
++                const { rows, hasNext } = await fetchPage(gid, page * PAGE_SIZE);
++                if (token !== syncToken || gid !== groupId.value) return;
++                const newRows = rows.filter((row) => !known.has(row.id));
++                fresh = fresh.concat(newRows);
++                newRows.forEach((row) => known.add(row.id));
++                if (page === 0 && !entries.value.length && !hasNext) reachedEnd.value = true;
++                // Stop once a page overlaps what we already have, or VRChat has nothing more.
++                if (newRows.length < rows.length || !hasNext) {
++                    if (!hasNext && newRows.length === rows.length) reachedEnd.value = true;
++                    serverOffset = Math.max(serverOffset + fresh.length, (page + 1) * PAGE_SIZE);
++                    break;
++                }
++                serverOffset = (page + 1) * PAGE_SIZE;
++                await sleep(PAGE_GAP_MS);
++            }
++            if (fresh.length) {
++                entries.value = mergeEntries(entries.value, fresh);
++                await saveSafely(fresh);
++            }
++            lastNewCount.value = fresh.length;
++            lastSyncAt.value = Date.now();
++        } catch (err) {
++            if (token !== syncToken) return;
++            // Keep whatever we got before the error.
++            if (fresh.length) {
++                entries.value = mergeEntries(entries.value, fresh);
++                await saveSafely(fresh);
++            }
++            error.value = friendlyError(err);
++            if (!quiet) toast.error(error.value);
++        } finally {
++            if (token === syncToken) loading.value = false;
++        }
++    }
++
++    /** Walk further back in VRChat's history, skipping pages we already archived. */
++    async function loadOlder() {
++        const gid = groupId.value;
++        if (!gid || loadingOlder.value || loading.value || reachedEnd.value || !canView.value) return;
++        loadingOlder.value = true;
++        error.value = '';
++        let fresh = [];
++        try {
++            const known = new Set(entries.value.map((e) => e.id));
++            for (let page = 0; page < MAX_PAGES_PER_SYNC; page++) {
++                const { rows, hasNext } = await fetchPage(gid, serverOffset);
++                if (gid !== groupId.value) return;
++                serverOffset += rows.length || PAGE_SIZE;
++                const newRows = rows.filter((row) => !known.has(row.id));
++                newRows.forEach((row) => known.add(row.id));
++                fresh = fresh.concat(newRows);
++                if (!hasNext || !rows.length) {
++                    reachedEnd.value = true;
++                    break;
++                }
++                if (fresh.length >= PAGE_SIZE) break;
++                await sleep(PAGE_GAP_MS);
++            }
++            if (fresh.length) {
++                entries.value = mergeEntries(entries.value, fresh);
++                await saveSafely(fresh);
++            } else if (reachedEnd.value) {
++                toast.message('That is the start of what VRChat keeps for this group.');
++            }
++        } catch (err) {
++            if (fresh.length) {
++                entries.value = mergeEntries(entries.value, fresh);
++                await saveSafely(fresh);
++            }
++            error.value = friendlyError(err);
++            toast.error(error.value);
++        } finally {
++            loadingOlder.value = false;
++        }
++    }
++
++    function stopTimer() {
++        if (timer) clearInterval(timer);
++        timer = null;
++    }
++
++    function startTimer() {
++        stopTimer();
++        if (!autoRefresh.value) return;
++        timer = setInterval(() => {
++            if (document.visibilityState === 'hidden') return;
++            void syncNewest({ quiet: true });
++        }, AUTO_REFRESH_MS);
++    }
++
++    /** Show a group's activity: archived entries instantly, then fetch what's new. */
++    async function open(gid) {
++        if (!gid) return;
++        if (gid === groupId.value && (entries.value.length || loading.value)) {
++            startTimer();
++            if (!loading.value && Date.now() - lastSyncAt.value > 30 * 1000) void syncNewest({ quiet: true });
++            return;
++        }
++        syncToken++;
++        groupId.value = gid;
++        entries.value = [];
++        error.value = '';
++        reachedEnd.value = false;
++        lastSyncAt.value = 0;
++        lastNewCount.value = 0;
++        serverOffset = 0;
++        loading.value = false;
++        try {
++            const archived = await auditArchive.loadGroup(gid);
++            if (gid === groupId.value) entries.value = archived;
++        } catch {
++            // Archive is a convenience; the live log still works without it.
++        }
++        await syncNewest();
++        startTimer();
++    }
++
++    function close() {
++        stopTimer();
++    }
++
++    function setAutoRefresh(value) {
++        autoRefresh.value = Boolean(value);
++        if (autoRefresh.value && groupId.value) startTimer();
++        else stopTimer();
++    }
++
++    /** Refresh soon after UWX itself moderates, so the action shows up. */
++    function nudge(gid) {
++        if (gid && gid === groupId.value) setTimeout(() => void syncNewest({ quiet: true }), 3000);
++    }
++
++    function download(filename, text, type) {
++        const blob = new Blob([text], { type });
++        const url = URL.createObjectURL(blob);
++        const a = document.createElement('a');
++        a.href = url;
++        a.download = filename;
++        document.body.appendChild(a);
++        a.click();
++        a.remove();
++        setTimeout(() => URL.revokeObjectURL(url), 2000);
++    }
++
++    function exportEntries(list, format = 'csv', label = 'group') {
++        const safe = String(label).replace(/[^a-z0-9-_]+/gi, '_').slice(0, 40) || 'group';
++        const stamp = new Date().toISOString().slice(0, 10);
++        if (format === 'json') {
++            download(`${safe}-audit-${stamp}.json`, JSON.stringify(list, null, 2), 'application/json');
++        } else {
++            download(`${safe}-audit-${stamp}.csv`, toCsv(list, roleName), 'text/csv');
++        }
++    }
++
++    async function clearArchive() {
++        if (!groupId.value) return;
++        await auditArchive.clearGroup(groupId.value);
++        entries.value = [];
++        serverOffset = 0;
++        reachedEnd.value = false;
++        await syncNewest();
++    }
++
++    return {
++        groupId,
++        entries,
++        loading,
++        loadingOlder,
++        reachedEnd,
++        error,
++        lastSyncAt,
++        lastNewCount,
++        autoRefresh,
++        canView,
++        roles,
++        roleName,
++        open,
++        close,
++        syncNewest,
++        loadOlder,
++        setAutoRefresh,
++        nudge,
++        exportEntries,
++        clearArchive
++    };
++});
+diff --git a/src/views/UnderWeb/UwxGroupAudit.vue b/src/views/UnderWeb/UwxGroupAudit.vue
+new file mode 100644
+index 0000000..6685271
+--- /dev/null
++++ b/src/views/UnderWeb/UwxGroupAudit.vue
+@@ -0,0 +1,550 @@
++<template>
++    <Card class="uwx-card uwx-card-wide">
++        <CardHeader>
++            <div class="flex flex-wrap items-start justify-between gap-3">
++                <div class="min-w-0">
++                    <CardTitle>Group activity</CardTitle>
++                    <CardDescription>
++                        VRChat's audit log for {{ groupName }}, read with your account. Saved on this PC so history keeps
++                        building up.
++                    </CardDescription>
++                </div>
++                <div class="flex flex-wrap items-center gap-2">
++                    <label class="uwx-inline-toggle text-xs">
++                        <Switch :model-value="autoRefresh" @update:model-value="setAutoRefresh" />
++                        Auto-check every 2 min
++                    </label>
++                    <Button size="sm" variant="outline" :disabled="loading || !canView" @click="syncNewest()">
++                        <i :class="loading ? 'ri-loader-4-line animate-spin' : 'ri-refresh-line'" />
++                        Check now
++                    </Button>
++                    <Button size="sm" variant="ghost" :disabled="!filtered.length" @click="exportEntries(filtered, 'csv', groupName)">
++                        <i class="ri-download-2-line" />
++                        CSV
++                    </Button>
++                    <Button size="sm" variant="ghost" :disabled="!filtered.length" @click="exportEntries(filtered, 'json', groupName)">
++                        JSON
++                    </Button>
++                </div>
++            </div>
++        </CardHeader>
++
++        <CardContent class="space-y-4">
++            <p v-if="!canView" class="text-sm text-muted-foreground">
++                Your role in {{ groupName }} doesn't include “View audit log”, so VRChat won't share it. Ask the owner to
++                add that permission to your role.
++            </p>
++
++            <template v-else>
++                <div class="uwx-audit-status">
++                    <span v-if="loading && !entries.length">Loading from VRChat…</span>
++                    <span v-else-if="lastSyncAt">
++                        Checked {{ formatClock(lastSyncAt) }}
++                        <template v-if="lastNewCount"> · {{ lastNewCount }} new</template>
++                        · {{ entries.length }} saved
++                    </span>
++                    <span v-if="error" class="uwx-audit-error">{{ error }}</span>
++                </div>
++
++                <div class="uwx-audit-summary">
++                    <button
++                        v-for="cat in summaryCats"
++                        :key="cat.id"
++                        type="button"
++                        class="uwx-audit-stat"
++                        :class="[`cat-${cat.id}`, { active: category === cat.id }]"
++                        @click="category = category === cat.id ? 'all' : cat.id">
++                        <strong>{{ cat.count }}</strong>
++                        <span>{{ cat.label }}</span>
++                    </button>
++                    <div class="uwx-audit-stat-note">last 24 hours</div>
++                </div>
++                <div v-if="daySummary.topActors.length" class="uwx-audit-staff">
++                    <span class="uwx-section-label">MOST ACTIVE STAFF (24H)</span>
++                    <button
++                        v-for="actor in daySummary.topActors"
++                        :key="actor.actorId"
++                        type="button"
++                        class="uwx-audit-chip"
++                        :class="{ active: actorId === actor.actorId }"
++                        @click="actorId = actorId === actor.actorId ? '' : actor.actorId">
++                        {{ actor.name }} · {{ actor.count }}
++                    </button>
++                </div>
++
++                <div class="uwx-audit-filters">
++                    <Input v-model="query" placeholder="Search names, IDs, descriptions…" aria-label="Search activity" />
++                    <NativeSelect v-model="category" aria-label="Type of activity">
++                        <NativeSelectOption v-for="cat in AUDIT_CATEGORIES" :key="cat.id" :value="cat.id">{{ cat.label }}</NativeSelectOption>
++                    </NativeSelect>
++                    <NativeSelect v-model="range" aria-label="Time range">
++                        <NativeSelectOption value="1">Last 24 hours</NativeSelectOption>
++                        <NativeSelectOption value="7">Last 7 days</NativeSelectOption>
++                        <NativeSelectOption value="30">Last 30 days</NativeSelectOption>
++                        <NativeSelectOption value="0">All saved</NativeSelectOption>
++                    </NativeSelect>
++                    <NativeSelect v-model="actorId" aria-label="Who did it">
++                        <NativeSelectOption value="">Anyone</NativeSelectOption>
++                        <NativeSelectOption v-for="actor in actors" :key="actor.actorId" :value="actor.actorId">
++                            {{ actor.name }} ({{ actor.count }})
++                        </NativeSelectOption>
++                    </NativeSelect>
++                    <Button v-if="hasFilters" size="sm" variant="ghost" @click="resetFilters">Clear filters</Button>
++                </div>
++
++                <p v-if="!filtered.length && !loading" class="text-sm text-muted-foreground">
++                    {{ entries.length ? 'Nothing matches these filters.' : 'No activity returned by VRChat yet.' }}
++                </p>
++
++                <div v-else class="uwx-audit-list">
++                    <template v-for="block in visibleDays" :key="block.day">
++                        <div class="uwx-audit-day">{{ block.day }}</div>
++                        <div
++                            v-for="entry in block.items"
++                            :key="entry.id"
++                            class="uwx-audit-row"
++                            :class="[`cat-${categorizeEvent(entry.eventType)}`, { open: openId === entry.id }]">
++                            <button type="button" class="uwx-audit-row-main" @click="toggle(entry.id)">
++                                <span class="uwx-audit-time" :title="entry.createdAt">{{ formatTime(entry.ts) }}</span>
++                                <span class="uwx-audit-type">{{ eventLabel(entry.eventType) }}</span>
++                                <span class="uwx-audit-desc">{{ entry.description || entry.eventType }}</span>
++                                <i :class="openId === entry.id ? 'ri-arrow-up-s-line' : 'ri-arrow-down-s-line'" />
++                            </button>
++                            <div v-if="openId === entry.id" class="uwx-audit-detail">
++                                <dl>
++                                    <dt>When</dt>
++                                    <dd>{{ formatFull(entry.ts) }} <small>({{ entry.createdAt }})</small></dd>
++                                    <dt>Done by</dt>
++                                    <dd>
++                                        <a v-if="entry.actorId.startsWith('usr_')" href="#" @click.prevent="showUserDialog(entry.actorId)">{{ entry.actorName }}</a>
++                                        <span v-else>{{ entry.actorName || '—' }}</span>
++                                        <small> {{ entry.actorId }}</small>
++                                    </dd>
++                                    <template v-if="entry.targetId">
++                                        <dt>Target</dt>
++                                        <dd>
++                                            <a v-if="targetKind(entry.targetId) === 'user'" href="#" @click.prevent="showUserDialog(entry.targetId)">Open profile</a>
++                                            <a v-else-if="targetKind(entry.targetId) === 'world'" href="#" @click.prevent="showWorldDialog(entry.targetId)">Open world</a>
++                                            <span v-else-if="targetKind(entry.targetId) === 'role' && roleName(entry.targetId)">{{ roleName(entry.targetId) }}</span>
++                                            <small> {{ entry.targetId }}</small>
++                                        </dd>
++                                    </template>
++                                    <dt>Event</dt>
++                                    <dd><code>{{ entry.eventType }}</code></dd>
++                                </dl>
++                                <div v-if="changes(entry).length" class="uwx-audit-changes">
++                                    <div v-for="row in changes(entry)" :key="row.field" class="uwx-audit-change">
++                                        <span class="uwx-audit-field">{{ row.label }}</span>
++                                        <template v-if="row.kind === 'change'">
++                                            <span class="before">{{ row.before }}</span>
++                                            <i class="ri-arrow-right-line" />
++                                            <span class="after">{{ row.after }}</span>
++                                        </template>
++                                        <template v-else-if="row.kind === 'list'">
++                                            <span v-if="row.added.length" class="after">+ {{ row.added.join(', ') }}</span>
++                                            <span v-if="row.removed.length" class="before">− {{ row.removed.join(', ') }}</span>
++                                            <span v-if="!row.added.length && !row.removed.length" class="text-muted-foreground">reordered</span>
++                                        </template>
++                                        <span v-else class="value">{{ row.value }}</span>
++                                    </div>
++                                </div>
++                                <div class="flex flex-wrap gap-2">
++                                    <Button size="sm" variant="ghost" @click="copyEntry(entry)"><i class="ri-file-copy-line" /> Copy</Button>
++                                    <Button v-if="entry.actorId" size="sm" variant="ghost" @click="actorId = entry.actorId">Only this person's actions</Button>
++                                    <Button v-if="targetKind(entry.targetId) === 'user'" size="sm" variant="ghost" @click="query = entry.targetId">Everything about this user</Button>
++                                </div>
++                            </div>
++                        </div>
++                    </template>
++                </div>
++
++                <div class="flex flex-wrap items-center gap-3">
++                    <Button v-if="filtered.length > shown" size="sm" variant="outline" @click="shown += 150">
++                        Show more ({{ filtered.length - shown }} left)
++                    </Button>
++                    <Button size="sm" variant="outline" :disabled="loadingOlder || reachedEnd || loading" @click="loadOlder">
++                        <i :class="loadingOlder ? 'ri-loader-4-line animate-spin' : 'ri-history-line'" />
++                        {{ reachedEnd ? 'Reached the oldest entry VRChat has' : 'Load older from VRChat' }}
++                    </Button>
++                    <span class="text-xs text-muted-foreground">Showing {{ Math.min(shown, filtered.length) }} of {{ filtered.length }}</span>
++                </div>
++            </template>
++        </CardContent>
++    </Card>
++</template>
++
++<script setup>
++    import { computed, onBeforeUnmount, ref, watch } from 'vue';
++    import { storeToRefs } from 'pinia';
++    import { toast } from 'vue-sonner';
++    import { Button } from '@/components/ui/button';
++    import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
++    import { Input } from '@/components/ui/input';
++    import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
++    import { Switch } from '@/components/ui/switch';
++
++    import { showUserDialog } from '../../coordinators/userCoordinator';
++    import { showWorldDialog } from '../../coordinators/worldCoordinator';
++    import { useUwxGroupAuditStore } from '../../stores/uwxGroupAudit';
++    import {
++        AUDIT_CATEGORIES,
++        categorizeEvent,
++        describeChanges,
++        eventLabel,
++        filterEntries,
++        listActors,
++        summarize,
++        targetKind
++    } from '../../shared/utils/uwxAudit';
++
++    const props = defineProps({
++        groupId: { type: String, required: true },
++        groupName: { type: String, default: 'this group' }
++    });
++
++    const audit = useUwxGroupAuditStore();
++    const { entries, loading, loadingOlder, reachedEnd, error, lastSyncAt, lastNewCount, autoRefresh, canView } = storeToRefs(audit);
++    const { syncNewest, loadOlder, setAutoRefresh, exportEntries, roleName } = audit;
++
++    const query = ref('');
++    const category = ref('all');
++    const range = ref('7');
++    const actorId = ref('');
++    const openId = ref('');
++    const shown = ref(150);
++
++    const DAY = 24 * 60 * 60 * 1000;
++    // Recomputed whenever entries change, so "last 24h" stays current with each sync.
++    const now = computed(() => (entries.value, lastSyncAt.value, Date.now()));
++
++    const filtered = computed(() =>
++        filterEntries(entries.value, {
++            category: category.value,
++            actorId: actorId.value,
++            query: query.value,
++            sinceMs: Number(range.value) ? now.value - Number(range.value) * DAY : 0
++        })
++    );
++
++    const actors = computed(() => listActors(entries.value));
++    const daySummary = computed(() => summarize(entries.value, now.value - DAY));
++    const summaryCats = computed(() =>
++        AUDIT_CATEGORIES.filter((c) => c.id !== 'all')
++            .map((c) => ({ ...c, count: daySummary.value.byCategory[c.id] || 0 }))
++            .filter((c) => c.count || ['moderation', 'members', 'roles'].includes(c.id))
++    );
++
++    const hasFilters = computed(() => query.value || category.value !== 'all' || actorId.value || range.value !== '7');
++
++    const visibleDays = computed(() => {
++        const blocks = [];
++        let current = null;
++        for (const entry of filtered.value.slice(0, shown.value)) {
++            const day = formatDay(entry.ts);
++            if (!current || current.day !== day) {
++                current = { day, items: [] };
++                blocks.push(current);
++            }
++            current.items.push(entry);
++        }
++        return blocks;
++    });
++
++    function resetFilters() {
++        query.value = '';
++        category.value = 'all';
++        actorId.value = '';
++        range.value = '7';
++    }
++
++    function toggle(id) {
++        openId.value = openId.value === id ? '' : id;
++    }
++
++    const changeCache = new Map();
++    function changes(entry) {
++        if (!changeCache.has(entry.id)) changeCache.set(entry.id, describeChanges(entry.data, roleName));
++        return changeCache.get(entry.id);
++    }
++
++    function formatTime(ts) {
++        return ts ? new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '—';
++    }
++    function formatClock(ts) {
++        return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
++    }
++    function formatFull(ts) {
++        return ts
++            ? new Date(ts).toLocaleString([], { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' })
++            : 'Unknown time';
++    }
++    function formatDay(ts) {
++        if (!ts) return 'Unknown date';
++        const d = new Date(ts);
++        const today = new Date();
++        const yesterday = new Date(Date.now() - DAY);
++        if (d.toDateString() === today.toDateString()) return 'Today';
++        if (d.toDateString() === yesterday.toDateString()) return 'Yesterday';
++        return d.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
++    }
++
++    async function copyEntry(entry) {
++        const lines = [
++            `${formatFull(entry.ts)} (${entry.createdAt})`,
++            `${eventLabel(entry.eventType)} — ${entry.description}`,
++            `By: ${entry.actorName} (${entry.actorId})`,
++            entry.targetId ? `Target: ${entry.targetId}` : '',
++            ...changes(entry).map((r) =>
++                r.kind === 'change' ? `${r.label}: ${r.before} → ${r.after}` : r.kind === 'list' ? `${r.label}: +${r.added.join(', ')} −${r.removed.join(', ')}` : `${r.label}: ${r.value}`
++            ),
++            `Entry: ${entry.id}`
++        ].filter(Boolean);
++        try {
++            await navigator.clipboard.writeText(lines.join('\n'));
++            toast.success('Copied');
++        } catch {
++            toast.error('Could not copy');
++        }
++    }
++
++    watch(
++        () => props.groupId,
++        (gid) => {
++            resetFilters();
++            openId.value = '';
++            shown.value = 150;
++            changeCache.clear();
++            void audit.open(gid);
++        },
++        { immediate: true }
++    );
++    watch([query, category, actorId, range], () => {
++        shown.value = 150;
++    });
++
++    onBeforeUnmount(() => audit.close());
++</script>
++
++<style scoped>
++    .uwx-audit-status {
++        display: flex;
++        flex-wrap: wrap;
++        gap: 0.75rem;
++        font-size: 0.75rem;
++        color: var(--muted-foreground);
++    }
++    .uwx-audit-error {
++        color: #ff6b6b;
++    }
++    .uwx-audit-summary {
++        display: flex;
++        flex-wrap: wrap;
++        align-items: stretch;
++        gap: 0.5rem;
++    }
++    .uwx-audit-stat {
++        display: flex;
++        flex-direction: column;
++        align-items: flex-start;
++        min-width: 7.5rem;
++        padding: 0.5rem 0.75rem;
++        border: 1px solid var(--border);
++        border-left: 3px solid var(--audit-color, #6b7280);
++        border-radius: 0.5rem;
++        background: rgba(255, 255, 255, 0.02);
++        text-align: left;
++    }
++    .uwx-audit-stat strong {
++        font-size: 1.25rem;
++        line-height: 1.1;
++    }
++    .uwx-audit-stat span {
++        font-size: 0.72rem;
++        color: var(--muted-foreground);
++    }
++    .uwx-audit-stat.active {
++        background: rgba(61, 245, 20, 0.08);
++        border-color: #3df514;
++    }
++    .uwx-audit-stat-note {
++        align-self: center;
++        font-size: 0.7rem;
++        color: var(--muted-foreground);
++    }
++    .uwx-audit-staff {
++        display: flex;
++        flex-wrap: wrap;
++        align-items: center;
++        gap: 0.4rem;
++    }
++    .uwx-audit-chip {
++        font-size: 0.75rem;
++        padding: 0.15rem 0.6rem;
++        border-radius: 999px;
++        border: 1px solid var(--border);
++    }
++    .uwx-audit-chip.active {
++        border-color: #3df514;
++        color: #3df514;
++    }
++    .uwx-audit-filters {
++        display: flex;
++        flex-wrap: wrap;
++        gap: 0.5rem;
++        align-items: center;
++    }
++    .uwx-audit-filters > :first-child {
++        flex: 2 1 14rem;
++    }
++    .uwx-audit-filters :deep([data-slot='native-select-wrapper']) {
++        flex: 1 1 9rem;
++        width: auto;
++    }
++    .uwx-audit-list {
++        display: flex;
++        flex-direction: column;
++        gap: 2px;
++        max-height: 34rem;
++        overflow-y: auto;
++        padding-right: 4px;
++    }
++    .uwx-audit-day {
++        position: sticky;
++        top: 0;
++        z-index: 1;
++        padding: 0.5rem 0.25rem 0.25rem;
++        font-size: 0.7rem;
++        font-weight: 600;
++        letter-spacing: 0.08em;
++        text-transform: uppercase;
++        color: var(--muted-foreground);
++        background: var(--card);
++    }
++    .uwx-audit-row {
++        border-left: 3px solid var(--audit-color, #6b7280);
++        border-radius: 0.35rem;
++        background: rgba(255, 255, 255, 0.02);
++    }
++    .uwx-audit-row.open {
++        background: rgba(255, 255, 255, 0.05);
++    }
++    .uwx-audit-row-main {
++        display: grid;
++        grid-template-columns: 5.5rem 10rem 1fr auto;
++        gap: 0.75rem;
++        align-items: center;
++        width: 100%;
++        padding: 0.45rem 0.6rem;
++        text-align: left;
++        font-size: 0.82rem;
++    }
++    .uwx-audit-time {
++        white-space: nowrap;
++        font-variant-numeric: tabular-nums;
++        color: var(--muted-foreground);
++    }
++    .uwx-audit-type {
++        font-weight: 600;
++        color: var(--audit-color, inherit);
++        white-space: nowrap;
++        overflow: hidden;
++        text-overflow: ellipsis;
++    }
++    .uwx-audit-desc {
++        min-width: 0;
++        overflow-wrap: anywhere;
++    }
++    @media (max-width: 700px) {
++        .uwx-audit-row-main {
++            grid-template-columns: auto 1fr auto;
++            grid-template-areas: 'time type chev' 'desc desc desc';
++            row-gap: 0.2rem;
++        }
++        .uwx-audit-time {
++            grid-area: time;
++        }
++        .uwx-audit-type {
++            grid-area: type;
++        }
++        .uwx-audit-desc {
++            grid-area: desc;
++        }
++        .uwx-audit-row-main > i {
++            grid-area: chev;
++        }
++    }
++    .uwx-audit-detail {
++        padding: 0.25rem 0.75rem 0.75rem;
++        display: flex;
++        flex-direction: column;
++        gap: 0.6rem;
++        font-size: 0.8rem;
++    }
++    .uwx-audit-detail dl {
++        display: grid;
++        grid-template-columns: 5.5rem 1fr;
++        gap: 0.25rem 0.75rem;
++        margin: 0;
++    }
++    .uwx-audit-detail dt {
++        color: var(--muted-foreground);
++    }
++    .uwx-audit-detail dd {
++        margin: 0;
++        overflow-wrap: anywhere;
++    }
++    .uwx-audit-detail small {
++        margin-left: 0.4rem;
++        color: var(--muted-foreground);
++    }
++    .uwx-audit-detail a {
++        color: #3df514;
++        text-decoration: underline;
++        text-underline-offset: 2px;
++    }
++    .uwx-audit-changes {
++        display: flex;
++        flex-direction: column;
++        gap: 0.3rem;
++        padding: 0.5rem 0.6rem;
++        border-radius: 0.35rem;
++        background: rgba(0, 0, 0, 0.25);
++    }
++    .uwx-audit-change {
++        display: flex;
++        flex-wrap: wrap;
++        align-items: baseline;
++        gap: 0.4rem;
++        overflow-wrap: anywhere;
++    }
++    .uwx-audit-field {
++        min-width: 7rem;
++        color: var(--muted-foreground);
++    }
++    .uwx-audit-change .before {
++        color: #ff8a8a;
++        text-decoration: line-through;
++        text-decoration-color: rgba(255, 138, 138, 0.5);
++    }
++    .uwx-audit-change .after {
++        color: #3df514;
++    }
++    .cat-moderation {
++        --audit-color: #ff5c5c;
++    }
++    .cat-members {
++        --audit-color: #4fb3ff;
++    }
++    .cat-roles {
++        --audit-color: #c084fc;
++    }
++    .cat-instances {
++        --audit-color: #3df514;
++    }
++    .cat-content {
++        --audit-color: #fbbf24;
++    }
++    .cat-group {
++        --audit-color: #2dd4bf;
++    }
++</style>
+diff --git a/src/views/UnderWeb/UwxGroupTools.vue b/src/views/UnderWeb/UwxGroupTools.vue
+index a9d1f4c..5403543 100644
+--- a/src/views/UnderWeb/UwxGroupTools.vue
++++ b/src/views/UnderWeb/UwxGroupTools.vue
+@@ -131,13 +131,18 @@
+             </CardContent>
+         </Card>
+ 
++        <UwxGroupAudit
++            v-if="selectedGroup && can(selectedGroup.id, 'audit')"
++            :group-id="selectedGroup.id"
++            :group-name="selectedGroup.name" />
++
+         <Card class="uwx-card uwx-card-wide">
+             <CardHeader>
+                 <div class="flex items-start justify-between gap-4">
+                     <div>
+                         <CardTitle>UWX moderation history</CardTitle>
+                         <CardDescription>
+-                            Actions taken from this PC. VRChat's own audit log (all staff) is under Full moderation.
++                            Actions taken from this PC. Everything done by all staff is in Group activity above.
+                         </CardDescription>
+                     </div>
+                     <Button size="sm" variant="ghost" :disabled="!moderationLog.length" @click="clearLog">Clear</Button>
+@@ -169,8 +174,11 @@
+     import { Input } from '@/components/ui/input';
+ 
+     import { useUwxGroupToolsStore } from '../../stores/uwxGroupTools';
++    import { useUwxGroupAuditStore } from '../../stores/uwxGroupAudit';
++    import UwxGroupAudit from './UwxGroupAudit.vue';
+ 
+     const store = useUwxGroupToolsStore();
++    const auditStore = useUwxGroupAuditStore();
+     const { loadingPermissions, moderationLog, busyAction, myGroups, moderatableGroups, currentInstanceGroupId, instanceOccupants } =
+         storeToRefs(store);
+     const { can, clearLog, lookupMember, moderate, openFullModeration, loadAllPermissions } = store;
+@@ -223,6 +231,7 @@
+             userId: member.userId,
+             displayName: member.displayName
+         });
++        if (ok) auditStore.nudge(selectedGroup.value.id);
+         if (ok && lookupResults.value.some((m) => m.userId === member.userId)) {
+             const next = action === 'ban' ? 'banned' : action === 'kick' ? 'not a member' : 'not a member';
+             lookupResults.value = lookupResults.value.map((m) => (m.userId === member.userId ? { ...m, membershipStatus: next } : m));
