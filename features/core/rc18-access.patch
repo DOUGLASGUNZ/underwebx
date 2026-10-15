@@ -1,0 +1,503 @@
+diff --git a/CHANGELOG_UWX.md b/CHANGELOG_UWX.md
+index 0cded63..da8635b 100644
+--- a/CHANGELOG_UWX.md
++++ b/CHANGELOG_UWX.md
+@@ -1,5 +1,14 @@
+ # UnderWeb X changelog
+ 
++## 0.5.9-rc18 — Member view vs staff view
++
++UWX now shows each person what they can actually use, based only on what the servers say:
++- **Member** (default): lobby, friend invites with messages, Event Mode for your own hangouts, OSC Lab, People, Safety Intel (warnings + reporting), System.
++- **Group staff** (your VRChat role in a group can moderate or invite): adds group invites/recruiting (only if your role can invite), the Groups tab (only for groups you can moderate), audit log, staff & recruiting, Discord alerts, and group status on the Lobby.
++- **UnderWeb staff** (signed in to UnderWeb and confirmed by the server): adds label publishing/removal and the review queue.
++- A badge next to the version shows which view you're in (hover for details). Staff tools are hidden, not greyed out, and appear automatically when your role allows.
++- Hiding is only the view — VRChat and the UnderWeb server still enforce every action.
++
+ ## 0.5.8-rc17 — Live lobby board
+ 
+ Command → **Lobby**: everyone in your instance at a glance.
+diff --git a/UWX_VERSION b/UWX_VERSION
+index faf111a..546d19b 100644
+--- a/UWX_VERSION
++++ b/UWX_VERSION
+@@ -1 +1 @@
+-0.5.8-rc17
++0.5.9-rc18
+diff --git a/src/App.vue b/src/App.vue
+index 190d6e0..79c8450 100644
+--- a/src/App.vue
++++ b/src/App.vue
+@@ -37,6 +37,7 @@
+     import { useUwxLobbyGuardStore } from './stores/uwxLobbyGuard';
+     import { useUwxAccountStore } from './stores/uwxAccount';
+     import { useUwxDiscordAlertsStore } from './stores/uwxDiscordAlerts';
++    import { useUwxAccessStore } from './stores/uwxAccess';
+     import { initNoty } from './plugins/noty';
+ 
+     import AlertDialogModal from './components/ui/alert-dialog/AlertDialogModal.vue';
+@@ -92,6 +93,8 @@
+             void useUwxAccountStore().init();
+             // Discord alerts keep watching the chosen group in the background.
+             void useUwxDiscordAlertsStore().init();
++            // Work out member / group staff / UnderWeb staff from VRChat + UnderWeb permissions.
++            useUwxAccessStore().init();
+         }
+ 
+         runCheckVRChatDebugLoggingFlow();
+diff --git a/src/shared/constants/uwx.js b/src/shared/constants/uwx.js
+index 0437d9f..7dfd8db 100644
+--- a/src/shared/constants/uwx.js
++++ b/src/shared/constants/uwx.js
+@@ -1,2 +1,2 @@
+-export const UWX_VERSION = '0.5.8-rc17';
++export const UWX_VERSION = '0.5.9-rc18';
+ export const UWX_MANIFEST_URL = 'https://underweb.cloud/api/uwx/manifest';
+diff --git a/src/stores/__tests__/uwxAccess.test.js b/src/stores/__tests__/uwxAccess.test.js
+new file mode 100644
+index 0000000..4fdd339
+--- /dev/null
++++ b/src/stores/__tests__/uwxAccess.test.js
+@@ -0,0 +1,61 @@
++import { beforeEach, describe, expect, test, vi } from 'vitest';
++import { createPinia, setActivePinia } from 'pinia';
++import { reactive } from 'vue';
++
++const account = reactive({ signedIn: false, isStaff: false, canReviewSafety: false });
++const tools = reactive({ moderatableGroups: [], myGroups: [], loadingPermissions: false, loadAllPermissions: vi.fn() });
++const underweb = reactive({ recruitGroupId: '' });
++vi.mock('../uwxAccount', () => ({ useUwxAccountStore: () => account }));
++vi.mock('../uwxGroupTools', () => ({ useUwxGroupToolsStore: () => tools }));
++vi.mock('../underweb', () => ({ useUnderWebStore: () => underweb }));
++vi.mock('../../api', () => ({ queryRequest: {} }));
++vi.mock('../../services/watchState', () => ({ watchState: { isLoggedIn: true } }));
++vi.mock('../../shared/utils', async () => ({ ...(await vi.importActual('../../shared/utils/group')) }));
++
++const { useUwxAccessStore, accessLevel } = await import('../uwxAccess');
++const group = (id, permissions) => ({ id, permissionsLoaded: true, ref: { myMember: { permissions } } });
++
++describe('UWX access levels', () => {
++    beforeEach(() => {
++        setActivePinia(createPinia());
++        Object.assign(account, { signedIn: false, isStaff: false, canReviewSafety: false });
++        tools.moderatableGroups = [];
++        tools.myGroups = [];
++        underweb.recruitGroupId = '';
++    });
++
++    test('member by default: no Groups tab, no group invites', () => {
++        const a = useUwxAccessStore();
++        expect(a.level).toBe('member');
++        expect(a.showGroupsTab).toBe(false);
++        expect(a.showGroupInvites).toBe(false);
++    });
++
++    test('group staff comes from VRChat group permissions, per group', () => {
++        tools.myGroups = [group('grp_uw', ['group-invites-manage']), group('grp_other', [])];
++        const a = useUwxAccessStore();
++        expect(a.level).toBe('group-staff');
++        expect(a.showGroupInvites).toBe(true);
++        underweb.recruitGroupId = 'grp_other';
++        expect(a.canGroupInviteHere).toBe(false);
++        underweb.recruitGroupId = 'grp_uw';
++        expect(a.canGroupInviteHere).toBe(true);
++    });
++
++    test('owners ("*") can invite; UnderWeb staff needs the server to confirm while signed in', () => {
++        tools.myGroups = [group('grp_uw', ['*'])];
++        tools.moderatableGroups = tools.myGroups;
++        const a = useUwxAccessStore();
++        expect(a.inviteGroupIds).toEqual(['grp_uw']);
++        account.isStaff = true; // stale flag without a session doesn't count
++        expect(a.level).toBe('group-staff');
++        account.signedIn = true;
++        expect(a.level).toBe('underweb-staff');
++        expect(a.label).toBe('UnderWeb staff');
++    });
++
++    test('accessLevel helper', () => {
++        expect(accessLevel({ underwebStaff: false, groupStaff: false })).toBe('member');
++        expect(accessLevel({ underwebStaff: true, groupStaff: false })).toBe('underweb-staff');
++    });
++});
+diff --git a/src/stores/__tests__/uwxEventMode.test.js b/src/stores/__tests__/uwxEventMode.test.js
+index db5fc8b..a962562 100644
+--- a/src/stores/__tests__/uwxEventMode.test.js
++++ b/src/stores/__tests__/uwxEventMode.test.js
+@@ -3,6 +3,7 @@ import { createPinia, setActivePinia } from 'pinia';
+ import { nextTick, reactive } from 'vue';
+ 
+ const config = {};
++const access = { showGroupInvites: true };
+ const discordStub = { onLabeledPerson: vi.fn(), onEventRecap: vi.fn() };
+ vi.mock('../../services/config', () => ({
+     default: {
+@@ -36,6 +37,7 @@ vi.mock('../underweb', () => ({ useUnderWebStore: () => underweb }));
+ vi.mock('../oscLab', () => ({ useOscLabStore: () => osc }));
+ vi.mock('../location', () => ({ useLocationStore: () => locationStore }));
+ vi.mock('../underwebNetwork', () => ({ useUnderWebNetworkStore: () => ({ staffUserIds: new Set([BLOOTY]) }) }));
++vi.mock('../uwxAccess', () => ({ useUwxAccessStore: () => access }));
+ vi.mock('../user', () => ({ useUserStore: () => ({ currentUser: { id: ME } }) }));
+ 
+ const { useUwxEventModeStore } = await import('../uwxEventMode');
+@@ -112,4 +114,14 @@ describe('UWX Event Mode', () => {
+         expect(store.presets.find((x) => x.id === p.id)).toMatchObject({ scope: 'all-online' });
+         expect(JSON.parse(config.UWX_eventPresets).some((x) => x.name === 'Halloween Party')).toBe(true);
+     });
++
++    test('members (no group invite permission) never get group recruiting switched on', async () => {
++        access.showGroupInvites = false;
++        const store = useUwxEventModeStore();
++        await store.init();
++        await store.start('music-video-night');
++        expect(underweb.groupRecruitEnabled).toBe(false);
++        expect(underweb.autoInviteEnabled).toBe(true);
++        access.showGroupInvites = true;
++    });
+ });
+diff --git a/src/stores/uwxAccess.js b/src/stores/uwxAccess.js
+new file mode 100644
+index 0000000..7465d5a
+--- /dev/null
++++ b/src/stores/uwxAccess.js
+@@ -0,0 +1,79 @@
++import { computed, watch } from 'vue';
++import { defineStore } from 'pinia';
++
++import { hasGroupPermission } from '../shared/utils';
++import { watchState } from '../services/watchState';
++import { useUnderWebStore } from './underweb';
++import { useUwxAccountStore } from './uwxAccount';
++import { useUwxGroupToolsStore } from './uwxGroupTools';
++
++// Who's using UWX, decided only from what the servers say:
++//   member         — default
++//   group staff    — your VRChat role in a group can moderate or invite (VRChat group permissions)
++//   UnderWeb staff — signed in to UnderWeb and the server confirms staff
++// This only decides what UWX shows. The actions themselves are still enforced by VRChat
++// and the UnderWeb server, so a modified client gains nothing.
++
++export function accessLevel({ underwebStaff, groupStaff }) {
++    if (underwebStaff) return 'underweb-staff';
++    if (groupStaff) return 'group-staff';
++    return 'member';
++}
++
++export const ACCESS_LABELS = Object.freeze({
++    member: 'Member',
++    'group-staff': 'Group staff',
++    'underweb-staff': 'UnderWeb staff'
++});
++
++export const useUwxAccessStore = defineStore('UwxAccess', () => {
++    const account = useUwxAccountStore();
++    const tools = useUwxGroupToolsStore();
++    const underweb = useUnderWebStore();
++
++    /** Groups where your VRChat role can moderate anything. */
++    const moderatedGroups = computed(() => tools.moderatableGroups);
++    /** Groups where your VRChat role can send group invites. */
++    const inviteGroupIds = computed(() =>
++        tools.myGroups.filter((g) => g.permissionsLoaded && hasGroupPermission(g.ref, 'group-invites-manage')).map((g) => g.id)
++    );
++
++    const underwebStaff = computed(() => Boolean(account.signedIn && (account.isStaff || account.canReviewSafety)));
++    const groupStaff = computed(() => moderatedGroups.value.length > 0 || inviteGroupIds.value.length > 0);
++    const level = computed(() => accessLevel({ underwebStaff: underwebStaff.value, groupStaff: groupStaff.value }));
++    const label = computed(() => ACCESS_LABELS[level.value]);
++
++    /** Can you send group invites to the group that applies where you are? */
++    const canGroupInviteHere = computed(() => Boolean(underweb.recruitGroupId && inviteGroupIds.value.includes(underweb.recruitGroupId)));
++    /** Show group-invite tools at all (you can invite for at least one group). */
++    const showGroupInvites = computed(() => inviteGroupIds.value.length > 0);
++    const showGroupsTab = computed(() => moderatedGroups.value.length > 0);
++    const checking = computed(() => tools.loadingPermissions);
++
++    let started = false;
++    function init() {
++        if (started) return;
++        started = true;
++        // Learn your group roles once you're logged in (gentle, cached for 10 minutes).
++        watch(
++            () => [watchState.isLoggedIn, tools.myGroups.length],
++            ([loggedIn, count]) => {
++                if (loggedIn && count) void tools.loadAllPermissions();
++            },
++            { immediate: true }
++        );
++    }
++
++    return {
++        level,
++        label,
++        underwebStaff,
++        groupStaff,
++        inviteGroupIds,
++        canGroupInviteHere,
++        showGroupInvites,
++        showGroupsTab,
++        checking,
++        init
++    };
++});
+diff --git a/src/stores/uwxEventMode.js b/src/stores/uwxEventMode.js
+index d6b779d..ccbac92 100644
+--- a/src/stores/uwxEventMode.js
++++ b/src/stores/uwxEventMode.js
+@@ -18,6 +18,7 @@ import { useOscLabStore } from './oscLab';
+ import { useUnderWebStore } from './underweb';
+ import { useUnderWebNetworkStore } from './underwebNetwork';
+ import { useUserStore } from './user';
++import { useUwxAccessStore } from './uwxAccess';
+ import { useUwxDiscordAlertsStore } from './uwxDiscordAlerts';
+ 
+ // Event Mode: one button switches UWX into an event setup, tracks the night, and
+@@ -206,7 +207,8 @@ export const useUwxEventModeStore = defineStore('UwxEventMode', () => {
+         };
+         await underweb.setInviteScope(preset.scope);
+         if (preset.messageSlot >= 0) await underweb.setInviteMessageSlot(preset.messageSlot);
+-        await underweb.setGroupRecruitEnabled(preset.recruit);
++        // Members (no group invite permission) never get group recruiting switched on.
++        await underweb.setGroupRecruitEnabled(Boolean(preset.recruit && useUwxAccessStore().showGroupInvites));
+         await underweb.setAutoInviteEnabled(preset.autoInvite);
+         osc.setEventStatus(preset.status);
+         startTracking();
+diff --git a/src/stores/uwxLobbyBoard.js b/src/stores/uwxLobbyBoard.js
+index 33a3cb1..917e9cc 100644
+--- a/src/stores/uwxLobbyBoard.js
++++ b/src/stores/uwxLobbyBoard.js
+@@ -12,6 +12,7 @@ import { useUnderWebStore } from './underweb';
+ import { useUnderWebNetworkStore } from './underwebNetwork';
+ import { useUserStore } from './user';
+ import { useUwxMemberNotesStore } from './uwxMemberNotes';
++import { useUwxAccessStore } from './uwxAccess';
+ 
+ // Live lobby board: everyone in your instance with roles, labels, notes, time here,
+ // and whether they're in "our" group (the group recruiting targets here).
+@@ -38,7 +39,13 @@ export const useUwxLobbyBoardStore = defineStore('UwxLobbyBoard', () => {
+     let checking = false;
+     let clock = null;
+ 
+-    const groupId = computed(() => underweb.recruitGroupId || underweb.currentGroupId || '');
++    const access = useUwxAccessStore();
++    // Group status only for people who can invite to that group (members don't need it,
++    // and it saves VRChat requests).
++    const groupId = computed(() => {
++        const gid = underweb.recruitGroupId || underweb.currentGroupId || '';
++        return gid && access.inviteGroupIds.includes(gid) ? gid : '';
++    });
+ 
+     const rows = computed(() => {
+         const gid = groupId.value;
+diff --git a/src/views/UnderWeb/UnderWeb.vue b/src/views/UnderWeb/UnderWeb.vue
+index c4022cc..62f0397 100644
+--- a/src/views/UnderWeb/UnderWeb.vue
++++ b/src/views/UnderWeb/UnderWeb.vue
+@@ -6,8 +6,11 @@
+                 <div class="flex flex-wrap items-end gap-3">
+                     <h1 class="uwx-title">UnderWeb X</h1>
+                     <Badge variant="outline">v{{ UWX_VERSION }}</Badge>
++                    <span class="uwx-access-badge" :class="accessLevel" :title="accessHint">
++                        <i :class="accessLevel === 'member' ? 'ri-user-line' : 'ri-shield-star-line'" /> {{ accessLabel }}
++                    </span>
+                 </div>
+-                <p class="uwx-subtitle">Live VRChat operations, group recruiting, OSC, and UnderWeb network tools.</p>
++                <p class="uwx-subtitle">{{ showGroupInvites ? 'Live VRChat operations, group recruiting, OSC, and UnderWeb network tools.' : 'Your lobby, friend invites, chatbox and UnderWeb network tools.' }}</p>
+             </div>
+             <div class="flex flex-col items-end gap-2">
+                 <div class="uwx-instance-badge" :class="statusClass">
+@@ -42,7 +45,8 @@
+             </div>
+             <div class="uwx-overview-tile">
+                 <span>INVITES SENT</span>
+-                <strong>{{ sessionGroupInvitesSent }} to group · {{ sessionInvitesSent }} to instance</strong>
++                <strong v-if="showGroupInvites">{{ sessionGroupInvitesSent }} to group · {{ sessionInvitesSent }} to instance</strong>
++                <strong v-else>{{ sessionInvitesSent }} friend invite{{ sessionInvitesSent === 1 ? '' : 's' }}</strong>
+                 <small>this session</small>
+             </div>
+         </div>
+@@ -65,7 +69,7 @@
+ 
+         <div class="uwx-panel-tabs" role="tablist" aria-label="UnderWeb X sections">
+             <button
+-                v-for="panel in panelTabs"
++                v-for="panel in visibleTabs"
+                 :key="panel.id"
+                 type="button"
+                 role="tab"
+@@ -95,14 +99,16 @@
+                     <div class="flex items-start justify-between gap-4">
+                         <div>
+                             <CardTitle>Invites</CardTitle>
+-                            <CardDescription>Two different things: bringing people into your VRChat group, and bringing friends to where you are.</CardDescription>
++                            <CardDescription>
++                                {{ showGroupInvites ? 'Two different things: bringing people into your VRChat group, and bringing friends to where you are.' : 'Bring friends to where you are, with a message.' }}
++                            </CardDescription>
+                         </div>
+                         <Button size="sm" variant="ghost" @click="activePanel = 'invites'">All invite settings <i class="ri-arrow-right-line" /></Button>
+                     </div>
+                 </CardHeader>
+                 <CardContent>
+-                    <div class="uwx-invite-tiles">
+-                        <div class="uwx-invite-tile uwx-invite-kind-group">
++                    <div class="uwx-invite-tiles" :class="{ single: !showGroupInvites }">
++                        <div v-if="showGroupInvites" class="uwx-invite-tile uwx-invite-kind-group">
+                             <div class="uwx-invite-tile-head">
+                                 <span class="uwx-invite-icon"><i class="ri-group-line" /></span>
+                                 <div class="min-w-0 flex-1">
+@@ -169,7 +175,11 @@
+ 
+             <UwxLobbyBoard v-if="activePanel === 'command'" @report="prefillSafetyReport" />
+ 
+-            <Card v-show="activePanel === 'invites'" class="uwx-card uwx-card-wide uwx-invite-card uwx-invite-kind-group">
++            <p v-if="activePanel === 'invites' && !showGroupInvites" class="uwx-card-wide uwx-member-hint">
++                <i class="ri-information-line" /> Group invites appear here automatically if your VRChat role in a group can send them.
++            </p>
++
++            <Card v-show="activePanel === 'invites' && showGroupInvites" class="uwx-card uwx-card-wide uwx-invite-card uwx-invite-kind-group">
+                 <CardHeader>
+                     <div class="flex items-start justify-between gap-4">
+                         <div class="flex items-start gap-3">
+@@ -1047,6 +1057,7 @@
+     import { useSafetyIntelStore } from '../../stores/safetyIntel';
+     import { useUwxLobbyGuardStore } from '../../stores/uwxLobbyGuard';
+     import { useUwxAccountStore } from '../../stores/uwxAccount';
++    import { useUwxAccessStore } from '../../stores/uwxAccess';
+     import { LABEL_DURATIONS, useUwxLabelsStore } from '../../stores/uwxLabels';
+     import { useModalStore } from '../../stores/modal';
+     import UwxAccountCard from './UwxAccountCard.vue';
+@@ -1183,6 +1194,16 @@
+     const { rolesForUser, setNotificationRule, refreshNetwork } = networkStore;
+ 
+     const activePanel = ref('command');
++    const access = useUwxAccessStore();
++    access.init();
++    const { level: accessLevel, label: accessLabel, showGroupInvites, showGroupsTab } = storeToRefs(access);
++    const accessHint = computed(() =>
++        accessLevel.value === 'member'
++            ? 'Member view. Staff tools appear automatically if your VRChat group role or UnderWeb role allows them.'
++            : accessLevel.value === 'group-staff'
++              ? 'Group staff: your VRChat group role can moderate or invite. Sign in to UnderWeb (System) for UnderWeb staff tools.'
++              : 'UnderWeb staff: all staff tools are on.'
++    );
+     const panelTabs = [
+         { id: 'command', label: 'Command', short: 'Live ops', icon: 'ri-dashboard-3-line' },
+         { id: 'invites', label: 'Invites', short: 'Group + instance', icon: 'ri-mail-send-line' },
+@@ -1192,6 +1213,14 @@
+         { id: 'safety', label: 'Safety Intel', short: 'Shared warnings', icon: 'ri-shield-check-line' },
+         { id: 'system', label: 'System', short: 'Safety + updates', icon: 'ri-settings-3-line' }
+     ];
++    const visibleTabs = computed(() =>
++        panelTabs
++            .filter((t) => t.id !== 'groups' || showGroupsTab.value)
++            .map((t) => (t.id === 'invites' && !showGroupInvites.value ? { ...t, short: 'Friends + messages' } : t))
++    );
++    watch(showGroupsTab, (show) => {
++        if (!show && activePanel.value === 'groups') activePanel.value = 'command';
++    });
+     const panelMeta = {
+         command: { eyebrow: 'LIVE OPERATIONS', title: 'Command Center', description: 'Quick invite controls, Radar, events, and connected accounts.' },
+         invites: { eyebrow: 'INVITES', title: 'Group & instance invites', description: 'Group invites ask people to join your VRChat group. Instance invites bring friends to where you are.' },
+@@ -1201,7 +1230,16 @@
+         safety: { eyebrow: 'COMMUNITY AWARENESS', title: 'Safety Intel', description: 'Reviewed shared warnings for crashing, doxxing threats, harassment, malicious behavior, and other community risks.' },
+         system: { eyebrow: 'LOCAL CONTROL', title: 'System & Safety', description: 'Notifications, releases, local data boundaries, and the global disarm control.' }
+     };
+-    const activePanelMeta = computed(() => panelMeta[activePanel.value] || panelMeta.command);
++    const activePanelMeta = computed(() => {
++        const meta = panelMeta[activePanel.value] || panelMeta.command;
++        if (activePanel.value === 'invites' && !showGroupInvites.value) {
++            return { ...meta, title: 'Friend invites', description: 'Bring friends to where you are, with one of your saved messages.' };
++        }
++        if (activePanel.value === 'command' && !showGroupInvites.value) {
++            return { ...meta, description: 'Your lobby, friend invites, events and connected accounts.' };
++        }
++        return meta;
++    });
+ 
+     const groupInput = ref('');
+     const friendSearch = ref('');
+@@ -1917,6 +1955,39 @@
+     .uwx-preset-x {
+         color: var(--muted-foreground);
+     }
++    .uwx-invite-tiles.single {
++        grid-template-columns: minmax(0, 1fr);
++    }
++    .uwx-access-badge {
++        display: inline-flex;
++        align-items: center;
++        gap: 4px;
++        padding: 2px 10px;
++        border-radius: 999px;
++        font-size: 11px;
++        font-weight: 700;
++        border: 1px solid var(--border);
++        color: var(--muted-foreground);
++    }
++    .uwx-access-badge.group-staff {
++        color: #4fb3ff;
++        border-color: rgb(79 179 255 / 45%);
++    }
++    .uwx-access-badge.underweb-staff {
++        color: #3df514;
++        border-color: rgb(61 245 20 / 50%);
++        background: rgb(61 245 20 / 8%);
++    }
++    .uwx-member-hint {
++        display: flex;
++        align-items: center;
++        gap: 8px;
++        padding: 10px 14px;
++        border-radius: 10px;
++        border: 1px dashed var(--border);
++        color: var(--muted-foreground);
++        font-size: 13px;
++    }
+     .uwx-staff-publish {
+         display: flex;
+         flex-direction: column;
+diff --git a/src/views/UnderWeb/UwxEventMode.vue b/src/views/UnderWeb/UwxEventMode.vue
+index 9fab31a..da1e565 100644
+--- a/src/views/UnderWeb/UwxEventMode.vue
++++ b/src/views/UnderWeb/UwxEventMode.vue
+@@ -5,7 +5,7 @@
+                 <div>
+                     <CardTitle>Event Mode</CardTitle>
+                     <CardDescription>
+-                        One button sets UWX up for the night: group recruiting, friend invites with your message, and a chatbox line.
++                        One button sets UWX up for the night: {{ showGroupInvites ? 'group recruiting, ' : '' }}friend invites with your message, and a chatbox line.
+                         Ending it puts your usual settings back and gives you a recap.
+                     </CardDescription>
+                 </div>
+@@ -62,7 +62,7 @@
+                                 <small class="block truncate text-muted-foreground">{{ preset.status || 'No chatbox line' }}</small>
+                             </div>
+                             <div class="uwx-em-tags">
+-                                <span :class="preset.recruit ? 'on group' : 'off'">{{ preset.recruit ? 'Group invites' : 'No group invites' }}</span>
++                                <span v-if="showGroupInvites" :class="preset.recruit ? 'on group' : 'off'">{{ preset.recruit ? 'Group invites' : 'No group invites' }}</span>
+                                 <span :class="preset.autoInvite ? 'on instance' : 'off'">{{ preset.autoInvite ? 'Auto-invite ' + scopeLabel(preset.scope) : 'No auto friend invites' }}</span>
+                                 <span v-if="preset.messageSlot >= 0" class="on instance">Message {{ preset.messageSlot + 1 }}</span>
+                             </div>
+@@ -74,7 +74,7 @@
+                         <form v-else class="space-y-2" @submit.prevent="saveEdit">
+                             <Input v-model="draft.name" placeholder="Event type name" aria-label="Event type name" />
+                             <Input v-model="draft.status" placeholder="Chatbox line while it runs" aria-label="Chatbox line" />
+-                            <label class="uwx-em-check"><Switch v-model="draft.recruit" /> Group invites (our instances only)</label>
++                            <label v-if="showGroupInvites" class="uwx-em-check"><Switch v-model="draft.recruit" /> Group invites (our instances only)</label>
+                             <label class="uwx-em-check"><Switch v-model="draft.autoInvite" /> Auto friend invites</label>
+                             <NativeSelect v-model="draft.scope" aria-label="Who to invite">
+                                 <NativeSelectOption v-for="scope in scopes" :key="scope.id" :value="scope.id">{{ scope.label }}</NativeSelectOption>
+@@ -136,11 +136,13 @@
+ 
+     import { formatDuration } from '../../shared/utils/uwxEvent';
+     import { useUwxEventModeStore } from '../../stores/uwxEventMode';
++    import { useUwxAccessStore } from '../../stores/uwxAccess';
+     import { useUnderWebNetworkStore, useUnderWebStore, useModalStore } from '../../stores';
+ 
+     const store = useUwxEventModeStore();
+     const { presets, active, history, isRunning, headcount, elapsedMs, staffHere, uniqueCount } = storeToRefs(store);
+     const { inviteMessages } = storeToRefs(useUnderWebStore());
++    const { showGroupInvites } = storeToRefs(useUwxAccessStore());
+     const { upcomingEvents } = storeToRefs(useUnderWebNetworkStore());
+     const modalStore = useModalStore();
+ 
