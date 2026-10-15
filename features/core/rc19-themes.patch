@@ -1,0 +1,1519 @@
+diff --git a/CHANGELOG_UWX.md b/CHANGELOG_UWX.md
+index da8635b..8ec0b90 100644
+--- a/CHANGELOG_UWX.md
++++ b/CHANGELOG_UWX.md
+@@ -1,5 +1,11 @@
+ # UnderWeb X changelog
+ 
++## 0.6.0-rc19 — Themes: client + chatbox
++
++- **Client themes** (System → Appearance): UnderWeb Green (default), Blood Moon, Violet, Ice, Gold, Rose, Mono, or any custom color. One accent recolors the whole client — UnderWeb pages, premium cards, and VRCX's own buttons, highlights and sidebar — with readable button text on any color. Optional background tint (none / subtle / strong). Turn it off to use VRCX's own theme. Saved on this PC and painted at startup with no flash.
++- **Green theme pass**: every UnderWeb screen now uses the theme accent instead of hard-coded colors (previously a mix of green and violet). "Allowed / OK" messages stay green, and instance-invite blue, danger red etc. keep their meaning.
++- **Chatbox themes** (OSC Lab): Clean, Neon, Boxed, Minimal, Event and UnderWeb, each with a live mini preview. One click swaps all module layouts plus an optional top/bottom line; your modules, statuses and switches stay. Save your own looks. Top/bottom lines only show when something else is showing, and are dropped first if the 144-character limit is tight.
++
+ ## 0.5.9-rc18 — Member view vs staff view
+ 
+ UWX now shows each person what they can actually use, based only on what the servers say:
+diff --git a/UWX_VERSION b/UWX_VERSION
+index 546d19b..b5f0065 100644
+--- a/UWX_VERSION
++++ b/UWX_VERSION
+@@ -1 +1 @@
+-0.5.9-rc18
++0.6.0-rc19
+diff --git a/src/App.vue b/src/App.vue
+index 79c8450..e573167 100644
+--- a/src/App.vue
++++ b/src/App.vue
+@@ -34,6 +34,7 @@
+     import { TooltipProvider } from './components/ui/tooltip';
+     import { createGlobalStores } from './stores';
+     import { useUwxEventModeStore } from './stores/uwxEventMode';
++    import { useUwxThemeStore } from './stores/uwxTheme';
+     import { useUwxLobbyGuardStore } from './stores/uwxLobbyGuard';
+     import { useUwxAccountStore } from './stores/uwxAccount';
+     import { useUwxDiscordAlertsStore } from './stores/uwxDiscordAlerts';
+@@ -63,6 +64,8 @@
+     initNoty();
+ 
+     const store = createGlobalStores();
++    // Paint the UWX theme as early as possible (cached copy, so the old colors never flash).
++    void useUwxThemeStore().init();
+ 
+     if (typeof window !== 'undefined') {
+         window.$pinia = store;
+diff --git a/src/shared/constants/uwx.js b/src/shared/constants/uwx.js
+index 7dfd8db..50fc6c8 100644
+--- a/src/shared/constants/uwx.js
++++ b/src/shared/constants/uwx.js
+@@ -1,2 +1,2 @@
+-export const UWX_VERSION = '0.5.9-rc18';
++export const UWX_VERSION = '0.6.0-rc19';
+ export const UWX_MANIFEST_URL = 'https://underweb.cloud/api/uwx/manifest';
+diff --git a/src/shared/utils/__tests__/uwxOsc.test.js b/src/shared/utils/__tests__/uwxOsc.test.js
+index c7c517c..c567aab 100644
+--- a/src/shared/utils/__tests__/uwxOsc.test.js
++++ b/src/shared/utils/__tests__/uwxOsc.test.js
+@@ -10,6 +10,7 @@ import {
+     meaningfulKey,
+     migrateLegacySettings,
+     normalizeSettings,
++    CHATBOX_THEMES,
+     renderModuleLines
+ } from '../uwxOsc';
+ 
+@@ -203,4 +204,35 @@ describe('settings persistence', () => {
+         const lines = renderModuleLines(s, { status: '🎬 Music Video Night', pinnedStatus: true });
+         expect(lines.find((l) => l.key === 'status')?.text).toBe('🎬 Music Video Night');
+     });
++
++    test('chatbox themes: frame lines wrap content and every theme fits the 144-character limit', () => {
++        for (const theme of CHATBOX_THEMES) {
++            const s = normalizeSettings({ frame: theme.frame, modules: Object.fromEntries(Object.entries(theme.templates).map(([k, t]) => [k, { enabled: true, template: t }])) });
++            const lines = renderModuleLines(
++                s,
++                { media: playing(), weather: { icon: '🌧️', temp: '54°F', condition: 'Cloudy' }, status: 'Music Video Night — Thursdays', heartRate: 88, world: 'UnderWeb Hub' },
++                T0
++            );
++            if (theme.frame.header) expect(lines[0]).toEqual({ key: 'frame-header', text: theme.frame.header });
++            const fitted = fitChatbox(lines);
++            expect(Array.from(fitted.text).length).toBeLessThanOrEqual(144);
++            expect(fitted.text.split('\n').length).toBeLessThanOrEqual(9);
++            expect(fitted.text).toContain('Song'); // content always beats decoration
++        }
++    });
++
++    test('no frame lines when nothing else is showing', () => {
++        const s = normalizeSettings({ frame: { header: 'TOP', footer: 'BOTTOM' } });
++        s.modules.music.enabled = false;
++        s.modules.status.enabled = false;
++        expect(renderModuleLines(s, {})).toEqual([]);
++    });
++
++    test('saved themes are cleaned and capped', () => {
++        const s = normalizeSettings({ savedThemes: [{ name: ' Mine ', templates: { music: 'X {title}' }, frame: { header: 'a\nb' } }, { name: '' }] });
++        expect(s.savedThemes).toHaveLength(1);
++        expect(s.savedThemes[0]).toMatchObject({ name: 'Mine', frame: { header: 'a b', footer: '' } });
++        expect(s.savedThemes[0].templates.music).toBe('X {title}');
++        expect(s.savedThemes[0].templates.weather).toBeTruthy();
++    });
+ });
+diff --git a/src/shared/utils/__tests__/uwxTheme.test.js b/src/shared/utils/__tests__/uwxTheme.test.js
+new file mode 100644
+index 0000000..0c99297
+--- /dev/null
++++ b/src/shared/utils/__tests__/uwxTheme.test.js
+@@ -0,0 +1,29 @@
++import { describe, expect, it } from 'vitest';
++import { accentOf, foregroundFor, hexToRgb, normalizeTheme, themeCss, THEME_PRESETS } from '../uwxTheme';
++
++describe('uwxTheme', () => {
++    it('defaults to UnderWeb green and cleans bad input', () => {
++        expect(normalizeTheme(null)).toEqual({ enabled: true, preset: 'underweb', custom: '', tint: 'subtle' });
++        expect(normalizeTheme({ preset: 'nope', custom: 'red', tint: 'max' })).toMatchObject({ preset: 'underweb', custom: '', tint: 'subtle' });
++        expect(accentOf(normalizeTheme({}))).toBe('#3df514');
++        expect(accentOf(normalizeTheme({ preset: 'custom', custom: '#FF00AA' }))).toBe('#ff00aa');
++    });
++
++    it('keeps button text readable on any accent', () => {
++        expect(foregroundFor(hexToRgb('#3df514'))).toBe('#0a0a0a');
++        expect(foregroundFor(hexToRgb('#a855f7'))).toBe('#ffffff');
++        expect(foregroundFor(hexToRgb('#d4d4d8'))).toBe('#0a0a0a');
++        for (const p of THEME_PRESETS) expect(['#0a0a0a', '#ffffff']).toContain(foregroundFor(hexToRgb(p.accent)));
++    });
++
++    it('recolors UWX and VRCX variables, and turns off cleanly', () => {
++        const css = themeCss({ preset: 'blood', tint: 'none' });
++        expect(css).toContain('--uwx-accent: #ff3b3b;');
++        expect(css).toContain('--uwx-accent-rgb: 255 59 59;');
++        expect(css).toContain('--primary: #ff3b3b;');
++        expect(css).toContain('--sidebar-primary: #ff3b3b;');
++        expect(css).not.toContain('color-mix');
++        expect(themeCss({ preset: 'violet', tint: 'strong' })).toContain('color-mix(in oklab, #a855f7 9%');
++        expect(themeCss({ enabled: false })).toBe('');
++    });
++});
+diff --git a/src/shared/utils/uwxOsc.js b/src/shared/utils/uwxOsc.js
+index 836fa6c..de43018 100644
+--- a/src/shared/utils/uwxOsc.js
++++ b/src/shared/utils/uwxOsc.js
+@@ -28,6 +28,43 @@ export const TEMPLATE_TOKENS = Object.freeze({
+     world: ['world']
+ });
+ 
++/** One-click chatbox looks. Each is just module templates + an optional header/footer line. */
++export const CHATBOX_THEMES = Object.freeze([
++    { id: 'clean', name: 'Clean', frame: { header: '', footer: '' }, templates: { ...DEFAULT_TEMPLATES } },
++    {
++        id: 'neon',
++        name: 'Neon',
++        frame: { header: '✦ ━━━━━━━━━━━ ✦', footer: '' },
++        templates: { music: '▶ {title} ∙ {artist} {bar}', weather: '☁ {temp} ∙ {condition}', status: '» {status} «', heart: '♥ {bpm}', world: '⌖ {world}' }
++    },
++    {
++        id: 'boxed',
++        name: 'Boxed',
++        frame: { header: '╭────────────╮', footer: '╰────────────╯' },
++        templates: { music: '│ ♫ {title} — {artist}', weather: '│ {icon} {temp}', status: '│ {status}', heart: '│ ♥ {bpm} BPM', world: '│ ⌖ {world}' }
++    },
++    {
++        id: 'minimal',
++        name: 'Minimal',
++        frame: { header: '', footer: '' },
++        templates: { music: '♪ {title}', weather: '{temp}', status: '{status}', heart: '♥{bpm}', world: '{world}' }
++    },
++    {
++        id: 'event',
++        name: 'Event',
++        frame: { header: '🎬 ── LIVE EVENT ── 🎬', footer: '' },
++        templates: { music: 'Now: {title} — {artist}', weather: '{icon} {temp}', status: '{status}', heart: '❤️ {bpm}', world: '{world}' }
++    },
++    {
++        id: 'underweb',
++        name: 'UnderWeb',
++        frame: { header: '░▒▓ U N D E R W E B ▓▒░', footer: '' },
++        templates: { music: '🎧 {artist} — {title} {time}', weather: '{icon} {temp} | {condition}', status: '{status}', heart: '❤️ {bpm} BPM', world: '🌐 {world}' }
++    }
++]);
++
++const cleanFrameLine = (v) => (typeof v === 'string' ? v.replace(/[\r\n]+/g, ' ').trim().slice(0, 40) : '');
++
+ export const DEFAULT_SETTINGS = Object.freeze({
+     version: 3,
+     enabled: false,
+@@ -40,7 +77,9 @@ export const DEFAULT_SETTINGS = Object.freeze({
+         world: { enabled: false, template: DEFAULT_TEMPLATES.world }
+     },
+     statuses: [],
+-    progressRefreshSeconds: 10
++    progressRefreshSeconds: 10,
++    frame: { header: '', footer: '' },
++    savedThemes: []
+ });
+ 
+ const clampInt = (value, min, max, fallback) => {
+@@ -85,6 +124,20 @@ export function normalizeSettings(raw) {
+             .filter((s) => (seen.has(s.id) ? false : (seen.add(s.id), true)));
+     }
+     out.progressRefreshSeconds = clampInt(input.progressRefreshSeconds, 5, 60, 10);
++    out.frame = { header: cleanFrameLine(input.frame?.header), footer: cleanFrameLine(input.frame?.footer) };
++    if (Array.isArray(input.savedThemes)) {
++        out.savedThemes = input.savedThemes
++            .filter((t) => t && typeof t.name === 'string' && t.name.trim() && t.templates && typeof t.templates === 'object')
++            .slice(0, 12)
++            .map((t) => ({
++                id: String(t.id || `mine-${Date.now()}`),
++                name: t.name.trim().slice(0, 30),
++                frame: { header: cleanFrameLine(t.frame?.header), footer: cleanFrameLine(t.frame?.footer) },
++                templates: Object.fromEntries(
++                    OSC_MODULES.map((k) => [k, typeof t.templates[k] === 'string' && t.templates[k].trim() ? t.templates[k].slice(0, 144) : DEFAULT_TEMPLATES[k]])
++                )
++            }));
++    }
+     return out;
+ }
+ 
+@@ -225,9 +278,16 @@ export function renderModuleLines(settings, data, now = Date.now()) {
+             values = { world: data.world };
+         }
+         if (!values) continue;
+-        const text = cleanLine(fill(mod.template, values));
+-        if (text) lines.push({ key, text });
++        // A template may span lines (\n); each line is kept separately so the 9-line limit is respected.
++        const filled = fill(mod.template, values)
++            .split('\n')
++            .map((part) => cleanLine(part))
++            .filter(Boolean);
++        filled.forEach((text, i) => lines.push({ key: i ? `${key}-${i}` : key, text }));
+     }
++    const frame = settings.frame || {};
++    if (lines.length && frame.header) lines.unshift({ key: 'frame-header', text: frame.header });
++    if (lines.length && frame.footer) lines.push({ key: 'frame-footer', text: frame.footer });
+     return lines;
+ }
+ 
+@@ -236,8 +296,18 @@ export function renderModuleLines(settings, data, now = Date.now()) {
+  * priority module (last in order) first, and only truncates if one line alone is too long.
+  */
+ export function fitChatbox(lines) {
+-    const kept = lines.slice(0, CHATBOX_MAX_LINES);
+-    while (kept.length > 1 && charCount(kept.map((l) => l.text).join('\n')) > CHATBOX_MAX_CHARS) kept.pop();
++    let kept = lines.slice(0, CHATBOX_MAX_LINES);
++    const tooLong = () => charCount(kept.map((l) => l.text).join('\n')) > CHATBOX_MAX_CHARS;
++    const isFrame = (l) => l.key === 'frame-header' || l.key === 'frame-footer';
++    // When space is tight: drop the footer, then the lowest-priority content lines,
++    // and finally the header if one content line still doesn't fit with it.
++    if (tooLong()) kept = kept.filter((l) => l.key !== 'frame-footer');
++    while (tooLong() && kept.filter((l) => !isFrame(l)).length > 1) {
++        let i = kept.length - 1;
++        while (i >= 0 && isFrame(kept[i])) i--;
++        kept.splice(i, 1);
++    }
++    if (tooLong()) kept = kept.filter((l) => !isFrame(l));
+     let text = kept.map((l) => l.text).join('\n');
+     if (charCount(text) > CHATBOX_MAX_CHARS) text = Array.from(text).slice(0, CHATBOX_MAX_CHARS - 1).join('') + '…';
+     return { text, keys: kept.map((l) => l.key), dropped: lines.length - kept.length };
+diff --git a/src/shared/utils/uwxTheme.js b/src/shared/utils/uwxTheme.js
+new file mode 100644
+index 0000000..870304d
+--- /dev/null
++++ b/src/shared/utils/uwxTheme.js
+@@ -0,0 +1,94 @@
++// UWX client themes (pure): an accent color drives UnderWeb pages, premium cards and
++// VRCX's own primary/ring/sidebar colors. Output is plain CSS text.
++
++export const THEME_PRESETS = Object.freeze([
++    { id: 'underweb', name: 'UnderWeb Green', accent: '#3df514' },
++    { id: 'blood', name: 'Blood Moon', accent: '#ff3b3b' },
++    { id: 'violet', name: 'Violet', accent: '#a855f7' },
++    { id: 'ice', name: 'Ice', accent: '#38bdf8' },
++    { id: 'gold', name: 'Gold', accent: '#fbbf24' },
++    { id: 'rose', name: 'Rose', accent: '#fb7185' },
++    { id: 'mono', name: 'Mono', accent: '#d4d4d8' }
++]);
++
++export const DEFAULT_THEME = Object.freeze({ enabled: true, preset: 'underweb', custom: '', tint: 'subtle' });
++const HEX = /^#([0-9a-f]{6})$/i;
++
++export function normalizeTheme(raw) {
++    const t = { ...DEFAULT_THEME, ...(raw && typeof raw === 'object' ? raw : {}) };
++    return {
++        enabled: t.enabled !== false,
++        preset: t.preset === 'custom' || THEME_PRESETS.some((p) => p.id === t.preset) ? t.preset : 'underweb',
++        custom: HEX.test(String(t.custom || '')) ? String(t.custom).toLowerCase() : '',
++        tint: ['none', 'subtle', 'strong'].includes(t.tint) ? t.tint : 'subtle'
++    };
++}
++
++export function accentOf(theme) {
++    if (theme.preset === 'custom' && theme.custom) return theme.custom;
++    return (THEME_PRESETS.find((p) => p.id === theme.preset) || THEME_PRESETS[0]).accent;
++}
++
++export function hexToRgb(hex) {
++    const m = HEX.exec(hex);
++    if (!m) return [61, 245, 20];
++    const n = parseInt(m[1], 16);
++    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
++}
++
++/**
++ * Relative luminance (WCAG), 0..1.
++ * @param {number[]} rgb
++ */
++export function luminance([r, g, b]) {
++    const f = (c) => {
++        const v = c / 255;
++        return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
++    };
++    return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
++}
++
++/** Text color that stays readable on the accent (for primary buttons). */
++export function foregroundFor(rgb) {
++    return luminance(rgb) > 0.32 ? '#0a0a0a' : '#ffffff';
++}
++
++/** @param {number[]} rgb */
++function lighten([r, g, b], amount) {
++    return [r, g, b].map((c) => Math.round(c + (255 - c) * amount));
++}
++
++const toHex = (rgb) => '#' + rgb.map((c) => c.toString(16).padStart(2, '0')).join('');
++
++/** CSS for the chosen theme. Empty string when the UWX theme is turned off (VRCX's theme applies). */
++export function themeCss(rawTheme) {
++    const theme = normalizeTheme(rawTheme);
++    if (!theme.enabled) return '';
++    const accent = accentOf(theme);
++    const rgb = hexToRgb(accent);
++    const soft = toHex(lighten(rgb, 0.35));
++    const fg = foregroundFor(rgb);
++    const tintPct = { none: 0, subtle: 4, strong: 9 }[theme.tint];
++    const base = 'oklch(0.155 0.006 285)';
++    const tinted = (pct, b = base) => (tintPct ? `color-mix(in oklab, ${accent} ${pct}%, ${b})` : b);
++    // Doubled :root raises specificity over VRCX's :root[data-theme=…] theme files.
++    return `:root:root, :root:root[data-theme='dark'], :root:root[data-theme='light'], html.dark, .dark {
++    --uwx-accent: ${accent};
++    --uwx-accent-soft: ${soft};
++    --uwx-accent-rgb: ${rgb.join(' ')};
++    --primary: ${accent};
++    --primary-foreground: ${fg};
++    --ring: ${accent};
++    --sidebar-primary: ${accent};
++    --sidebar-primary-foreground: ${fg};
++    --sidebar-ring: ${accent};
++    --chart-1: ${accent};
++}
++:root:root[data-theme='dark'], html.dark, .dark {
++    --background: ${tinted(tintPct * 0.6)};
++    --card: ${tinted(tintPct, 'oklch(0.19 0.008 285)')};
++    --popover: ${tinted(tintPct, 'oklch(0.18 0.008 285)')};
++    --sidebar: ${tinted(tintPct, 'oklch(0.172 0.008 285)')};
++}
++`;
++}
+diff --git a/src/stores/oscLab.js b/src/stores/oscLab.js
+index 88d3c0c..bab3478 100644
+--- a/src/stores/oscLab.js
++++ b/src/stores/oscLab.js
+@@ -8,6 +8,7 @@ import {
+     OSC_MODULES,
+     TEMPLATE_TOKENS,
+     DEFAULT_TEMPLATES,
++    CHATBOX_THEMES,
+     createOscScheduler,
+     createStatusRotator,
+     describeWeather,
+@@ -312,6 +313,53 @@ export const useOscLabStore = defineStore('OscLab', () => {
+         setTemplate(key, DEFAULT_TEMPLATES[key]);
+     }
+ 
++    // ---------- chatbox themes ----------
++    function findChatboxTheme(id) {
++        return CHATBOX_THEMES.find((t) => t.id === id) || settings.savedThemes.find((t) => t.id === id) || null;
++    }
++
++    /** Apply a built-in or saved theme: all module templates + header/footer. Modules on/off stay as they are. */
++    function applyChatboxTheme(id) {
++        const theme = findChatboxTheme(id);
++        if (!theme) return false;
++        for (const key of OSC_MODULES) settings.modules[key].template = theme.templates[key] || DEFAULT_TEMPLATES[key];
++        settings.frame = { header: theme.frame?.header || '', footer: theme.frame?.footer || '' };
++        Object.assign(settings, normalizeSettings(settings));
++        persistSoon();
++        return true;
++    }
++
++    function setFrame(part, text) {
++        if (!['header', 'footer'].includes(part)) return;
++        settings.frame = { ...settings.frame, [part]: String(text || '') };
++        Object.assign(settings, normalizeSettings(settings));
++        persistSoon();
++    }
++
++    /** Save the current look as your own theme. */
++    function saveChatboxTheme(name) {
++        const clean = String(name || '').trim().slice(0, 30);
++        if (!clean) {
++            toast.error('Give the theme a name.');
++            return null;
++        }
++        const theme = {
++            id: `mine-${Date.now()}`,
++            name: clean,
++            frame: { ...settings.frame },
++            templates: Object.fromEntries(OSC_MODULES.map((k) => [k, settings.modules[k].template]))
++        };
++        settings.savedThemes = [...settings.savedThemes.filter((t) => t.name.toLowerCase() !== clean.toLowerCase()), theme].slice(-12);
++        persistSoon();
++        toast.success(`Saved chatbox theme "${clean}".`);
++        return theme;
++    }
++
++    function deleteChatboxTheme(id) {
++        settings.savedThemes = settings.savedThemes.filter((t) => t.id !== id);
++        persistSoon();
++    }
++
+     function moveModule(key, direction) {
+         const order = [...settings.order];
+         const i = order.indexOf(key);
+@@ -467,7 +515,7 @@ export const useOscLabStore = defineStore('OscLab', () => {
+ 
+     // Re-render immediately when the user edits something, so the preview never lags.
+     watch(
+-        () => [settings.order.join(), JSON.stringify(settings.modules)],
++        () => [settings.order.join(), JSON.stringify(settings.modules), JSON.stringify(settings.frame)],
+         () => tick()
+     );
+ 
+@@ -498,6 +546,11 @@ export const useOscLabStore = defineStore('OscLab', () => {
+         setModuleOption,
+         setTemplate,
+         resetTemplate,
++        chatboxThemes: CHATBOX_THEMES,
++        applyChatboxTheme,
++        saveChatboxTheme,
++        deleteChatboxTheme,
++        setFrame,
+         moveModule,
+         setWeatherZip,
+         refreshWeather,
+diff --git a/src/stores/uwxTheme.js b/src/stores/uwxTheme.js
+new file mode 100644
+index 0000000..1ebd4c4
+--- /dev/null
++++ b/src/stores/uwxTheme.js
+@@ -0,0 +1,86 @@
++import { reactive } from 'vue';
++import { defineStore } from 'pinia';
++
++import configRepository from '../services/config';
++import { accentOf, DEFAULT_THEME, normalizeTheme, themeCss } from '../shared/utils/uwxTheme';
++
++// UWX client theme: one accent color for the whole client (UnderWeb pages, premium
++// cards, VRCX's own buttons/highlights) plus an optional tint on the dark background.
++// Saved per PC. A copy in localStorage paints the theme instantly on startup.
++
++const KEY = 'UWX_clientTheme';
++const STYLE_ID = 'uwx-theme-vars';
++
++function readCache() {
++    try {
++        return JSON.parse(localStorage.getItem(KEY) || 'null');
++    } catch {
++        return null;
++    }
++}
++
++function writeCache(theme) {
++    try {
++        localStorage.setItem(KEY, JSON.stringify(theme));
++    } catch {
++        // storage may be unavailable; the config copy still persists it
++    }
++}
++
++/** Put the theme CSS last in <head> so it wins over VRCX's theme files. */
++export function paintTheme(theme) {
++    if (typeof document === 'undefined') return;
++    let el = document.getElementById(STYLE_ID);
++    if (!el) {
++        el = document.createElement('style');
++        el.id = STYLE_ID;
++    }
++    el.textContent = themeCss(theme);
++    document.head.appendChild(el); // (re)append keeps it last
++}
++
++export const useUwxThemeStore = defineStore('UwxTheme', () => {
++    const theme = reactive({ ...DEFAULT_THEME, ...normalizeTheme(readCache()) });
++
++    function commit() {
++        const clean = normalizeTheme(theme);
++        Object.assign(theme, clean);
++        paintTheme(clean);
++        writeCache(clean);
++        void configRepository.setString(KEY, JSON.stringify(clean));
++    }
++
++    async function init() {
++        paintTheme(theme);
++        try {
++            const saved = JSON.parse((await configRepository.getString(KEY, '')) || 'null');
++            if (saved) {
++                Object.assign(theme, normalizeTheme(saved));
++                paintTheme(theme);
++                writeCache(normalizeTheme(theme));
++            }
++        } catch {
++            // keep cached/default
++        }
++    }
++
++    function setPreset(id) {
++        theme.preset = id;
++        commit();
++    }
++    function setCustom(hex) {
++        theme.preset = 'custom';
++        theme.custom = String(hex || '').toLowerCase();
++        commit();
++    }
++    function setTint(tint) {
++        theme.tint = tint;
++        commit();
++    }
++    function setEnabled(value) {
++        theme.enabled = Boolean(value);
++        commit();
++    }
++
++    return { theme, accent: () => accentOf(theme), init, setPreset, setCustom, setTint, setEnabled };
++});
+diff --git a/src/styles/uwx-premium.css b/src/styles/uwx-premium.css
+index 5c2feb8..ed3c3bc 100644
+--- a/src/styles/uwx-premium.css
++++ b/src/styles/uwx-premium.css
+@@ -1,8 +1,9 @@
+ /* UWX_RC7_PREMIUM_POLISH */
+ :root {
+-    --uwx-accent: #8b5cf6;
+-    --uwx-accent-soft: #a78bfa;
+-    --uwx-accent-rgb: 139 92 246;
++    /* UnderWeb green by default; System -> Appearance changes it at runtime (stores/uwxTheme.js). */
++    --uwx-accent: #3df514;
++    --uwx-accent-soft: #8dff6e;
++    --uwx-accent-rgb: 61 245 20;
+     --uwx-success: #35e77d;
+     --uwx-surface: rgb(10 11 18 / 78%);
+     --uwx-surface-strong: rgb(15 16 25 / 94%);
+@@ -249,7 +250,7 @@ select:focus-visible {
+ 
+ /* UWX rc10 — inviter + group tools */
+ .uwx-invite-permission { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+-.uwx-invite-permission.ok { color: #3df514; }
++.uwx-invite-permission.ok { color: var(--uwx-success); }
+ .uwx-invite-permission.blocked { color: #f2c14e; }
+ .uwx-inline-toggle { display: flex; gap: 12px; align-items: flex-start; cursor: pointer; }
+ .uwx-inline-toggle span { display: flex; flex-direction: column; gap: 2px; }
+diff --git a/src/views/UnderWeb/UnderWeb.vue b/src/views/UnderWeb/UnderWeb.vue
+index 62f0397..a7be6fc 100644
+--- a/src/views/UnderWeb/UnderWeb.vue
++++ b/src/views/UnderWeb/UnderWeb.vue
+@@ -816,6 +816,8 @@
+                 </CardContent>
+             </Card>
+ 
++            <UwxAppearanceCard v-show="activePanel === 'system'" />
++
+             <UwxAccountCard v-show="activePanel === 'system'" />
+ 
+             <Card v-show="activePanel === 'system'" class="uwx-card">
+@@ -1061,6 +1063,7 @@
+     import { LABEL_DURATIONS, useUwxLabelsStore } from '../../stores/uwxLabels';
+     import { useModalStore } from '../../stores/modal';
+     import UwxAccountCard from './UwxAccountCard.vue';
++    import UwxAppearanceCard from './UwxAppearanceCard.vue';
+     import { useUwxInvitePresetsStore } from '../../stores/uwxInvitePresets';
+     import UwxLabelReviewQueue from './UwxLabelReviewQueue.vue';
+     import { useUserStore } from '../../stores/user';
+@@ -1724,7 +1727,7 @@
+         justify-content: space-between;
+         gap: 24px;
+         padding: 18px 18px 22px;
+-        border-bottom: 1px solid rgb(118 255 0 / 20%);
++        border-bottom: 1px solid rgb(var(--uwx-accent-rgb) / 20%);
+         margin-bottom: 16px;
+     }
+ 
+@@ -1733,7 +1736,7 @@
+     .uwx-event-eyebrow {
+         font-size: 10px;
+         letter-spacing: 0.24em;
+-        color: #76ff00;
++        color: var(--uwx-accent);
+         font-weight: 900;
+     }
+ 
+@@ -1762,11 +1765,11 @@
+     }
+ 
+     .uwx-network-state { background: transparent; cursor: pointer; color: var(--muted-foreground); }
+-    .uwx-network-state:hover { border-color: rgb(118 255 0 / 35%); color: #76ff00; }
++    .uwx-network-state:hover { border-color: rgb(var(--uwx-accent-rgb) / 35%); color: var(--uwx-accent); }
+ 
+     .uwx-status-dot { width: 7px; height: 7px; border-radius: 999px; background: #6b7280; }
+-    .uwx-instance-badge.armed { border-color: rgb(118 255 0 / 55%); color: #76ff00; }
+-    .uwx-instance-badge.armed .uwx-status-dot { background: #76ff00; box-shadow: 0 0 14px #76ff00; }
++    .uwx-instance-badge.armed { border-color: rgb(var(--uwx-accent-rgb) / 55%); color: var(--uwx-accent); }
++    .uwx-instance-badge.armed .uwx-status-dot { background: var(--uwx-accent); box-shadow: 0 0 14px var(--uwx-accent); }
+     .uwx-instance-badge.ready .uwx-status-dot { background: #eab308; }
+     .uwx-instance-badge.blocked { opacity: 0.7; }
+ 
+@@ -1780,12 +1783,12 @@
+     .uwx-overview-tile {
+         min-width: 0;
+         padding: 12px 14px;
+-        border: 1px solid rgb(118 255 0 / 14%);
++        border: 1px solid rgb(var(--uwx-accent-rgb) / 14%);
+         border-radius: var(--radius);
+-        background: color-mix(in oklab, var(--card) 95%, #76ff00 5%);
++        background: color-mix(in oklab, var(--card) 95%, var(--uwx-accent) 5%);
+     }
+     .uwx-overview-tile span,
+-    .uwx-section-label { color: #76ff00; font-size: 10px; font-weight: 900; letter-spacing: 0.12em; }
++    .uwx-section-label { color: var(--uwx-accent); font-size: 10px; font-weight: 900; letter-spacing: 0.12em; }
+     .uwx-overview-tile strong,
+     .uwx-overview-tile small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+     .uwx-overview-tile strong { margin-top: 6px; font-size: 15px; }
+@@ -1797,19 +1800,19 @@
+         gap: 14px;
+         margin-bottom: 14px;
+         padding: 12px 14px;
+-        border: 1px solid rgb(118 255 0 / 35%);
++        border: 1px solid rgb(var(--uwx-accent-rgb) / 35%);
+         border-radius: var(--radius);
+-        background: linear-gradient(90deg, rgb(118 255 0 / 10%), rgb(118 255 0 / 3%));
++        background: linear-gradient(90deg, rgb(var(--uwx-accent-rgb) / 10%), rgb(var(--uwx-accent-rgb) / 3%));
+     }
+-    .uwx-event-live { color: #76ff00; font-size: 10px; font-weight: 900; letter-spacing: 0.16em; }
++    .uwx-event-live { color: var(--uwx-accent); font-size: 10px; font-weight: 900; letter-spacing: 0.16em; }
+ 
+     .uwx-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+     .uwx-card {
+         border-color: rgb(255 255 255 / 7%);
+-        background: color-mix(in oklab, var(--card) 98%, #76ff00 2%);
++        background: color-mix(in oklab, var(--card) 98%, var(--uwx-accent) 2%);
+         box-shadow: 0 18px 48px rgb(0 0 0 / 10%);
+     }
+-    .uwx-command-card { border-color: rgb(118 255 0 / 17%); }
++    .uwx-command-card { border-color: rgb(var(--uwx-accent-rgb) / 17%); }
+     .uwx-card-wide { grid-column: 1 / -1; }
+ 
+     .uwx-stat-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+@@ -1817,14 +1820,14 @@
+     .uwx-list-row,
+ 
+     .uwx-control-block {
+-        border: 1px solid rgb(118 255 0 / 12%);
++        border: 1px solid rgb(var(--uwx-accent-rgb) / 12%);
+         background: rgb(0 0 0 / 16%);
+         border-radius: 10px;
+         padding: 16px;
+     }
+ 
+     /* Invites: green = group invites, blue = instance invites, everywhere they appear. */
+-    .uwx-invite-kind-group { --invite: #3df514; --invite-soft: rgb(61 245 20 / 10%); }
++    .uwx-invite-kind-group { --invite: var(--uwx-accent); --invite-soft: rgb(var(--uwx-accent-rgb) / 10%); }
+     .uwx-invite-kind-instance { --invite: #4fb3ff; --invite-soft: rgb(79 179 255 / 10%); }
+     .uwx-invite-tiles {
+         display: grid;
+@@ -1974,9 +1977,9 @@
+         border-color: rgb(79 179 255 / 45%);
+     }
+     .uwx-access-badge.underweb-staff {
+-        color: #3df514;
+-        border-color: rgb(61 245 20 / 50%);
+-        background: rgb(61 245 20 / 8%);
++        color: var(--uwx-accent);
++        border-color: rgb(var(--uwx-accent-rgb) / 50%);
++        background: rgb(var(--uwx-accent-rgb) / 8%);
+     }
+     .uwx-member-hint {
+         display: flex;
+@@ -2008,17 +2011,17 @@
+     .uwx-control-primary {
+         position: relative;
+         overflow: hidden;
+-        border-color: rgb(118 255 0 / 26%);
+-        background: linear-gradient(110deg, rgb(118 255 0 / 5%), rgb(0 0 0 / 16%) 34%);
+-        box-shadow: inset 0 0 28px rgb(118 255 0 / 2%);
++        border-color: rgb(var(--uwx-accent-rgb) / 26%);
++        background: linear-gradient(110deg, rgb(var(--uwx-accent-rgb) / 5%), rgb(0 0 0 / 16%) 34%);
++        box-shadow: inset 0 0 28px rgb(var(--uwx-accent-rgb) / 2%);
+     }
+     .uwx-control-primary::before {
+         content: '';
+         position: absolute;
+         inset: 0 auto 0 0;
+         width: 3px;
+-        background: #76ff00;
+-        box-shadow: 0 0 18px rgb(118 255 0 / 45%);
++        background: var(--uwx-accent);
++        box-shadow: 0 0 18px rgb(var(--uwx-accent-rgb) / 45%);
+     }
+ 
+     .uwx-control-title {
+@@ -2053,7 +2056,7 @@
+     .uwx-warning { border: 1px solid var(--border); background: rgb(0 0 0 / 10%); border-radius: var(--radius); }
+     .uwx-stat { padding: 12px; min-width: 0; }
+     .uwx-stat strong { display: block; margin-top: 5px; overflow: hidden; text-overflow: ellipsis; }
+-    .uwx-stat-label { color: #76ff00; font-size: 10px; font-weight: 900; letter-spacing: 0.12em; }
++    .uwx-stat-label { color: var(--uwx-accent); font-size: 10px; font-weight: 900; letter-spacing: 0.12em; }
+     .uwx-list-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 10px; }
+     .uwx-warning { padding: 10px 12px; color: var(--muted-foreground); font-size: 12px; border-color: rgb(234 179 8 / 25%); }
+ 
+@@ -2068,7 +2071,7 @@
+         font-weight: 800;
+         cursor: pointer;
+     }
+-    .uwx-filter-row button.active { border-color: rgb(118 255 0 / 45%); background: rgb(118 255 0 / 10%); color: #76ff00; }
++    .uwx-filter-row button.active { border-color: rgb(var(--uwx-accent-rgb) / 45%); background: rgb(var(--uwx-accent-rgb) / 10%); color: var(--uwx-accent); }
+ 
+     .uwx-radar-list,
+     .uwx-friend-list,
+@@ -2085,7 +2088,7 @@
+         background: transparent;
+         cursor: pointer;
+     }
+-    .uwx-radar-row:hover { border-color: rgb(118 255 0 / 30%); background: rgb(118 255 0 / 5%); }
++    .uwx-radar-row:hover { border-color: rgb(var(--uwx-accent-rgb) / 30%); background: rgb(var(--uwx-accent-rgb) / 5%); }
+     .uwx-radar-count {
+         display: grid;
+         place-items: center;
+@@ -2093,11 +2096,11 @@
+         height: 32px;
+         padding: 0 8px;
+         border-radius: 999px;
+-        background: rgb(118 255 0 / 10%);
+-        color: #76ff00;
++        background: rgb(var(--uwx-accent-rgb) / 10%);
++        color: var(--uwx-accent);
+         font-weight: 900;
+     }
+-    .uwx-role-summary { margin-top: 4px; color: #76ff00; font-size: 10px; letter-spacing: 0.05em; }
++    .uwx-role-summary { margin-top: 4px; color: var(--uwx-accent); font-size: 10px; letter-spacing: 0.05em; }
+ 
+     .uwx-account-row {
+         display: flex;
+@@ -2108,7 +2111,7 @@
+         border-radius: var(--radius);
+         background: rgb(0 0 0 / 8%);
+     }
+-    .uwx-account-icon { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; background: rgb(118 255 0 / 8%); color: #76ff00; font-size: 18px; }
++    .uwx-account-icon { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; background: rgb(var(--uwx-accent-rgb) / 8%); color: var(--uwx-accent); font-size: 18px; }
+     .uwx-account-row strong,
+     .uwx-account-row span { display: block; }
+     .uwx-account-row span { color: var(--muted-foreground); font-size: 11px; overflow: hidden; text-overflow: ellipsis; }
+@@ -2116,19 +2119,19 @@
+     .uwx-event-grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(280px, 0.7fr); gap: 16px; }
+     .uwx-event-primary {
+         padding: 18px;
+-        border: 1px solid rgb(118 255 0 / 24%);
++        border: 1px solid rgb(var(--uwx-accent-rgb) / 24%);
+         border-radius: var(--radius);
+-        background: linear-gradient(135deg, rgb(118 255 0 / 9%), transparent 55%);
++        background: linear-gradient(135deg, rgb(var(--uwx-accent-rgb) / 9%), transparent 55%);
+     }
+     .uwx-event-primary h3 { margin: 7px 0 0; font-size: 26px; font-weight: 900; letter-spacing: -0.03em; }
+     .uwx-event-primary p { margin-top: 5px; color: var(--muted-foreground); }
+     .uwx-event-side { display: flex; flex-direction: column; gap: 7px; }
+     .uwx-event-empty { display: flex; align-items: center; gap: 12px; padding: 18px; border: 1px dashed var(--border); border-radius: var(--radius); }
+-    .uwx-event-empty i { color: #76ff00; font-size: 26px; }
++    .uwx-event-empty i { color: var(--uwx-accent); font-size: 26px; }
+     .uwx-event-empty p { margin-top: 3px; color: var(--muted-foreground); font-size: 12px; }
+     .uwx-upcoming-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+     .uwx-upcoming-list button { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: transparent; text-align: left; cursor: pointer; }
+-    .uwx-upcoming-list button:hover { border-color: rgb(118 255 0 / 28%); }
++    .uwx-upcoming-list button:hover { border-color: rgb(var(--uwx-accent-rgb) / 28%); }
+     .uwx-upcoming-list span { color: var(--muted-foreground); font-size: 11px; }
+ 
+     .uwx-toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+@@ -2138,21 +2141,21 @@
+     .uwx-toggle-row span { margin-top: 2px; color: var(--muted-foreground); font-size: 11px; }
+ 
+     .uwx-release-card { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 14px; padding: 14px; border: 1px solid var(--border); border-radius: var(--radius); }
+-    .uwx-release-card.available { border-color: rgb(118 255 0 / 40%); background: rgb(118 255 0 / 6%); }
++    .uwx-release-card.available { border-color: rgb(var(--uwx-accent-rgb) / 40%); background: rgb(var(--uwx-accent-rgb) / 6%); }
+     .uwx-release-card > div:last-child { text-align: right; }
+ 
+     .uwx-quick-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+ 
+     .uwx-friend-layout { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.55fr); gap: 14px; }
+     .uwx-friend-row { display: flex; width: 100%; align-items: center; gap: 6px; padding: 4px; border: 1px solid var(--border); border-radius: var(--radius); background: transparent; }
+-    .uwx-friend-row:hover { background: rgb(118 255 0 / 5%); }
+-    .uwx-friend-row.selected { border-color: rgb(118 255 0 / 38%); }
++    .uwx-friend-row:hover { background: rgb(var(--uwx-accent-rgb) / 5%); }
++    .uwx-friend-row.selected { border-color: rgb(var(--uwx-accent-rgb) / 38%); }
+     .uwx-friend-row.excluded { border-color: rgb(239 68 68 / 32%); }
+-    .uwx-friend-row.profiled { background: rgb(118 255 0 / 7%); }
++    .uwx-friend-row.profiled { background: rgb(var(--uwx-accent-rgb) / 7%); }
+     .uwx-friend-main { display: flex; flex: 1; min-width: 0; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 8px; background: transparent; cursor: pointer; }
+-    .uwx-mini-role { padding: 2px 5px; border-radius: 999px; background: rgb(118 255 0 / 8%); color: #76ff00; font-size: 9px; font-weight: 800; }
++    .uwx-mini-role { padding: 2px 5px; border-radius: 999px; background: rgb(var(--uwx-accent-rgb) / 8%); color: var(--uwx-accent); font-size: 9px; font-weight: 800; }
+ 
+-    .uwx-profile-preview { min-height: 280px; padding: 16px; border: 1px solid rgb(118 255 0 / 15%); border-radius: var(--radius); background: linear-gradient(180deg, rgb(118 255 0 / 5%), transparent); }
++    .uwx-profile-preview { min-height: 280px; padding: 16px; border: 1px solid rgb(var(--uwx-accent-rgb) / 15%); border-radius: var(--radius); background: linear-gradient(180deg, rgb(var(--uwx-accent-rgb) / 5%), transparent); }
+     .uwx-profile-preview h3 { margin-top: 6px; font-size: 24px; font-weight: 900; letter-spacing: -0.03em; }
+     .uwx-profile-preview p { color: var(--muted-foreground); font-size: 11px; word-break: break-all; }
+     .uwx-profile-status { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+@@ -2162,7 +2165,7 @@
+     .uwx-profile-status span { color: var(--muted-foreground); font-size: 10px; }
+     .uwx-profile-status strong { margin-top: 3px; text-transform: uppercase; }
+     .uwx-profile-empty { min-height: 245px; display: grid; place-items: center; align-content: center; gap: 10px; color: var(--muted-foreground); text-align: center; }
+-    .uwx-profile-empty i { color: #76ff00; font-size: 28px; }
++    .uwx-profile-empty i { color: var(--uwx-accent); font-size: 28px; }
+ 
+     .uwx-log-row { display: grid; grid-template-columns: 76px 78px minmax(0, 1fr); align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+     .uwx-log-time { color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+@@ -2251,15 +2254,15 @@
+         .uwx-upcoming-list { grid-template-columns: 1fr; }
+     }
+ 
+-    .uwx-osc-card { border-color: rgb(118 255 0 / 24%); }
++    .uwx-osc-card { border-color: rgb(var(--uwx-accent-rgb) / 24%); }
+     .uwx-osc-preset-row { display: flex; flex-wrap: wrap; gap: 8px; }
+     .uwx-osc-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+     .uwx-osc-toggle-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+     .uwx-toggle-row.compact { padding: 9px 10px; border: 1px solid var(--border); border-radius: var(--radius); }
+-    .uwx-chatbox-preview { min-height: 92px; padding: 12px; border: 1px solid rgb(118 255 0 / 22%); border-radius: var(--radius); background: rgb(0 0 0 / 18%); }
++    .uwx-chatbox-preview { min-height: 92px; padding: 12px; border: 1px solid rgb(var(--uwx-accent-rgb) / 22%); border-radius: var(--radius); background: rgb(0 0 0 / 18%); }
+     .uwx-chatbox-preview p { margin-top: 8px; color: var(--foreground); font-size: 13px; line-height: 1.55; }
+     .uwx-bpm-display { display: flex; align-items: baseline; gap: 8px; }
+-    .uwx-bpm-display strong { font-size: 34px; line-height: 1; color: #76ff00; }
++    .uwx-bpm-display strong { font-size: 34px; line-height: 1; color: var(--uwx-accent); }
+     .uwx-bpm-display span { color: var(--muted-foreground); font-size: 11px; font-weight: 900; letter-spacing: .12em; }
+     .uwx-help { color: var(--muted-foreground); font-size: 11px; line-height: 1.45; }
+     .uwx-field-label { display: block; margin-bottom: 6px; color: var(--muted-foreground); font-size: 10px; font-weight: 800; letter-spacing: .08em; }
+@@ -2299,10 +2302,10 @@
+     .uwx-panel-tabs button small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
+     .uwx-panel-tabs button:hover { background: rgb(255 255 255 / 3%); }
+     .uwx-panel-tabs button.active {
+-        border-color: rgb(118 255 0 / 28%);
+-        background: linear-gradient(180deg, rgb(118 255 0 / 9%), rgb(118 255 0 / 3%));
+-        color: #76ff00;
+-        box-shadow: inset 0 -2px 0 rgb(118 255 0 / 55%);
++        border-color: rgb(var(--uwx-accent-rgb) / 28%);
++        background: linear-gradient(180deg, rgb(var(--uwx-accent-rgb) / 9%), rgb(var(--uwx-accent-rgb) / 3%));
++        color: var(--uwx-accent);
++        box-shadow: inset 0 -2px 0 rgb(var(--uwx-accent-rgb) / 55%);
+     }
+ 
+     .uwx-panel-context {
+@@ -2328,14 +2331,14 @@
+         gap: 6px;
+         min-width: 0;
+         padding: 7px 9px;
+-        border: 1px solid rgb(118 255 0 / 13%);
++        border: 1px solid rgb(var(--uwx-accent-rgb) / 13%);
+         border-radius: 8px;
+-        background: rgb(118 255 0 / 4%);
++        background: rgb(var(--uwx-accent-rgb) / 4%);
+         color: var(--muted-foreground);
+         font-size: 10px;
+         white-space: nowrap;
+     }
+-    .uwx-safety-strip i { color: #76ff00; }
++    .uwx-safety-strip i { color: var(--uwx-accent); }
+ 
+     .uwx-osc-toolbar {
+         display: flex;
+@@ -2350,7 +2353,7 @@
+     .uwx-osc-toolbar > div:first-child > span { display: block; margin-top: 3px; color: var(--muted-foreground); font-size: 10px; }
+     .uwx-char-count { color: var(--muted-foreground); font-size: 11px; font-variant-numeric: tabular-nums; }
+     .uwx-char-meter { height: 3px; margin-top: 8px; overflow: hidden; border-radius: 999px; background: rgb(255 255 255 / 7%); }
+-    .uwx-char-meter span { display: block; height: 100%; border-radius: inherit; background: #76ff00; transition: width 140ms ease; }
++    .uwx-char-meter span { display: block; height: 100%; border-radius: inherit; background: var(--uwx-accent); transition: width 140ms ease; }
+     .uwx-chatbox-preview small { display: block; margin-top: 8px; color: var(--muted-foreground); font-size: 9px; }
+ 
+     .uwx-signature-control {
+@@ -2359,9 +2362,9 @@
+         justify-content: space-between;
+         gap: 12px;
+         padding: 10px 12px;
+-        border: 1px solid rgb(118 255 0 / 14%);
++        border: 1px solid rgb(var(--uwx-accent-rgb) / 14%);
+         border-radius: 10px;
+-        background: rgb(118 255 0 / 3%);
++        background: rgb(var(--uwx-accent-rgb) / 3%);
+     }
+     .uwx-chatbox-preview { background: transparent; }
+     .uwx-signature-control strong,
+diff --git a/src/views/UnderWeb/UwxAccountCard.vue b/src/views/UnderWeb/UwxAccountCard.vue
+index 5d062fd..45f6477 100644
+--- a/src/views/UnderWeb/UwxAccountCard.vue
++++ b/src/views/UnderWeb/UwxAccountCard.vue
+@@ -86,8 +86,8 @@
+         width: 36px;
+         height: 36px;
+         border-radius: 999px;
+-        color: #3df514;
+-        background: rgb(61 245 20 / 10%);
+-        border: 1px solid rgb(61 245 20 / 35%);
++        color: var(--uwx-accent);
++        background: rgb(var(--uwx-accent-rgb) / 10%);
++        border: 1px solid rgb(var(--uwx-accent-rgb) / 35%);
+     }
+ </style>
+diff --git a/src/views/UnderWeb/UwxAppearanceCard.vue b/src/views/UnderWeb/UwxAppearanceCard.vue
+new file mode 100644
+index 0000000..21eb66a
+--- /dev/null
++++ b/src/views/UnderWeb/UwxAppearanceCard.vue
+@@ -0,0 +1,180 @@
++<template>
++    <Card class="uwx-card uwx-card-wide">
++        <CardHeader>
++            <div class="flex flex-wrap items-start justify-between gap-3">
++                <div>
++                    <CardTitle>Appearance</CardTitle>
++                    <CardDescription>Theme the whole client — UnderWeb pages and the regular VRCX screens. Saved on this PC.</CardDescription>
++                </div>
++                <label class="uwx-inline-toggle">
++                    <Switch :model-value="theme.enabled" @update:modelValue="setEnabled" />
++                    <span><strong>Use UWX theme</strong><small>Off: VRCX's own theme colors are used.</small></span>
++                </label>
++            </div>
++        </CardHeader>
++        <CardContent class="space-y-5" :class="{ 'opacity-50 pointer-events-none': !theme.enabled }">
++            <div class="uwx-th-swatches">
++                <button
++                    v-for="p in THEME_PRESETS"
++                    :key="p.id"
++                    type="button"
++                    class="uwx-th-swatch"
++                    :class="{ active: theme.preset === p.id }"
++                    :style="{ '--sw': p.accent }"
++                    :aria-pressed="theme.preset === p.id"
++                    @click="setPreset(p.id)">
++                    <span class="dot" />
++                    <span>{{ p.name }}</span>
++                </button>
++                <label class="uwx-th-swatch custom" :class="{ active: theme.preset === 'custom' }" :style="{ '--sw': theme.custom || '#ffffff' }">
++                    <input type="color" :value="theme.custom || '#3df514'" aria-label="Custom accent color" @change="onCustom" />
++                    <span class="dot" />
++                    <span>Custom</span>
++                </label>
++            </div>
++
++            <div class="flex flex-wrap items-center gap-2">
++                <span class="text-sm">Background tint</span>
++                <Button v-for="t in tints" :key="t.id" size="sm" :variant="theme.tint === t.id ? 'default' : 'outline'" @click="setTint(t.id)">{{ t.label }}</Button>
++            </div>
++
++            <div class="uwx-th-sample" aria-hidden="true">
++                <div class="uwx-th-sample-card">
++                    <span class="kicker">PREVIEW</span>
++                    <strong>Music Video Night</strong>
++                    <span class="muted">Starts in 20 minutes · 14 going</span>
++                    <div class="flex gap-2 mt-2">
++                        <Button size="sm">Start event</Button>
++                        <Button size="sm" variant="outline">Edit</Button>
++                    </div>
++                </div>
++                <div class="uwx-th-sample-chips">
++                    <span class="chip on">Group invites</span>
++                    <span class="chip">Favorites</span>
++                    <span class="bar"><span /></span>
++                </div>
++            </div>
++        </CardContent>
++    </Card>
++</template>
++
++<script setup>
++    import { storeToRefs } from 'pinia';
++    import { Button } from '@/components/ui/button';
++    import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
++    import { Switch } from '@/components/ui/switch';
++
++    import { THEME_PRESETS } from '../../shared/utils/uwxTheme';
++    import { useUwxThemeStore } from '../../stores/uwxTheme';
++
++    const store = useUwxThemeStore();
++    const { theme } = storeToRefs(store);
++    const { setPreset, setCustom, setTint, setEnabled } = store;
++    function onCustom(event) {
++        setCustom(/** @type {HTMLInputElement} */ (event.target).value);
++    }
++    const tints = [
++        { id: 'none', label: 'None' },
++        { id: 'subtle', label: 'Subtle' },
++        { id: 'strong', label: 'Strong' }
++    ];
++</script>
++
++<style scoped>
++    .uwx-th-swatches {
++        display: flex;
++        flex-wrap: wrap;
++        gap: 8px;
++    }
++    .uwx-th-swatch {
++        position: relative;
++        display: inline-flex;
++        align-items: center;
++        gap: 8px;
++        padding: 6px 12px 6px 8px;
++        border-radius: 999px;
++        border: 1px solid var(--border);
++        font-size: 13px;
++        cursor: pointer;
++    }
++    .uwx-th-swatch .dot {
++        width: 18px;
++        height: 18px;
++        border-radius: 999px;
++        background: var(--sw);
++        box-shadow: 0 0 0 2px rgb(0 0 0 / 40%) inset, 0 0 12px color-mix(in srgb, var(--sw) 60%, transparent);
++    }
++    .uwx-th-swatch.active {
++        border-color: var(--sw);
++        background: color-mix(in srgb, var(--sw) 12%, transparent);
++    }
++    .uwx-th-swatch.custom input {
++        position: absolute;
++        inset: 0;
++        opacity: 0;
++        cursor: pointer;
++    }
++    .uwx-th-sample {
++        display: grid;
++        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
++        gap: 12px;
++    }
++    @media (max-width: 700px) {
++        .uwx-th-sample {
++            grid-template-columns: 1fr;
++        }
++    }
++    .uwx-th-sample-card {
++        display: flex;
++        flex-direction: column;
++        gap: 2px;
++        padding: 14px;
++        border-radius: 12px;
++        border: 1px solid rgb(var(--uwx-accent-rgb) / 35%);
++        background: linear-gradient(150deg, rgb(var(--uwx-accent-rgb) / 10%), transparent 60%), var(--card);
++    }
++    .uwx-th-sample-card .kicker {
++        color: var(--uwx-accent);
++        font-size: 10px;
++        font-weight: 900;
++        letter-spacing: 0.12em;
++    }
++    .uwx-th-sample-card .muted {
++        font-size: 12px;
++        color: var(--muted-foreground);
++    }
++    .uwx-th-sample-chips {
++        display: flex;
++        flex-wrap: wrap;
++        align-content: flex-start;
++        gap: 6px;
++        padding: 14px;
++        border-radius: 12px;
++        border: 1px solid var(--border);
++        background: var(--background);
++    }
++    .chip {
++        font-size: 11px;
++        padding: 1px 10px;
++        border-radius: 999px;
++        border: 1px solid var(--border);
++        color: var(--muted-foreground);
++    }
++    .chip.on {
++        color: var(--uwx-accent);
++        border-color: rgb(var(--uwx-accent-rgb) / 50%);
++    }
++    .bar {
++        flex-basis: 100%;
++        height: 6px;
++        border-radius: 999px;
++        background: rgb(255 255 255 / 6%);
++        overflow: hidden;
++    }
++    .bar span {
++        display: block;
++        width: 62%;
++        height: 100%;
++        background: var(--uwx-accent);
++    }
++</style>
+diff --git a/src/views/UnderWeb/UwxEventMode.vue b/src/views/UnderWeb/UwxEventMode.vue
+index da1e565..cb08992 100644
+--- a/src/views/UnderWeb/UwxEventMode.vue
++++ b/src/views/UnderWeb/UwxEventMode.vue
+@@ -211,14 +211,14 @@
+ 
+ <style scoped>
+     .uwx-section-label {
+-        color: #76ff00;
++        color: var(--uwx-accent);
+         font-size: 10px;
+         font-weight: 900;
+         letter-spacing: 0.12em;
+     }
+     .uwx-event-mode.live {
+-        border-color: rgb(61 245 20 / 45%);
+-        box-shadow: 0 0 0 1px rgb(61 245 20 / 15%), 0 0 40px rgb(61 245 20 / 6%);
++        border-color: rgb(var(--uwx-accent-rgb) / 45%);
++        box-shadow: 0 0 0 1px rgb(var(--uwx-accent-rgb) / 15%), 0 0 40px rgb(var(--uwx-accent-rgb) / 6%);
+     }
+     .uwx-em-live {
+         display: flex;
+@@ -226,8 +226,8 @@
+         gap: 14px;
+         padding: 16px;
+         border-radius: 12px;
+-        border: 1px solid rgb(61 245 20 / 30%);
+-        background: linear-gradient(150deg, rgb(61 245 20 / 9%), rgb(0 0 0 / 20%) 60%);
++        border: 1px solid rgb(var(--uwx-accent-rgb) / 30%);
++        background: linear-gradient(150deg, rgb(var(--uwx-accent-rgb) / 9%), rgb(0 0 0 / 20%) 60%);
+     }
+     .uwx-em-live-head {
+         display: flex;
+@@ -244,20 +244,20 @@
+         height: 12px;
+         flex: none;
+         border-radius: 999px;
+-        background: #3df514;
+-        box-shadow: 0 0 0 0 rgb(61 245 20 / 60%);
++        background: var(--uwx-accent);
++        box-shadow: 0 0 0 0 rgb(var(--uwx-accent-rgb) / 60%);
+         animation: uwx-em-pulse 1.8s infinite;
+     }
+     @keyframes uwx-em-pulse {
+-        0% { box-shadow: 0 0 0 0 rgb(61 245 20 / 55%); }
+-        70% { box-shadow: 0 0 0 12px rgb(61 245 20 / 0%); }
+-        100% { box-shadow: 0 0 0 0 rgb(61 245 20 / 0%); }
++        0% { box-shadow: 0 0 0 0 rgb(var(--uwx-accent-rgb) / 55%); }
++        70% { box-shadow: 0 0 0 12px rgb(var(--uwx-accent-rgb) / 0%); }
++        100% { box-shadow: 0 0 0 0 rgb(var(--uwx-accent-rgb) / 0%); }
+     }
+     @media (prefers-reduced-motion: reduce) {
+         .uwx-em-dot { animation: none; }
+     }
+     .uwx-em-kicker {
+-        color: #3df514;
++        color: var(--uwx-accent);
+         font-size: 10px;
+         font-weight: 900;
+         letter-spacing: 0.12em;
+@@ -293,7 +293,7 @@
+         font-size: 11px;
+         color: var(--muted-foreground);
+     }
+-    .uwx-em-stats .group strong { color: #3df514; }
++    .uwx-em-stats .group strong { color: var(--uwx-accent); }
+     .uwx-em-stats .instance strong { color: #4fb3ff; }
+     .uwx-em-staff {
+         display: flex;
+@@ -305,7 +305,7 @@
+         font-size: 12px;
+         padding: 2px 10px;
+         border-radius: 999px;
+-        border: 1px solid rgb(61 245 20 / 35%);
++        border: 1px solid rgb(var(--uwx-accent-rgb) / 35%);
+     }
+     .uwx-em-presets {
+         display: grid;
+@@ -328,7 +328,7 @@
+         border-style: dashed;
+         color: var(--muted-foreground);
+     }
+-    .uwx-em-new:hover { color: var(--foreground); border-color: rgb(61 245 20 / 40%); }
++    .uwx-em-new:hover { color: var(--foreground); border-color: rgb(var(--uwx-accent-rgb) / 40%); }
+     .uwx-em-tags {
+         display: flex;
+         flex-wrap: wrap;
+@@ -341,7 +341,7 @@
+         border: 1px solid var(--border);
+         color: var(--muted-foreground);
+     }
+-    .uwx-em-tags .on.group { color: #3df514; border-color: rgb(61 245 20 / 35%); }
++    .uwx-em-tags .on.group { color: var(--uwx-accent); border-color: rgb(var(--uwx-accent-rgb) / 35%); }
+     .uwx-em-tags .on.instance { color: #4fb3ff; border-color: rgb(79 179 255 / 35%); }
+     .uwx-em-check {
+         display: flex;
+diff --git a/src/views/UnderWeb/UwxGroupAudit.vue b/src/views/UnderWeb/UwxGroupAudit.vue
+index 6685271..a7588d9 100644
+--- a/src/views/UnderWeb/UwxGroupAudit.vue
++++ b/src/views/UnderWeb/UwxGroupAudit.vue
+@@ -364,7 +364,7 @@
+     }
+     .uwx-audit-stat.active {
+         background: rgba(61, 245, 20, 0.08);
+-        border-color: #3df514;
++        border-color: var(--uwx-accent);
+     }
+     .uwx-audit-stat-note {
+         align-self: center;
+@@ -384,8 +384,8 @@
+         border: 1px solid var(--border);
+     }
+     .uwx-audit-chip.active {
+-        border-color: #3df514;
+-        color: #3df514;
++        border-color: var(--uwx-accent);
++        color: var(--uwx-accent);
+     }
+     .uwx-audit-filters {
+         display: flex;
+@@ -498,7 +498,7 @@
+         color: var(--muted-foreground);
+     }
+     .uwx-audit-detail a {
+-        color: #3df514;
++        color: var(--uwx-accent);
+         text-decoration: underline;
+         text-underline-offset: 2px;
+     }
+@@ -527,7 +527,7 @@
+         text-decoration-color: rgba(255, 138, 138, 0.5);
+     }
+     .uwx-audit-change .after {
+-        color: #3df514;
++        color: var(--uwx-accent);
+     }
+     .cat-moderation {
+         --audit-color: #ff5c5c;
+@@ -539,7 +539,7 @@
+         --audit-color: #c084fc;
+     }
+     .cat-instances {
+-        --audit-color: #3df514;
++        --audit-color: var(--uwx-accent);
+     }
+     .cat-content {
+         --audit-color: #fbbf24;
+diff --git a/src/views/UnderWeb/UwxLobbyBoard.vue b/src/views/UnderWeb/UwxLobbyBoard.vue
+index b26ad89..ab44a0d 100644
+--- a/src/views/UnderWeb/UwxLobbyBoard.vue
++++ b/src/views/UnderWeb/UwxLobbyBoard.vue
+@@ -151,7 +151,7 @@
+         font-variant-numeric: tabular-nums;
+     }
+     .uwx-lb-summary .out { border-color: rgb(79 179 255 / 40%); }
+-    .uwx-lb-summary .new { border-color: rgb(61 245 20 / 45%); }
++    .uwx-lb-summary .new { border-color: rgb(var(--uwx-accent-rgb) / 45%); }
+     .uwx-lb-summary .staff { border-color: rgb(192 132 252 / 45%); }
+     .uwx-lb-summary .bad { border-color: rgb(255 107 107 / 55%); color: #ff8a8a; }
+     .uwx-lb-filters {
+@@ -167,9 +167,9 @@
+         color: var(--muted-foreground);
+     }
+     .uwx-lb-filters button.active {
+-        color: #3df514;
+-        border-color: rgb(61 245 20 / 55%);
+-        background: rgb(61 245 20 / 8%);
++        color: var(--uwx-accent);
++        border-color: rgb(var(--uwx-accent-rgb) / 55%);
++        background: rgb(var(--uwx-accent-rgb) / 8%);
+     }
+     .uwx-lb-list {
+         display: flex;
+@@ -245,7 +245,7 @@
+     }
+     .chip.bad { color: #ff8a8a; border-color: rgb(255 107 107 / 50%); font-weight: 700; }
+     .chip.staff { color: #c084fc; border-color: rgb(192 132 252 / 45%); }
+-    .chip.new { color: #3df514; border-color: rgb(61 245 20 / 45%); font-weight: 700; }
++    .chip.new { color: var(--uwx-accent); border-color: rgb(var(--uwx-accent-rgb) / 45%); font-weight: 700; }
+     .chip.out { color: #4fb3ff; border-color: rgb(79 179 255 / 45%); }
+     .chip.note { color: #ffb84d; border-color: rgb(255 184 77 / 40%); }
+     .uwx-lb-time {
+diff --git a/src/views/UnderWeb/UwxMemberHistory.vue b/src/views/UnderWeb/UwxMemberHistory.vue
+index 39a88f5..e8d0d60 100644
+--- a/src/views/UnderWeb/UwxMemberHistory.vue
++++ b/src/views/UnderWeb/UwxMemberHistory.vue
+@@ -117,7 +117,7 @@
+         gap: 14px;
+     }
+     .uwx-mh-label-sm {
+-        color: #76ff00;
++        color: var(--uwx-accent);
+         font-size: 10px;
+         font-weight: 900;
+         letter-spacing: 0.12em;
+diff --git a/src/views/UnderWeb/UwxOscLab.vue b/src/views/UnderWeb/UwxOscLab.vue
+index c86a8a0..108d90c 100644
+--- a/src/views/UnderWeb/UwxOscLab.vue
++++ b/src/views/UnderWeb/UwxOscLab.vue
+@@ -35,6 +35,46 @@
+             </CardContent>
+         </Card>
+ 
++        <Card class="uwx-card uwx-card-wide">
++            <CardHeader>
++                <div class="flex flex-wrap items-start justify-between gap-3">
++                    <div>
++                        <CardTitle>Chatbox themes</CardTitle>
++                        <CardDescription>One click changes the whole look. Your modules, statuses and on/off switches stay as they are.</CardDescription>
++                    </div>
++                    <Button size="sm" variant="outline" @click="saveTheme"><i class="ri-save-3-line" /> Save current look</Button>
++                </div>
++            </CardHeader>
++            <CardContent class="space-y-4">
++                <div class="uwx-ct-grid">
++                    <button
++                        v-for="theme in allThemes"
++                        :key="theme.id"
++                        type="button"
++                        class="uwx-ct-tile"
++                        :class="{ active: isActiveTheme(theme) }"
++                        @click="applyChatboxTheme(theme.id)">
++                        <span class="uwx-ct-name">
++                            {{ theme.name }}
++                            <i v-if="theme.mine" class="ri-close-line uwx-ct-del" title="Delete" @click.stop="deleteChatboxTheme(theme.id)" />
++                        </span>
++                        <span class="uwx-ct-preview">{{ themePreview(theme) }}</span>
++                    </button>
++                </div>
++                <div class="uwx-ct-frame">
++                    <label>
++                        <span>Top line</span>
++                        <Input :model-value="settings.frame.header" maxlength="40" placeholder="Optional, e.g. ░▒▓ U N D E R W E B ▓▒░" @change="(e) => setFrame('header', e.target.value)" />
++                    </label>
++                    <label>
++                        <span>Bottom line</span>
++                        <Input :model-value="settings.frame.footer" maxlength="40" placeholder="Optional" @change="(e) => setFrame('footer', e.target.value)" />
++                    </label>
++                </div>
++                <p class="uwx-help">Top and bottom lines only show when something else is showing, and are the first thing dropped if the 144-character limit is tight.</p>
++            </CardContent>
++        </Card>
++
+         <Card class="uwx-card uwx-card-wide">
+             <CardHeader>
+                 <CardTitle>Modules</CardTitle>
+@@ -176,7 +216,7 @@
+ </template>
+ 
+ <script setup>
+-    import { ref, watch } from 'vue';
++    import { computed, ref, watch } from 'vue';
+     import { storeToRefs } from 'pinia';
+     import { toast } from 'vue-sonner';
+     import { Badge } from '@/components/ui/badge';
+@@ -185,7 +225,8 @@
+     import { Input } from '@/components/ui/input';
+     import { Switch } from '@/components/ui/switch';
+ 
+-    import { useOscLabStore } from '../../stores';
++    import { useModalStore, useOscLabStore } from '../../stores';
++    import { fitChatbox, renderModuleLines } from '../../shared/utils/uwxOsc';
+ 
+     const store = useOscLabStore();
+     const {
+@@ -210,6 +251,11 @@
+         setModuleOption,
+         setTemplate,
+         resetTemplate,
++        chatboxThemes,
++        applyChatboxTheme,
++        saveChatboxTheme,
++        deleteChatboxTheme,
++        setFrame,
+         moveModule,
+         setWeatherZip,
+         refreshWeather,
+@@ -235,6 +281,34 @@
+     );
+     const statusDraft = ref('');
+ 
++    // ---------- chatbox themes ----------
++    const SAMPLE = {
++        media: { title: 'Midnight Signal', artist: 'Dаrko', status: 'Playing', positionSeconds: 102, durationSeconds: 208, sampledAt: 0 },
++        weather: { icon: '🌧️', temp: '54°F', condition: 'Cloudy' },
++        status: 'Music Video Night — Thursdays',
++        heartRate: 88,
++        world: 'UnderWeb Hub'
++    };
++    const allThemes = computed(() => [...chatboxThemes, ...settings.value.savedThemes.map((t) => ({ ...t, mine: true }))]);
++    function themePreview(theme) {
++        const s = JSON.parse(JSON.stringify(settings.value));
++        for (const key of Object.keys(s.modules)) s.modules[key].template = theme.templates[key];
++        s.frame = { ...theme.frame };
++        return fitChatbox(renderModuleLines(s, SAMPLE, 0)).text || '(nothing to show — turn on a module)';
++    }
++    function isActiveTheme(theme) {
++        const s = settings.value;
++        return (
++            (s.frame.header || '') === (theme.frame?.header || '') &&
++            (s.frame.footer || '') === (theme.frame?.footer || '') &&
++            Object.keys(s.modules).every((k) => s.modules[k].template === theme.templates[k])
++        );
++    }
++    async function saveTheme() {
++        const { ok, value } = await useModalStore().prompt({ title: 'Save this chatbox look', description: 'Name it:', confirmText: 'Save' });
++        if (ok) saveChatboxTheme(value);
++    }
++
+     function moduleState(key) {
+         if (!settings.value.modules[key].enabled) return 'off';
+         if (key === 'music') return media.value ? mediaState.value : 'nothing playing';
+@@ -259,6 +333,62 @@
+ </script>
+ 
+ <style scoped>
++    .uwx-ct-grid {
++        display: grid;
++        grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
++        gap: 10px;
++    }
++    .uwx-ct-tile {
++        display: flex;
++        flex-direction: column;
++        gap: 8px;
++        padding: 10px;
++        border-radius: 12px;
++        border: 1px solid var(--border);
++        background: rgb(255 255 255 / 2%);
++        text-align: left;
++        transition: border-color 150ms ease, background 150ms ease;
++    }
++    .uwx-ct-tile:hover {
++        border-color: rgb(var(--uwx-accent-rgb) / 40%);
++    }
++    .uwx-ct-tile.active {
++        border-color: var(--uwx-accent);
++        background: rgb(var(--uwx-accent-rgb) / 8%);
++    }
++    .uwx-ct-name {
++        display: flex;
++        align-items: center;
++        justify-content: space-between;
++        font-size: 13px;
++        font-weight: 700;
++    }
++    .uwx-ct-del {
++        color: var(--muted-foreground);
++    }
++    .uwx-ct-preview {
++        white-space: pre-line;
++        font-size: 11px;
++        line-height: 1.35;
++        padding: 8px;
++        border-radius: 8px;
++        background: rgb(0 0 0 / 35%);
++        color: #f4f4f5;
++        min-height: 4.2em;
++        overflow-wrap: anywhere;
++    }
++    .uwx-ct-frame {
++        display: grid;
++        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
++        gap: 10px;
++    }
++    .uwx-ct-frame label {
++        display: flex;
++        flex-direction: column;
++        gap: 4px;
++        font-size: 12px;
++        color: var(--muted-foreground);
++    }
+     .uwx-osc3-preview {
+         display: flex;
+         flex-direction: column;
+@@ -271,7 +401,7 @@
+         padding: 14px 16px;
+         border-radius: 12px;
+         background: rgb(255 255 255 / 6%);
+-        border: 1px solid rgb(61 245 20 / 35%);
++        border: 1px solid rgb(var(--uwx-accent-rgb) / 35%);
+         max-width: 420px;
+         min-height: 54px;
+     }
+@@ -349,7 +479,7 @@
+         border-radius: 6px;
+     }
+     .uwx-osc3-status-list li.current {
+-        background: rgb(61 245 20 / 8%);
++        background: rgb(var(--uwx-accent-rgb) / 8%);
+     }
+     .uwx-help {
+         font-size: 12px;
+diff --git a/src/views/UnderWeb/UwxStaffInsights.vue b/src/views/UnderWeb/UwxStaffInsights.vue
+index 8c74e17..c39c9ec 100644
+--- a/src/views/UnderWeb/UwxStaffInsights.vue
++++ b/src/views/UnderWeb/UwxStaffInsights.vue
+@@ -118,7 +118,7 @@
+         gap: 18px;
+     }
+     .uwx-si-label {
+-        color: #76ff00;
++        color: var(--uwx-accent);
+         font-size: 10px;
+         font-weight: 900;
+         letter-spacing: 0.12em;
+@@ -191,7 +191,7 @@
+     }
+     .uwx-si-stats strong {
+         font-size: 22px;
+-        color: #3df514;
++        color: var(--uwx-accent);
+         font-variant-numeric: tabular-nums;
+     }
+     .uwx-si-stats span {
+@@ -221,7 +221,7 @@
+     .uwx-si-track span {
+         display: block;
+         height: 100%;
+-        background: #3df514;
++        background: var(--uwx-accent);
+         border-radius: 999px;
+     }
+ </style>
