@@ -1,11 +1,17 @@
 diff --git a/CHANGELOG_UWX.md b/CHANGELOG_UWX.md
-index 33dc685..a11f42b 100644
+index 33dc685..21c5bfc 100644
 --- a/CHANGELOG_UWX.md
 +++ b/CHANGELOG_UWX.md
-@@ -1,5 +1,17 @@
+@@ -1,5 +1,23 @@
  # UnderWeb X changelog
  
-+## 0.5.3-rc12 — Group activity (audit log)
++## 0.5.3-rc12 — Group activity (audit log) + clearer invites
++
++Layout:
++- New **Invites** tab with two clearly separate, color-coded sections: **Group invites** (green — ask people in your group instance to join the VRChat group) and **Instance invites** (blue — bring friends to where you are).
++- Command now shows both side by side with equal weight: status, what's blocking it, an on/off switch and a one-click send for each.
++- Approving groups for recruiting is now a list of your groups by name (no more pasting grp_ IDs; that's still available under “Add a group by ID”). The plain-language status says exactly why group invites can't run (not in a group instance / group not approved).
++- Removed the avatar parameter test, and heart rate no longer sends avatar parameters (it still shows in the chatbox).
 +
 +New in Groups → pick a group → **Group activity**:
 +- Shows VRChat's official group audit log, read with your own VRChat login (the session UWX already uses). Nothing goes through an UnderWeb server.
@@ -673,6 +679,121 @@ index 0000000..d31ef38
 +        store.close();
 +    });
 +});
+diff --git a/src/stores/oscLab.js b/src/stores/oscLab.js
+index 784bb00..fbf6415 100644
+--- a/src/stores/oscLab.js
++++ b/src/stores/oscLab.js
+@@ -30,9 +30,7 @@ const LEGACY = Object.freeze({
+     showHeartRate: 'UWX_oscShowHeartRate'
+ });
+ const PULSOID = Object.freeze({
+-    token: 'UWX_pulsoidToken',
+-    pulseParam: 'UWX_pulseAvatarParameter',
+-    bpmParam: 'UWX_bpmAvatarParameter'
++    token: 'UWX_pulsoidToken'
+ });
+ 
+ const TICK_MS = 1000;
+@@ -64,8 +62,6 @@ export const useOscLabStore = defineStore('OscLab', () => {
+     const heartRate = ref(0);
+     const heartRateState = ref('offline');
+     const pulsoidToken = ref('');
+-    const pulseAvatarParameter = ref('isHRBeat');
+-    const bpmAvatarParameter = ref('HR');
+ 
+     const lastError = ref('');
+     const lastSentAt = ref(0);
+@@ -132,14 +128,7 @@ export const useOscLabStore = defineStore('OscLab', () => {
+             await configRepository.setString(SETTINGS_KEY, JSON.stringify(parsed));
+         }
+         Object.assign(settings, parsed);
+-        const [token, pulseParam, bpmParam] = await Promise.all([
+-            configRepository.getString(PULSOID.token, ''),
+-            configRepository.getString(PULSOID.pulseParam, 'isHRBeat'),
+-            configRepository.getString(PULSOID.bpmParam, 'HR')
+-        ]);
+-        pulsoidToken.value = token || '';
+-        pulseAvatarParameter.value = pulseParam || 'isHRBeat';
+-        bpmAvatarParameter.value = bpmParam || 'HR';
++        pulsoidToken.value = (await configRepository.getString(PULSOID.token, '')) || '';
+     }
+ 
+     function persistSoon() {
+@@ -410,15 +399,7 @@ export const useOscLabStore = defineStore('OscLab', () => {
+         outputLog.value = [];
+     }
+ 
+-    // ---------- avatar parameters + Pulsoid (unchanged behaviour) ----------
+-    async function sendAvatarParameter(name, type, value) {
+-        const parameter = String(name || '').trim();
+-        if (!parameter) throw new Error('Avatar parameter name is required.');
+-        if (type === 'bool') return AppApi.SendOscAvatarBool(parameter, Boolean(value));
+-        if (type === 'int') return AppApi.SendOscAvatarInt(parameter, Math.round(Number(value) || 0));
+-        return AppApi.SendOscAvatarFloat(parameter, Number(value) || 0);
+-    }
+-
++    // ---------- Pulsoid heart rate (chatbox only) ----------
+     async function setPulsoidToken(value) {
+         pulsoidToken.value = String(value || '').trim();
+         await configRepository.setString(PULSOID.token, pulsoidToken.value);
+@@ -426,29 +407,6 @@ export const useOscLabStore = defineStore('OscLab', () => {
+         else disconnectPulsoid();
+     }
+ 
+-    async function setPulseAvatarParameter(value) {
+-        pulseAvatarParameter.value = String(value || '').trim() || 'isHRBeat';
+-        await configRepository.setString(PULSOID.pulseParam, pulseAvatarParameter.value);
+-    }
+-
+-    async function setBpmAvatarParameter(value) {
+-        bpmAvatarParameter.value = String(value || '').trim() || 'HR';
+-        await configRepository.setString(PULSOID.bpmParam, bpmAvatarParameter.value);
+-    }
+-
+-    async function pushHeartRateToAvatar() {
+-        if (heartRate.value <= 0) return;
+-        try {
+-            await Promise.all([
+-                sendAvatarParameter(bpmAvatarParameter.value, 'int', heartRate.value),
+-                sendAvatarParameter(pulseAvatarParameter.value, 'bool', true)
+-            ]);
+-            setTimeout(() => void sendAvatarParameter(pulseAvatarParameter.value, 'bool', false).catch(() => {}), 150);
+-        } catch {
+-            // transient OSC errors are ignored for avatar heartbeat pulses
+-        }
+-    }
+-
+     function disconnectPulsoid() {
+         if (reconnectTimer) clearTimeout(reconnectTimer);
+         reconnectTimer = null;
+@@ -479,7 +437,6 @@ export const useOscLabStore = defineStore('OscLab', () => {
+                 if (bpm > 0) {
+                     heartRate.value = Math.round(bpm);
+                     heartRateState.value = 'online';
+-                    void pushHeartRateToAvatar();
+                 }
+             };
+             pulsoidSocket.onerror = () => {
+@@ -521,8 +478,6 @@ export const useOscLabStore = defineStore('OscLab', () => {
+         heartRate,
+         heartRateState,
+         pulsoidToken,
+-        pulseAvatarParameter,
+-        bpmAvatarParameter,
+         lastError,
+         lastSentAt,
+         outputLog,
+@@ -546,10 +501,7 @@ export const useOscLabStore = defineStore('OscLab', () => {
+         nextStatusNow,
+         hideNow,
+         clearOutputLog,
+-        sendAvatarParameter,
+         setPulsoidToken,
+-        setPulseAvatarParameter,
+-        setBpmAvatarParameter,
+         connectPulsoid,
+         disconnectPulsoid
+     };
 diff --git a/src/stores/uwxGroupAudit.js b/src/stores/uwxGroupAudit.js
 new file mode 100644
 index 0000000..c66777d
@@ -959,6 +1080,420 @@ index 0000000..c66777d
 +        clearArchive
 +    };
 +});
+diff --git a/src/views/UnderWeb/UnderWeb.vue b/src/views/UnderWeb/UnderWeb.vue
+index 60098a3..36ddac4 100644
+--- a/src/views/UnderWeb/UnderWeb.vue
++++ b/src/views/UnderWeb/UnderWeb.vue
+@@ -38,9 +38,9 @@
+                 <small>{{ staffOnlineCount }} staff · {{ creatorOnlineCount }} creators</small>
+             </div>
+             <div class="uwx-overview-tile">
+-                <span>UWX SESSION</span>
+-                <strong>{{ sessionGroupInvitesSent }} group · {{ sessionInvitesSent }} instance</strong>
+-                <small>{{ allowedGroupIds.length }} approved group{{ allowedGroupIds.length === 1 ? '' : 's' }}</small>
++                <span>INVITES SENT</span>
++                <strong>{{ sessionGroupInvitesSent }} to group · {{ sessionInvitesSent }} to instance</strong>
++                <small>this session</small>
+             </div>
+         </div>
+ 
+@@ -87,29 +87,99 @@
+         <UwxOscLab v-if="activePanel === 'osc'" />
+ 
+         <div class="uwx-grid">
+-            <Card v-show="activePanel === 'command'" class="uwx-card uwx-card-wide uwx-command-card">
++            <Card v-show="activePanel === 'command'" class="uwx-card uwx-card-wide">
+                 <CardHeader>
+                     <div class="flex items-start justify-between gap-4">
+                         <div>
+-                            <CardTitle>Group Instance Control</CardTitle>
+-                            <CardDescription>
+-                                Two separate tools: recruit people already in this lobby into the group, or invite selected people into the lobby.
+-                            </CardDescription>
++                            <CardTitle>Invites</CardTitle>
++                            <CardDescription>Two different things: bringing people into your VRChat group, and bringing friends to where you are.</CardDescription>
++                        </div>
++                        <Button size="sm" variant="ghost" @click="activePanel = 'invites'">All invite settings <i class="ri-arrow-right-line" /></Button>
++                    </div>
++                </CardHeader>
++                <CardContent>
++                    <div class="uwx-invite-tiles">
++                        <div class="uwx-invite-tile uwx-invite-kind-group">
++                            <div class="uwx-invite-tile-head">
++                                <span class="uwx-invite-icon"><i class="ri-group-line" /></span>
++                                <div class="min-w-0 flex-1">
++                                    <div class="uwx-invite-kicker">GROUP INVITES</div>
++                                    <strong>Recruit this lobby into {{ currentGroupName || 'your group' }}</strong>
++                                </div>
++                                <Switch :model-value="groupRecruitEnabled" aria-label="Automatic group invites" @update:modelValue="setGroupRecruitEnabled" />
++                            </div>
++                            <p class="uwx-invite-permission" :class="recruitStatus.ok ? 'ok' : 'blocked'">
++                                <i :class="recruitStatus.ok ? 'ri-checkbox-circle-line' : 'ri-information-line'" />
++                                {{ recruitStatus.text }}
++                            </p>
++                            <div class="uwx-invite-tile-stats">
++                                <span><strong>{{ eligibleLobbyRecruits.length }}</strong> can be invited</span>
++                                <span><strong>{{ sessionGroupInvitesSent }}</strong> sent this session</span>
++                                <span><strong>{{ groupRecruitEnabled ? 'Auto' : 'Manual' }}</strong></span>
++                            </div>
++                            <div class="flex flex-wrap gap-2">
++                                <Button v-if="currentGroupId && !isCurrentGroupAllowed" @click="addCurrentGroup">Approve {{ currentGroupName }}</Button>
++                                <Button :disabled="isRecruiting || !canRecruitHere || !eligibleLobbyRecruits.length" @click="recruitNow">
++                                    <i :class="isRecruiting ? 'ri-loader-4-line animate-spin' : 'ri-user-add-line'" />
++                                    Invite {{ eligibleLobbyRecruits.length }} to group
++                                </Button>
++                            </div>
++                        </div>
++
++                        <div class="uwx-invite-tile uwx-invite-kind-instance">
++                            <div class="uwx-invite-tile-head">
++                                <span class="uwx-invite-icon"><i class="ri-door-open-line" /></span>
++                                <div class="min-w-0 flex-1">
++                                    <div class="uwx-invite-kicker">INSTANCE INVITES</div>
++                                    <strong>Bring friends to where you are</strong>
++                                </div>
++                                <Switch :model-value="autoInviteEnabled" aria-label="Automatic instance invites" @update:modelValue="setAutoInviteEnabled" />
++                            </div>
++                            <p class="uwx-invite-permission" :class="canInviteHere ? 'ok' : 'blocked'">
++                                <i :class="canInviteHere ? 'ri-checkbox-circle-line' : 'ri-forbid-line'" />
++                                {{ canInviteHere ? 'You can invite people into this instance.' : inviteBlockedReason }}
++                            </p>
++                            <div class="uwx-invite-tile-stats">
++                                <span><strong>{{ invitePoolFriends.length }}</strong> {{ inviteScopeLabel.toLowerCase() }}</span>
++                                <span><strong>{{ sessionInvitesSent }}</strong> sent this session</span>
++                                <span><strong>{{ autoInviteEnabled ? 'Auto' : 'Manual' }}</strong></span>
++                            </div>
++                            <div class="flex flex-wrap gap-2">
++                                <Button :disabled="isManualInviting || !canInviteHere || !invitePoolFriends.length" @click="inviteNow">
++                                    <i :class="isManualInviting ? 'ri-loader-4-line animate-spin' : 'ri-send-plane-2-line'" />
++                                    Invite now ({{ invitePoolFriends.length }})
++                                </Button>
++                                <Button variant="outline" @click="activePanel = 'invites'">Change who</Button>
++                            </div>
++                        </div>
++                    </div>
++                </CardContent>
++            </Card>
++
++            <Card v-show="activePanel === 'invites'" class="uwx-card uwx-card-wide uwx-invite-card uwx-invite-kind-group">
++                <CardHeader>
++                    <div class="flex items-start justify-between gap-4">
++                        <div class="flex items-start gap-3">
++                            <span class="uwx-invite-icon"><i class="ri-group-line" /></span>
++                            <div>
++                                <div class="uwx-invite-kicker">GROUP INVITES</div>
++                                <CardTitle>Recruit people into your VRChat group</CardTitle>
++                            </div>
+                         </div>
+-                        <Badge variant="outline">{{ currentGroupId || 'NO GROUP INSTANCE' }}</Badge>
++                        <Badge variant="outline">{{ currentGroupName || 'Not in a group instance' }}</Badge>
+                     </div>
+                 </CardHeader>
+-                <CardContent class="space-y-6">
+-                    <section class="uwx-control-block uwx-control-primary">
++                <CardContent class="space-y-5">
++                    <section class="uwx-control-block uwx-invite-kind-group">
+                         <div class="flex items-start justify-between gap-4">
+                             <div>
+-                                <div class="uwx-section-label">GROUP RECRUITER</div>
+-                                <div class="flex flex-wrap items-center gap-2">
+-                                    <h3 class="uwx-control-title">Invite lobby occupants into the VRChat group</h3>
+-                                    <Badge variant="outline">SAFE RECRUITMENT</Badge>
+-                                </div>
+-                                <p class="text-sm text-muted-foreground mt-1">
+-                                    Watches only the current lobby, waits for the dwell timer, then invites verified non-members who are not excluded.
++                                <p class="text-sm text-muted-foreground">
++                                    Sends a VRChat <strong>group invite</strong> to people in your current group instance who aren't members yet.
++                                    The switch does it automatically after they've been here for the dwell time; the button does it once, now.
++                                </p>
++                                <p class="uwx-invite-permission mt-2" :class="recruitStatus.ok ? 'ok' : 'blocked'">
++                                    <i :class="recruitStatus.ok ? 'ri-checkbox-circle-line' : 'ri-information-line'" />
++                                    {{ recruitStatus.text }}
+                                 </p>
+                             </div>
+                             <Switch :model-value="groupRecruitEnabled" @update:modelValue="setGroupRecruitEnabled" />
+@@ -139,13 +209,13 @@
+                                 v-if="currentGroupId && !isCurrentGroupAllowed"
+                                 variant="default"
+                                 @click="addCurrentGroup">
+-                                Allow current group
++                                Approve {{ currentGroupName }} for recruiting
+                             </Button>
+                             <Button
+                                 v-if="currentGroupId && isCurrentGroupAllowed"
+                                 variant="outline"
+                                 @click="removeAllowedGroup(currentGroupId)">
+-                                Remove current group
++                                Stop recruiting for {{ currentGroupName }}
+                             </Button>
+                             <Button :disabled="isRecruiting || !canRecruitHere || !eligibleLobbyRecruits.length" variant="default" @click="recruitNow">
+                                 <i :class="isRecruiting ? 'ri-loader-4-line animate-spin' : 'ri-user-add-line'" />
+@@ -168,19 +238,62 @@
+                             <span><i class="ri-forbid-2-line" /> Exclusions respected</span>
+                             <span><i class="ri-refresh-line" /> 24h dedupe</span>
+                         </div>
+-                        <div class="uwx-warning mt-3">
+-                            <strong>Guardrails:</strong> approved current <code>grp_</code> lobby only · unknown membership fails closed · paced queue · 403 disarms · 429 pauses · queue dies if the lobby changes.
+-                        </div>
++                        <p class="uwx-help mt-3">
++                            Only runs inside an approved group's instance. If UWX can't confirm someone's membership it skips them. Paced one at a time;
++                            stops if VRChat refuses (403) or rate-limits (429), or if you leave the instance.
++                        </p>
+                     </section>
+ 
+                     <section class="uwx-control-block">
++                        <div class="uwx-section-label">GROUPS APPROVED FOR RECRUITING</div>
++                        <p class="text-sm text-muted-foreground mt-1">UWX only sends group invites inside these groups' instances.</p>
++                        <div v-if="myGroupOptions.length" class="uwx-approved-groups mt-3">
++                            <div v-for="group in myGroupOptions" :key="group.id" class="uwx-list-row">
++                                <span class="min-w-0 truncate"><strong>{{ group.name }}</strong></span>
++                                <Button
++                                    size="sm"
++                                    :variant="allowedGroupIds.includes(group.id) ? 'default' : 'outline'"
++                                    @click="allowedGroupIds.includes(group.id) ? removeAllowedGroup(group.id) : addAllowedGroup(group.id)">
++                                    <i :class="allowedGroupIds.includes(group.id) ? 'ri-check-line' : 'ri-add-line'" />
++                                    {{ allowedGroupIds.includes(group.id) ? 'Approved' : 'Approve' }}
++                                </Button>
++                            </div>
++                        </div>
++                        <div v-for="groupId in otherAllowedGroupIds" :key="groupId" class="uwx-list-row mt-2">
++                            <code class="truncate">{{ groupId }}</code>
++                            <Button size="sm" variant="ghost" @click="removeAllowedGroup(groupId)">Remove</Button>
++                        </div>
++                        <details class="uwx-help mt-3">
++                            <summary>Add a group you're not a member of by ID</summary>
++                            <div class="flex gap-2 mt-2">
++                                <Input v-model="groupInput" placeholder="grp_..." @keyup.enter="addGroupFromInput" />
++                                <Button variant="outline" @click="addGroupFromInput">Add</Button>
++                            </div>
++                        </details>
++                    </section>
++                </CardContent>
++            </Card>
++
++            <Card v-show="activePanel === 'invites'" class="uwx-card uwx-card-wide uwx-invite-card uwx-invite-kind-instance">
++                <CardHeader>
++                    <div class="flex items-start justify-between gap-4">
++                        <div class="flex items-start gap-3">
++                            <span class="uwx-invite-icon"><i class="ri-door-open-line" /></span>
++                            <div>
++                                <div class="uwx-invite-kicker">INSTANCE INVITES</div>
++                                <CardTitle>Bring friends to where you are</CardTitle>
++                            </div>
++                        </div>
++                        <Button size="sm" variant="ghost" @click="activePanel = 'people'">Pick friends / block someone</Button>
++                    </div>
++                </CardHeader>
++                <CardContent>
++                    <section class="uwx-control-block uwx-invite-kind-instance">
+                         <div class="flex items-start justify-between gap-4">
+                             <div>
+-                                <div class="uwx-section-label">INSTANCE INVITER</div>
+-                                <h3 class="uwx-control-title">Bring friends and UnderWeb roles into this lobby</h3>
+-                                <p class="text-sm text-muted-foreground mt-1">
+-                                    Works in any instance VRChat lets you invite into — public, group, Friends+, Invite+, and your own.
+-                                    The switch arms automatic invites; "Invite now" sends once.
++                                <p class="text-sm text-muted-foreground">
++                                    Sends a normal VRChat <strong>instance invite</strong> so friends can join you where you are. Works in any instance
++                                    VRChat lets you invite into. The switch does it automatically; "Invite now" sends once.
+                                 </p>
+                                 <p class="uwx-invite-permission mt-2" :class="canInviteHere ? 'ok' : 'blocked'">
+                                     <i :class="canInviteHere ? 'ri-checkbox-circle-line' : 'ri-forbid-line'" />
+@@ -669,32 +782,16 @@
+                 </CardContent>
+             </Card>
+ 
+-            <Card v-show="activePanel === 'command'" class="uwx-card">
+-                <CardHeader>
+-                    <CardTitle>Allowed Groups</CardTitle>
+-                    <CardDescription>Only these VRChat groups can arm UWX lobby automation.</CardDescription>
+-                </CardHeader>
+-                <CardContent>
+-                    <div class="flex gap-2 mb-3">
+-                        <Input v-model="groupInput" placeholder="grp_..." @keyup.enter="addGroupFromInput" />
+-                        <Button variant="outline" @click="addGroupFromInput">Add</Button>
+-                    </div>
+-                    <div v-if="allowedGroupIds.length" class="space-y-2">
+-                        <div v-for="groupId in allowedGroupIds" :key="groupId" class="uwx-list-row">
+-                            <code class="truncate">{{ groupId }}</code>
+-                            <Button size="sm" variant="ghost" @click="removeAllowedGroup(groupId)">Remove</Button>
+-                        </div>
+-                    </div>
+-                    <p v-else class="text-sm text-muted-foreground">No groups allowed yet.</p>
+-                </CardContent>
+-            </Card>
+ 
+             <Card v-show="activePanel === 'people'" class="uwx-card uwx-card-wide">
+                 <CardHeader>
+                     <div class="flex items-start justify-between gap-4">
+                         <div>
+-                            <CardTitle>Invite List, Roles & Profile Quick-View</CardTitle>
+-                            <CardDescription>Select friends, inspect UnderWeb roles, or hard-block them from all invite scopes.</CardDescription>
++                            <CardTitle>Friends, roles & who gets invited</CardTitle>
++                            <CardDescription>
++                                <i class="ri-user-add-line" /> adds a friend to your "Selected" instance-invite list ·
++                                <i class="ri-shield-line" /> blocks them from every UWX invite.
++                            </CardDescription>
+                         </div>
+                         <Badge variant="outline">{{ filteredFriends.length }} shown</Badge>
+                     </div>
+@@ -836,7 +933,7 @@
+ 
+     import { UWX_VERSION } from '../../shared/constants/uwx';
+     import { openExternalLink, parseLocation } from '../../shared/utils';
+-    import { useFriendStore, useLocationStore, useOscLabStore, useUnderWebNetworkStore, useUnderWebStore } from '../../stores';
++    import { useFriendStore, useGroupStore, useLocationStore, useOscLabStore, useUnderWebNetworkStore, useUnderWebStore } from '../../stores';
+     import { useSafetyIntelStore } from '../../stores/safetyIntel';
+     import { useSafetyReportingStore } from '../../stores/safetyReporting';
+ 
+@@ -844,6 +941,7 @@
+     const underWebStore = useUnderWebStore();
+     const networkStore = useUnderWebNetworkStore();
+     const friendStore = useFriendStore();
++    const groupStore = useGroupStore();
+     const locationStore = useLocationStore();
+     const oscLabStore = useOscLabStore();
+     const safetyIntelStore = useSafetyIntelStore();
+@@ -917,16 +1015,18 @@
+     const activePanel = ref('command');
+     const panelTabs = [
+         { id: 'command', label: 'Command', short: 'Live ops', icon: 'ri-dashboard-3-line' },
+-        { id: 'groups', label: 'Groups', short: 'Moderation', icon: 'ri-shield-user-line' },
+-        { id: 'osc', label: 'OSC Lab', short: 'Avatar + chatbox', icon: 'ri-pulse-line' },
+-        { id: 'people', label: 'People', short: 'Roles + activity', icon: 'ri-team-line' },
++        { id: 'invites', label: 'Invites', short: 'Group + instance', icon: 'ri-mail-send-line' },
++        { id: 'groups', label: 'Groups', short: 'Moderate + activity', icon: 'ri-shield-user-line' },
++        { id: 'osc', label: 'OSC Lab', short: 'Chatbox', icon: 'ri-chat-3-line' },
++        { id: 'people', label: 'People', short: 'Friends + roles', icon: 'ri-team-line' },
+         { id: 'safety', label: 'Safety Intel', short: 'Shared warnings', icon: 'ri-shield-check-line' },
+         { id: 'system', label: 'System', short: 'Safety + updates', icon: 'ri-settings-3-line' }
+     ];
+     const panelMeta = {
+-        command: { eyebrow: 'LIVE OPERATIONS', title: 'Command Center', description: 'Lobby recruiting, instance invites, Radar, events, and connected identity.' },
+-        groups: { eyebrow: 'GROUP OPERATIONS', title: 'Group Tools', description: 'Look up members, remove, ban and unban in the VRChat groups your role can moderate.' },
+-        osc: { eyebrow: 'REAL-TIME CONTROL', title: 'OSC Lab', description: 'Chatbox composition, heart rate, presets, and direct avatar parameter testing.' },
++        command: { eyebrow: 'LIVE OPERATIONS', title: 'Command Center', description: 'Quick invite controls, Radar, events, and connected accounts.' },
++        invites: { eyebrow: 'INVITES', title: 'Group & instance invites', description: 'Group invites ask people to join your VRChat group. Instance invites bring friends to where you are.' },
++        groups: { eyebrow: 'GROUP OPERATIONS', title: 'Group Tools', description: 'Look up members, remove, ban and unban, and see everything that happened in your groups.' },
++        osc: { eyebrow: 'REAL-TIME CONTROL', title: 'OSC Lab', description: 'What shows in your VRChat chatbox: music, weather, statuses and heart rate.' },
+         people: { eyebrow: 'NETWORK PEOPLE', title: 'People & Activity', description: 'Inspect roles, manage exclusions, and review what UWX did this session.' },
+         safety: { eyebrow: 'COMMUNITY AWARENESS', title: 'Safety Intel', description: 'Reviewed shared warnings for crashing, doxxing threats, harassment, malicious behavior, and other community risks.' },
+         system: { eyebrow: 'LOCAL CONTROL', title: 'System & Safety', description: 'Notifications, releases, local data boundaries, and the global disarm control.' }
+@@ -991,6 +1091,27 @@
+     const creatorOnlineCount = computed(() => onlineFriends.value.filter((friend) => creatorUserIds.value.has(friend.id)).length);
+     const partnerOnlineCount = computed(() => onlineFriends.value.filter((friend) => partnerUserIds.value.has(friend.id)).length);
+ 
++    const myGroupOptions = computed(() =>
++        Array.from(groupStore.currentUserGroups.values())
++            .filter((group) => group && String(group.id || '').startsWith('grp_'))
++            .map((group) => ({ id: group.id, name: group.name || group.id }))
++            .sort((a, b) => a.name.localeCompare(b.name))
++    );
++    const otherAllowedGroupIds = computed(() => allowedGroupIds.value.filter((id) => !myGroupOptions.value.some((g) => g.id === id)));
++    const currentGroupName = computed(() => {
++        if (!currentGroupId.value) return '';
++        return groupStore.currentUserGroups.get(currentGroupId.value)?.name || 'this group';
++    });
++    const recruitStatus = computed(() => {
++        if (!currentGroupId.value) {
++            return { ok: false, text: "You're not in a group instance. Group invites only go out from inside your group's instance." };
++        }
++        if (!isCurrentGroupAllowed.value) {
++            return { ok: false, text: `${currentGroupName.value} isn't approved for recruiting yet.` };
++        }
++        return { ok: true, text: `Recruiting is available here for ${currentGroupName.value}.` };
++    });
++
+     const inviteScopeLabel = computed(() => {
+         const labels = {
+             selected: 'Selected friends',
+@@ -1413,6 +1534,86 @@
+         padding: 16px;
+     }
+ 
++    /* Invites: green = group invites, blue = instance invites, everywhere they appear. */
++    .uwx-invite-kind-group { --invite: #3df514; --invite-soft: rgb(61 245 20 / 10%); }
++    .uwx-invite-kind-instance { --invite: #4fb3ff; --invite-soft: rgb(79 179 255 / 10%); }
++    .uwx-invite-tiles {
++        display: grid;
++        grid-template-columns: repeat(2, minmax(0, 1fr));
++        gap: 14px;
++    }
++    @media (max-width: 900px) {
++        .uwx-invite-tiles { grid-template-columns: 1fr; }
++    }
++    .uwx-invite-tile {
++        display: flex;
++        flex-direction: column;
++        gap: 12px;
++        padding: 16px;
++        border-radius: 12px;
++        border: 1px solid color-mix(in srgb, var(--invite) 35%, transparent);
++        border-top: 3px solid var(--invite);
++        background: linear-gradient(160deg, var(--invite-soft), rgb(0 0 0 / 18%) 55%);
++    }
++    .uwx-invite-tile-head {
++        display: flex;
++        align-items: center;
++        gap: 12px;
++    }
++    .uwx-invite-tile-head strong {
++        display: block;
++        font-size: 15px;
++        line-height: 1.25;
++    }
++    .uwx-invite-icon {
++        display: inline-grid;
++        place-items: center;
++        flex: none;
++        width: 36px;
++        height: 36px;
++        border-radius: 10px;
++        font-size: 18px;
++        color: var(--invite);
++        background: var(--invite-soft);
++        border: 1px solid color-mix(in srgb, var(--invite) 40%, transparent);
++    }
++    .uwx-invite-kicker {
++        color: var(--invite);
++        font-size: 10px;
++        font-weight: 900;
++        letter-spacing: 0.12em;
++    }
++    .uwx-invite-tile-stats {
++        display: flex;
++        flex-wrap: wrap;
++        gap: 6px 16px;
++        font-size: 12px;
++        color: var(--muted-foreground);
++    }
++    .uwx-invite-tile-stats strong {
++        color: var(--foreground);
++        margin-right: 2px;
++    }
++    .uwx-invite-card {
++        border-top: 3px solid var(--invite) !important;
++    }
++    .uwx-control-block.uwx-invite-kind-group,
++    .uwx-control-block.uwx-invite-kind-instance {
++        border-color: color-mix(in srgb, var(--invite) 25%, transparent);
++    }
++    .uwx-invite-kind-instance .uwx-section-label,
++    .uwx-invite-kind-instance .uwx-stat-label {
++        color: var(--invite);
++    }
++    .uwx-approved-groups {
++        display: flex;
++        flex-direction: column;
++        gap: 6px;
++    }
++    .uwx-help summary {
++        cursor: pointer;
++    }
++
+     .uwx-control-primary {
+         position: relative;
+         overflow: hidden;
 diff --git a/src/views/UnderWeb/UwxGroupAudit.vue b/src/views/UnderWeb/UwxGroupAudit.vue
 new file mode 100644
 index 0000000..6685271
@@ -1559,3 +2094,82 @@ index a9d1f4c..5403543 100644
          if (ok && lookupResults.value.some((m) => m.userId === member.userId)) {
              const next = action === 'ban' ? 'banned' : action === 'kick' ? 'not a member' : 'not a member';
              lookupResults.value = lookupResults.value.map((m) => (m.userId === member.userId ? { ...m, membershipStatus: next } : m));
+diff --git a/src/views/UnderWeb/UwxOscLab.vue b/src/views/UnderWeb/UwxOscLab.vue
+index be4aeae..c86a8a0 100644
+--- a/src/views/UnderWeb/UwxOscLab.vue
++++ b/src/views/UnderWeb/UwxOscLab.vue
+@@ -126,7 +126,7 @@
+                             <div class="flex flex-wrap gap-2">
+                                 <Input type="password" :model-value="pulsoidToken" placeholder="Pulsoid access token" aria-label="Pulsoid access token" @change="(e) => setPulsoidToken(e.target.value)" />
+                             </div>
+-                            <p class="uwx-help">Pulsoid: {{ heartRateState }}<template v-if="heartRate"> · {{ heartRate }} BPM</template>. Also sends {{ bpmAvatarParameter }} / {{ pulseAvatarParameter }} to your avatar.</p>
++                            <p class="uwx-help">Pulsoid: {{ heartRateState }}<template v-if="heartRate"> · {{ heartRate }} BPM</template>. Shown in your chatbox only.</p>
+                         </template>
+ 
+                         <template v-if="key === 'world'">
+@@ -172,20 +172,6 @@
+             </CardContent>
+         </Card>
+ 
+-        <Card class="uwx-card">
+-            <CardHeader>
+-                <CardTitle>Avatar parameter test</CardTitle>
+-                <CardDescription>Send one OSC value to your current avatar.</CardDescription>
+-            </CardHeader>
+-            <CardContent class="space-y-2">
+-                <Input v-model="testParam" placeholder="Parameter name" aria-label="Avatar parameter name" />
+-                <div class="flex gap-2">
+-                    <Button v-for="type in ['bool', 'int', 'float']" :key="type" size="sm" :variant="testType === type ? 'default' : 'outline'" @click="testType = type">{{ type }}</Button>
+-                    <Input v-model="testValue" aria-label="Value" class="max-w-[120px]" />
+-                    <Button size="sm" :disabled="!testParam.trim()" @click="sendTest">Send</Button>
+-                </div>
+-            </CardContent>
+-        </Card>
+     </div>
+ </template>
+ 
+@@ -213,8 +199,6 @@
+         heartRate,
+         heartRateState,
+         pulsoidToken,
+-        pulseAvatarParameter,
+-        bpmAvatarParameter,
+         lastError,
+         outputLog,
+         sendsLastMinute
+@@ -237,7 +221,6 @@
+         nextStatusNow,
+         hideNow,
+         clearOutputLog,
+-        sendAvatarParameter,
+         setPulsoidToken
+     } = store;
+ 
+@@ -251,9 +234,6 @@
+         }
+     );
+     const statusDraft = ref('');
+-    const testParam = ref('');
+-    const testType = ref('bool');
+-    const testValue = ref('true');
+ 
+     function moduleState(key) {
+         if (!settings.value.modules[key].enabled) return 'off';
+@@ -273,17 +253,6 @@
+         if (addStatus(statusDraft.value)) statusDraft.value = '';
+     }
+ 
+-    async function sendTest() {
+-        try {
+-            const raw = testValue.value;
+-            const value = testType.value === 'bool' ? ['true', '1', 'on', 'yes'].includes(String(raw).toLowerCase()) : Number(raw) || 0;
+-            await sendAvatarParameter(testParam.value, testType.value, value);
+-            toast.success(`Sent ${testParam.value}.`);
+-        } catch (error) {
+-            toast.error(error?.message || 'Could not send parameter.');
+-        }
+-    }
+-
+     function time(at) {
+         return new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+     }
