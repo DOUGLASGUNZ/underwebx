@@ -1,0 +1,758 @@
+diff --git a/CHANGELOG_UWX.md b/CHANGELOG_UWX.md
+index 08e9ad1..0cded63 100644
+--- a/CHANGELOG_UWX.md
++++ b/CHANGELOG_UWX.md
+@@ -1,5 +1,15 @@
+ # UnderWeb X changelog
+ 
++## 0.5.8-rc17 — Live lobby board
++
++Command → **Lobby**: everyone in your instance at a glance.
++- Labeled people first, then staff, new group members (joined in the last week) and people not in the group; everyone else by time here.
++- Chips for labels, UnderWeb roles, NEW, "Not in group", friends and your notes (hover for the latest).
++- Counts at the top and quick filters: not in group, new, friends, staff, labeled.
++- One-click **Invite to group** for people not in it (only in our instances), add a note, report, or open their profile.
++- Group membership is checked gently in the background (one request at a time, remembered for the session) only while the board is on screen.
++- **UWX never group-invites someone with a shared bad-news label** — the automatic recruiter skips them and the button isn't offered.
++
+ ## 0.5.7-rc16 — Staff tools: undo, dashboard, notes, Discord alerts, recruiting stats
+ 
+ - **Undo**: Ban and Remove wait 10 seconds with an Undo button (in the pop-up and at the top of the Groups tab) before anything is sent to VRChat. Undone actions are logged as "undone". Unban runs right away.
+diff --git a/UWX_VERSION b/UWX_VERSION
+index a728b83..faf111a 100644
+--- a/UWX_VERSION
++++ b/UWX_VERSION
+@@ -1 +1 @@
+-0.5.7-rc16
++0.5.8-rc17
+diff --git a/src/shared/constants/uwx.js b/src/shared/constants/uwx.js
+index ad586ab..0437d9f 100644
+--- a/src/shared/constants/uwx.js
++++ b/src/shared/constants/uwx.js
+@@ -1,2 +1,2 @@
+-export const UWX_VERSION = '0.5.7-rc16';
++export const UWX_VERSION = '0.5.8-rc17';
+ export const UWX_MANIFEST_URL = 'https://underweb.cloud/api/uwx/manifest';
+diff --git a/src/shared/utils/__tests__/uwxLobby.test.js b/src/shared/utils/__tests__/uwxLobby.test.js
+new file mode 100644
+index 0000000..6ae50b5
+--- /dev/null
++++ b/src/shared/utils/__tests__/uwxLobby.test.js
+@@ -0,0 +1,43 @@
++import { describe, expect, it } from 'vitest';
++import { buildLobbyRows, filterLobby, formatHere, lobbySummary } from '../uwxLobby';
++
++const NOW = Date.parse('2026-10-16T00:00:00Z');
++const MIN = 60000;
++const p = (n, name, minsAgo) => ({ userId: `usr_${n}`, displayName: name, joinTime: NOW - minsAgo * MIN });
++
++describe('uwxLobby', () => {
++    const players = [p('me', 'Darko', 90), p('a', 'Friend', 30), p('b', 'Blooty', 60), p('c', 'Stranger', 5), p('d', 'BadActor', 2), p('e', 'Newbie', 10)];
++    const ctx = {
++        selfId: 'usr_me',
++        now: NOW,
++        isFriend: (id) => id === 'usr_a',
++        isStaff: (id) => id === 'usr_b',
++        roles: (id) => (id === 'usr_b' ? ['Moderator'] : []),
++        intel: (id) => (id === 'usr_d' ? { risk_level: 'high', verified_flags: ['crashing'] } : null),
++        notesCount: (id) => (id === 'usr_c' ? 2 : 0),
++        membership: (id) => ({ usr_a: 'member', usr_b: 'member', usr_c: 'not-member', usr_e: 'member' })[id] || 'unknown',
++        joinedGroupAt: (id) => (id === 'usr_e' ? NOW - 2 * 24 * 60 * MIN : id === 'usr_a' ? NOW - 300 * 24 * 60 * MIN : 0)
++    };
++
++    it('orders labeled, then staff, then new members, then non-members; never lists you', () => {
++        const rows = buildLobbyRows(players, ctx);
++        expect(rows.map((r) => r.displayName)).toEqual(['BadActor', 'Blooty', 'Newbie', 'Stranger', 'Friend']);
++        expect(rows.find((r) => r.displayName === 'Newbie').isNew).toBe(true);
++        expect(rows.find((r) => r.displayName === 'Friend').isNew).toBe(false);
++        expect(rows.find((r) => r.displayName === 'Stranger')).toMatchObject({ notes: 2, membership: 'not-member', hereMs: 5 * MIN });
++    });
++
++    it('summarizes and filters', () => {
++        const rows = buildLobbyRows(players, ctx);
++        expect(lobbySummary(rows)).toEqual({ total: 5, friends: 1, members: 3, notMembers: 1, newMembers: 1, staff: 1, labeled: 1 });
++        expect(filterLobby(rows, 'not-member').map((r) => r.displayName)).toEqual(['Stranger']);
++        expect(filterLobby(rows, 'labeled').map((r) => r.displayName)).toEqual(['BadActor']);
++        expect(filterLobby(rows, 'all')).toHaveLength(5);
++    });
++
++    it('formats time here', () => {
++        expect(formatHere(30 * 1000)).toBe('just now');
++        expect(formatHere(42 * MIN)).toBe('42m');
++        expect(formatHere(125 * MIN)).toBe('2h 5m');
++    });
++});
+diff --git a/src/shared/utils/uwxLobby.js b/src/shared/utils/uwxLobby.js
+new file mode 100644
+index 0000000..c0c5e49
+--- /dev/null
++++ b/src/shared/utils/uwxLobby.js
+@@ -0,0 +1,83 @@
++// Live lobby board (pure): who's in your instance, with everything UWX knows about them.
++
++import { riskRank } from './uwxSafety';
++
++export const LOBBY_FILTERS = Object.freeze([
++    { id: 'all', label: 'Everyone' },
++    { id: 'not-member', label: 'Not in group' },
++    { id: 'new', label: 'New members' },
++    { id: 'friends', label: 'Friends' },
++    { id: 'staff', label: 'Staff' },
++    { id: 'labeled', label: 'Labeled' }
++]);
++
++const WEEK = 7 * 24 * 60 * 60 * 1000;
++
++/**
++ * @param {Array<{userId:string, displayName:string, joinTime?:number}>} players
++ * @param {object} ctx  lookups: selfId, now, isFriend, roles, isStaff, intel, notesCount, membership, joinedGroupAt
++ */
++export function buildLobbyRows(players, ctx) {
++    const now = ctx.now || Date.now();
++    return (players || [])
++        .filter((p) => String(p?.userId || '').startsWith('usr_') && p.userId !== ctx.selfId)
++        .map((p) => {
++            const intel = ctx.intel?.(p.userId) || null;
++            const joinedGroupAt = ctx.joinedGroupAt?.(p.userId) || 0;
++            const membership = ctx.membership?.(p.userId) || 'unknown';
++            return {
++                userId: p.userId,
++                displayName: p.displayName || p.userId,
++                hereMs: p.joinTime ? Math.max(0, now - p.joinTime) : 0,
++                friend: Boolean(ctx.isFriend?.(p.userId)),
++                roles: ctx.roles?.(p.userId) || [],
++                staff: Boolean(ctx.isStaff?.(p.userId)),
++                intel,
++                notes: ctx.notesCount?.(p.userId) || 0,
++                membership,
++                isNew: membership !== 'not-member' && joinedGroupAt > 0 && now - joinedGroupAt < WEEK,
++                joinedGroupAt
++            };
++        })
++        .sort((a, b) => {
++            const score = (r) =>
++                (r.intel ? 1000 + riskRank(r.intel.risk_level) * 10 : 0) + (r.staff ? 100 : 0) + (r.isNew ? 50 : 0) + (r.membership === 'not-member' ? 10 : 0);
++            return score(b) - score(a) || b.hereMs - a.hereMs;
++        });
++}
++
++export function lobbySummary(rows) {
++    return {
++        total: rows.length,
++        friends: rows.filter((r) => r.friend).length,
++        members: rows.filter((r) => r.membership === 'member').length,
++        notMembers: rows.filter((r) => r.membership === 'not-member').length,
++        newMembers: rows.filter((r) => r.isNew).length,
++        staff: rows.filter((r) => r.staff).length,
++        labeled: rows.filter((r) => r.intel).length
++    };
++}
++
++export function filterLobby(rows, filter) {
++    switch (filter) {
++        case 'not-member':
++            return rows.filter((r) => r.membership === 'not-member');
++        case 'new':
++            return rows.filter((r) => r.isNew);
++        case 'friends':
++            return rows.filter((r) => r.friend);
++        case 'staff':
++            return rows.filter((r) => r.staff);
++        case 'labeled':
++            return rows.filter((r) => r.intel);
++        default:
++            return rows;
++    }
++}
++
++export function formatHere(ms) {
++    const m = Math.floor(ms / 60000);
++    if (m < 1) return 'just now';
++    if (m < 60) return `${m}m`;
++    return `${Math.floor(m / 60)}h ${m % 60}m`;
++}
+diff --git a/src/stores/__tests__/uwxInviter.test.js b/src/stores/__tests__/uwxInviter.test.js
+index 9d29d01..9ef8ce9 100644
+--- a/src/stores/__tests__/uwxInviter.test.js
++++ b/src/stores/__tests__/uwxInviter.test.js
+@@ -53,6 +53,8 @@ vi.mock('../location', () => ({ useLocationStore: () => locationStore }));
+ vi.mock('../instance', () => ({ useInstanceStore: () => instanceStore }));
+ vi.mock('../user', () => ({ useUserStore: () => userStore }));
+ vi.mock('../underwebNetwork', () => ({ useUnderWebNetworkStore: () => networkStore }));
++const labeledIds = new Set();
++vi.mock('../safetyIntel', () => ({ useSafetyIntelStore: () => ({ getIntel: (id) => (labeledIds.has(id) ? { risk_level: 'high' } : null) }) }));
+ 
+ const { useUnderWebStore } = await import('../underweb');
+ 
+@@ -301,3 +303,51 @@ describe('UWX group invites in our instances', () => {
+         expect(groupRequest.sendGroupInvite).not.toHaveBeenCalled();
+     });
+ });
++
++describe('UWX lobby board: single group invite', () => {
++    beforeEach(() => {
++        setActivePinia(createPinia());
++        groupRequest.getGroupMember.mockReset().mockRejectedValue({ status: 404 });
++        groupRequest.sendGroupInvite.mockReset().mockResolvedValue({ json: {} });
++    });
++
++    test('invites a non-member in your own instance, skips members, and refuses elsewhere', async () => {
++        const store = useUnderWebStore();
++        await store.setRecruitInOwnInstances(true);
++        await store.setRecruitHomeGroupId(HOME);
++        locationStore.lastLocation.location = at('~region(us)');
++        expect(await store.invitePlayerToGroup({ userId: A, displayName: 'Pub' })).toBe('blocked');
++        locationStore.lastLocation.location = at(`~hidden(${ME})~region(us)`);
++        expect(await store.invitePlayerToGroup({ userId: A, displayName: 'Newcomer' })).toBe('sent');
++        expect(groupRequest.sendGroupInvite).toHaveBeenCalledWith({ groupId: HOME, userId: A });
++        groupRequest.getGroupMember.mockResolvedValue({ json: { userId: B } });
++        expect(await store.invitePlayerToGroup({ userId: B, displayName: 'Member' })).toBe('member');
++        expect(groupRequest.sendGroupInvite).toHaveBeenCalledTimes(1);
++    });
++});
++
++describe('UWX never group-invites labeled people', () => {
++    beforeEach(() => {
++        setActivePinia(createPinia());
++        groupRequest.getGroupMember.mockReset().mockRejectedValue({ status: 404 });
++        groupRequest.sendGroupInvite.mockReset().mockResolvedValue({ json: {} });
++        const joined = Date.now() - 10 * 60 * 1000;
++        locationStore.lastLocation.playerList = new Map([
++            [A, { userId: A, displayName: 'Crasher', joinTime: joined }],
++            [B, { userId: B, displayName: 'Fine', joinTime: joined }]
++        ]);
++        labeledIds.clear();
++        labeledIds.add(A);
++    });
++
++    test('skipped by the automatic recruiter and refused by the single invite', async () => {
++        locationStore.lastLocation.location = at(`~hidden(${ME})~region(us)`);
++        const store = useUnderWebStore();
++        await store.setRecruitInOwnInstances(true);
++        await store.setRecruitHomeGroupId(HOME);
++        await store.setGroupRecruitMinPresenceSeconds(0);
++        expect(store.eligibleLobbyRecruits.map((p) => p.userId)).toEqual([B]);
++        expect(await store.invitePlayerToGroup({ userId: A, displayName: 'Crasher' })).toBe('blocked');
++        expect(groupRequest.sendGroupInvite).not.toHaveBeenCalled();
++    });
++});
+diff --git a/src/stores/underweb.js b/src/stores/underweb.js
+index 5e4baec..2b6660c 100644
+--- a/src/stores/underweb.js
++++ b/src/stores/underweb.js
+@@ -11,6 +11,7 @@ import { useInstanceStore } from './instance';
+ import { useLocationStore } from './location';
+ import { useUserStore } from './user';
+ import { useUnderWebNetworkStore } from './underwebNetwork';
++import { useSafetyIntelStore } from './safetyIntel';
+ 
+ const CONFIG = Object.freeze({
+     enabled: 'UWX_autoInviteEnabled',
+@@ -52,6 +53,9 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+     const locationStore = useLocationStore();
+     const userStore = useUserStore();
+     const networkStore = useUnderWebNetworkStore();
++    const safetyIntel = useSafetyIntelStore();
++    // People with a shared "bad news" label are never group-invited by UWX.
++    const isLabeled = (userId) => Boolean(safetyIntel.getIntel?.(userId));
+ 
+     const initialized = ref(false);
+     const autoInviteEnabled = ref(false);
+@@ -175,6 +179,7 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+         return lobbyPlayers.value.filter((player) => {
+             if (player.userId === userStore.currentUser.id) return false;
+             if (excludedUserIds.value.includes(player.userId)) return false;
++            if (isLabeled(player.userId)) return false;
+             if (now - player.joinTime < minPresenceMs) return false;
+             const recent = recentGroupRecruits.get(player.userId);
+             if (
+@@ -789,6 +794,51 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+         });
+     }
+ 
++    /**
++     * Send one VRChat group invite to someone in this instance (lobby board button).
++     * Same rules as the recruiter: only in our instances, members are skipped.
++     * @returns {Promise<'sent'|'member'|'blocked'|'error'>}
++     */
++    async function invitePlayerToGroup(player) {
++        const name = player?.displayName || player?.userId || 'them';
++        if (!canRecruitHere.value) {
++            toast.error("Group invites only work in an approved group's instance or your own instance.");
++            return 'blocked';
++        }
++        if (Date.now() < groupRecruitBackoffUntil.value) {
++            toast.error('VRChat rate limit — try again in a minute.');
++            return 'blocked';
++        }
++        if (isLabeled(player.userId)) {
++            toast.error(`${name} has a shared bad-news label, so UWX won't invite them to the group.`);
++            return 'blocked';
++        }
++        const groupId = recruitGroupId.value;
++        try {
++            if (await isCurrentGroupMember(player.userId, groupId)) {
++                toast.info(`${name} is already in the group.`);
++                return 'member';
++            }
++        } catch {
++            toast.error(`Couldn't check whether ${name} is already in the group, so no invite was sent.`);
++            return 'error';
++        }
++        try {
++            await sendGroupRecruitInvite({ userId: player.userId, displayName: name });
++            toast.success(`Group invite sent to ${name}.`);
++            return 'sent';
++        } catch (error) {
++            const status = error?.status || error?.statusCode || error?.response?.status;
++            if (status === 429) groupRecruitBackoffUntil.value = Date.now() + 60000;
++            toast.error(
++                status === 403
++                    ? 'VRChat says your role can’t invite people to this group.'
++                    : error?.error?.message || error?.message || 'Group invite failed.'
++            );
++            return 'error';
++        }
++    }
++
+     async function scanAndRecruitGroup({ source = 'automatic', force = false } = {}) {
+         if (isRecruiting.value) return { sent: 0, skipped: 'busy' };
+         if (Date.now() < groupRecruitBackoffUntil.value) return { sent: 0, skipped: 'rate-limit-backoff' };
+@@ -1103,6 +1153,7 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+         isCurrentGroupAllowed,
+         canAutoInviteHere,
+         canRecruitHere,
++        invitePlayerToGroup,
+         isOwnInstance,
+         recruitGroupId,
+         recruitInOwnInstances,
+diff --git a/src/stores/uwxLobbyBoard.js b/src/stores/uwxLobbyBoard.js
+new file mode 100644
+index 0000000..33a3cb1
+--- /dev/null
++++ b/src/stores/uwxLobbyBoard.js
+@@ -0,0 +1,131 @@
++import { computed, reactive, ref, watch } from 'vue';
++import { defineStore } from 'pinia';
++
++import { groupRequest } from '../api';
++import auditArchive from '../services/uwxAuditArchive';
++import { watchState } from '../services/watchState';
++import { buildLobbyRows, lobbySummary } from '../shared/utils/uwxLobby';
++import { useFriendStore } from './friend';
++import { useLocationStore } from './location';
++import { useSafetyIntelStore } from './safetyIntel';
++import { useUnderWebStore } from './underweb';
++import { useUnderWebNetworkStore } from './underwebNetwork';
++import { useUserStore } from './user';
++import { useUwxMemberNotesStore } from './uwxMemberNotes';
++
++// Live lobby board: everyone in your instance with roles, labels, notes, time here,
++// and whether they're in "our" group (the group recruiting targets here).
++// Group membership is checked gently — one VRChat request at a time, cached for the session —
++// and only while the board is on screen.
++
++const CHECK_GAP_MS = 1500;
++
++export const useUwxLobbyBoardStore = defineStore('UwxLobbyBoard', () => {
++    const locationStore = useLocationStore();
++    const friendStore = useFriendStore();
++    const network = useUnderWebNetworkStore();
++    const safety = useSafetyIntelStore();
++    const underweb = useUnderWebStore();
++    const userStore = useUserStore();
++    const notes = useUwxMemberNotesStore();
++
++    const now = ref(Date.now());
++    const visible = ref(false);
++    /** `${groupId}:${userId}` -> 'member' | 'not-member' */
++    const membership = reactive(new Map());
++    /** groupId -> Map(userId -> first join ts) from the local audit archive */
++    const joinsByGroup = reactive(new Map());
++    let checking = false;
++    let clock = null;
++
++    const groupId = computed(() => underweb.recruitGroupId || underweb.currentGroupId || '');
++
++    const rows = computed(() => {
++        const gid = groupId.value;
++        const joins = joinsByGroup.get(gid);
++        return buildLobbyRows(Array.from(locationStore.lastLocation.playerList?.values?.() || []), {
++            selfId: userStore.currentUser?.id,
++            now: now.value,
++            isFriend: (id) => friendStore.friends.has(id),
++            roles: (id) => network.rolesForUser(id),
++            isStaff: (id) => network.staffUserIds.has(id),
++            intel: (id) => safety.getIntel(id),
++            notesCount: (id) => notes.forUser(id).length,
++            membership: (id) => (gid ? membership.get(`${gid}:${id}`) || 'unknown' : 'unknown'),
++            joinedGroupAt: (id) => joins?.get(id) || 0
++        });
++    });
++    const summary = computed(() => lobbySummary(rows.value));
++
++    async function loadJoins(gid) {
++        if (!gid || joinsByGroup.has(gid)) return;
++        joinsByGroup.set(gid, new Map());
++        try {
++            const entries = await auditArchive.loadGroup(gid, 5000);
++            const map = new Map();
++            for (const e of entries) {
++                if (e.eventType === 'group.member.join' && e.actorId && (!map.has(e.actorId) || e.ts < map.get(e.actorId))) {
++                    map.set(e.actorId, e.ts);
++                }
++            }
++            joinsByGroup.set(gid, map);
++        } catch {
++            // No archive yet — "new member" just won't show.
++        }
++    }
++
++    async function checkMemberships() {
++        if (checking || !visible.value || !watchState.isLoggedIn) return;
++        const gid = groupId.value;
++        if (!gid) return;
++        checking = true;
++        try {
++            for (const row of rows.value) {
++                if (!visible.value || groupId.value !== gid) break;
++                const key = `${gid}:${row.userId}`;
++                if (membership.has(key)) continue;
++                try {
++                    const args = await groupRequest.getGroupMember({ groupId: gid, userId: row.userId });
++                    membership.set(key, args?.json ? 'member' : 'not-member');
++                } catch (error) {
++                    const status = error?.status || error?.statusCode;
++                    if (status === 404) membership.set(key, 'not-member');
++                    else if (status === 429) break;
++                }
++                await new Promise((r) => setTimeout(r, CHECK_GAP_MS));
++            }
++        } finally {
++            checking = false;
++        }
++    }
++
++    function markMember(userId, value) {
++        if (groupId.value) membership.set(`${groupId.value}:${userId}`, value);
++    }
++
++    function show() {
++        visible.value = true;
++        void notes.load();
++        void loadJoins(groupId.value);
++        void safety.batchLookup(rows.value.map((r) => r.userId)).catch(() => {});
++        void checkMemberships();
++        if (!clock) clock = setInterval(() => (now.value = Date.now()), 15000);
++    }
++
++    function hide() {
++        visible.value = false;
++        if (clock) clearInterval(clock);
++        clock = null;
++    }
++
++    watch(
++        () => [groupId.value, rows.value.map((r) => r.userId).join(',')],
++        () => {
++            if (!visible.value) return;
++            void loadJoins(groupId.value);
++            void checkMemberships();
++        }
++    );
++
++    return { rows, summary, groupId, visible, show, hide, markMember, checkMemberships };
++});
+diff --git a/src/views/UnderWeb/UnderWeb.vue b/src/views/UnderWeb/UnderWeb.vue
+index 630e7ad..c4022cc 100644
+--- a/src/views/UnderWeb/UnderWeb.vue
++++ b/src/views/UnderWeb/UnderWeb.vue
+@@ -167,6 +167,8 @@
+ 
+             <UwxEventMode v-show="activePanel === 'command'" />
+ 
++            <UwxLobbyBoard v-if="activePanel === 'command'" @report="prefillSafetyReport" />
++
+             <Card v-show="activePanel === 'invites'" class="uwx-card uwx-card-wide uwx-invite-card uwx-invite-kind-group">
+                 <CardHeader>
+                     <div class="flex items-start justify-between gap-4">
+@@ -1034,6 +1036,7 @@
+     import UwxGroupTools from './UwxGroupTools.vue';
+     import UwxOscLab from './UwxOscLab.vue';
+     import UwxEventMode from './UwxEventMode.vue';
++    import UwxLobbyBoard from './UwxLobbyBoard.vue';
+ 
+     import { UWX_VERSION } from '../../shared/constants/uwx';
+     import { UWX_RELEASES_PAGE } from '../../shared/utils/uwxRelease';
+diff --git a/src/views/UnderWeb/UwxLobbyBoard.vue b/src/views/UnderWeb/UwxLobbyBoard.vue
+new file mode 100644
+index 0000000..b26ad89
+--- /dev/null
++++ b/src/views/UnderWeb/UwxLobbyBoard.vue
+@@ -0,0 +1,266 @@
++<template>
++    <Card class="uwx-card uwx-card-wide uwx-lobby">
++        <CardHeader>
++            <div class="flex flex-wrap items-start justify-between gap-3">
++                <div>
++                    <CardTitle>Lobby</CardTitle>
++                    <CardDescription>
++                        Everyone in your instance right now.
++                        <template v-if="groupName">Group status is for <strong>{{ groupName }}</strong>.</template>
++                    </CardDescription>
++                </div>
++                <div class="uwx-lb-summary">
++                    <span><strong>{{ summary.total }}</strong> here</span>
++                    <span v-if="groupName"><strong>{{ summary.members }}</strong> in group</span>
++                    <span v-if="summary.notMembers" class="out"><strong>{{ summary.notMembers }}</strong> not in group</span>
++                    <span v-if="summary.newMembers" class="new"><strong>{{ summary.newMembers }}</strong> new</span>
++                    <span v-if="summary.staff" class="staff"><strong>{{ summary.staff }}</strong> staff</span>
++                    <span v-if="summary.labeled" class="bad"><strong>{{ summary.labeled }}</strong> labeled</span>
++                </div>
++            </div>
++        </CardHeader>
++        <CardContent>
++            <div class="uwx-lb-filters" role="tablist" aria-label="Filter lobby">
++                <button
++                    v-for="f in visibleFilters"
++                    :key="f.id"
++                    type="button"
++                    role="tab"
++                    :aria-selected="filter === f.id"
++                    :class="{ active: filter === f.id }"
++                    @click="filter = f.id">
++                    {{ f.label }}
++                </button>
++            </div>
++
++            <p v-if="!rows.length" class="text-sm text-muted-foreground mt-3">Nobody else is in your instance{{ inInstance ? '' : ' — you’re not in VRChat right now' }}.</p>
++            <p v-else-if="!shown.length" class="text-sm text-muted-foreground mt-3">Nobody here matches this filter.</p>
++
++            <div v-else class="uwx-lb-list">
++                <div v-for="row in shown" :key="row.userId" class="uwx-lb-row" :class="{ bad: row.intel, staff: row.staff }">
++                    <span class="uwx-lb-avatar" :class="{ friend: row.friend }">{{ initial(row.displayName) }}</span>
++                    <div class="min-w-0 flex-1">
++                        <button type="button" class="uwx-lb-name" @click="showUserDialog(row.userId)">{{ row.displayName }}</button>
++                        <div class="uwx-lb-chips">
++                            <span v-if="row.intel" class="chip bad"><i class="ri-alarm-warning-line" /> {{ labelSummary(row.intel) }}</span>
++                            <span v-for="role in row.roles.slice(0, 2)" :key="role" class="chip staff">{{ role }}</span>
++                            <span v-if="row.staff && !row.roles.length" class="chip staff">Staff</span>
++                            <span v-if="row.isNew" class="chip new">NEW · joined {{ daysAgo(row.joinedGroupAt) }}</span>
++                            <span v-if="row.membership === 'not-member'" class="chip out">Not in group</span>
++                            <span v-if="row.friend" class="chip">Friend</span>
++                            <span v-if="row.notes" class="chip note" :title="latestNote(row.userId)"><i class="ri-sticky-note-line" /> {{ row.notes }}</span>
++                        </div>
++                    </div>
++                    <span class="uwx-lb-time">{{ formatHere(row.hereMs) }}</span>
++                    <div class="uwx-lb-actions">
++                        <Button
++                            v-if="row.membership === 'not-member' && canRecruitHere && !row.intel"
++                            size="sm"
++                            :disabled="busyId === row.userId"
++                            @click="inviteToGroup(row)">
++                            <i class="ri-user-add-line" /> Invite to group
++                        </Button>
++                        <Button size="icon-sm" variant="ghost" title="Add a note" aria-label="Add a note" @click="addNote(row)"><i class="ri-sticky-note-add-line" /></Button>
++                        <Button size="icon-sm" variant="ghost" title="Report" aria-label="Report" @click="$emit('report', row.userId, row.displayName)"><i class="ri-flag-line" /></Button>
++                    </div>
++                </div>
++            </div>
++        </CardContent>
++    </Card>
++</template>
++
++<script setup>
++    import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
++    import { storeToRefs } from 'pinia';
++    import { toast } from 'vue-sonner';
++    import { Button } from '@/components/ui/button';
++    import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
++
++    import { showUserDialog } from '../../coordinators/userCoordinator';
++    import { filterLobby, formatHere, LOBBY_FILTERS } from '../../shared/utils/uwxLobby';
++    import { labelSummary } from '../../shared/utils/uwxSafety';
++    import { useGroupStore, useModalStore, useUnderWebStore } from '../../stores';
++    import { useUwxLobbyBoardStore } from '../../stores/uwxLobbyBoard';
++    import { useUwxMemberNotesStore } from '../../stores/uwxMemberNotes';
++
++    defineEmits(['report']);
++
++    const board = useUwxLobbyBoardStore();
++    const { rows, summary, groupId } = storeToRefs(board);
++    const underweb = useUnderWebStore();
++    const { canRecruitHere, currentParsedLocation } = storeToRefs(underweb);
++    const groupStore = useGroupStore();
++    const notes = useUwxMemberNotesStore();
++    const modalStore = useModalStore();
++
++    const filter = ref('all');
++    const busyId = ref('');
++
++    const groupName = computed(() => (groupId.value ? groupStore.currentUserGroups.get(groupId.value)?.name || 'this group' : ''));
++    const inInstance = computed(() => Boolean(currentParsedLocation.value?.isRealInstance));
++    const visibleFilters = computed(() =>
++        LOBBY_FILTERS.filter((f) => f.id === 'all' || (f.id === 'not-member' ? summary.value.notMembers : f.id === 'new' ? summary.value.newMembers : f.id === 'friends' ? summary.value.friends : f.id === 'staff' ? summary.value.staff : summary.value.labeled))
++    );
++    const shown = computed(() => filterLobby(rows.value, filter.value));
++
++    const initial = (name) => Array.from(String(name || '?').trim())[0]?.toUpperCase() || '?';
++    const latestNote = (id) => notes.forUser(id)[0]?.text || '';
++    const daysAgo = (ts) => {
++        const d = Math.floor((Date.now() - ts) / 86400000);
++        return d <= 0 ? 'today' : d === 1 ? 'yesterday' : `${d}d ago`;
++    };
++
++    async function inviteToGroup(row) {
++        busyId.value = row.userId;
++        try {
++            const result = await underweb.invitePlayerToGroup(row);
++            if (result === 'member') board.markMember(row.userId, 'member');
++        } finally {
++            busyId.value = '';
++        }
++    }
++
++    async function addNote(row) {
++        const { ok, value } = await modalStore.prompt({
++            title: `Note about ${row.displayName}`,
++            description: 'Private staff note, kept on this PC.',
++            confirmText: 'Save note'
++        });
++        if (ok && (await notes.add(row.userId, value))) toast.success('Note saved.');
++    }
++
++    onMounted(() => board.show());
++    onBeforeUnmount(() => board.hide());
++</script>
++
++<style scoped>
++    .uwx-lb-summary {
++        display: flex;
++        flex-wrap: wrap;
++        gap: 6px;
++    }
++    .uwx-lb-summary span {
++        font-size: 12px;
++        padding: 3px 10px;
++        border-radius: 999px;
++        border: 1px solid var(--border);
++        color: var(--muted-foreground);
++    }
++    .uwx-lb-summary strong {
++        color: var(--foreground);
++        font-variant-numeric: tabular-nums;
++    }
++    .uwx-lb-summary .out { border-color: rgb(79 179 255 / 40%); }
++    .uwx-lb-summary .new { border-color: rgb(61 245 20 / 45%); }
++    .uwx-lb-summary .staff { border-color: rgb(192 132 252 / 45%); }
++    .uwx-lb-summary .bad { border-color: rgb(255 107 107 / 55%); color: #ff8a8a; }
++    .uwx-lb-filters {
++        display: flex;
++        flex-wrap: wrap;
++        gap: 6px;
++    }
++    .uwx-lb-filters button {
++        font-size: 12px;
++        padding: 4px 12px;
++        border-radius: 999px;
++        border: 1px solid var(--border);
++        color: var(--muted-foreground);
++    }
++    .uwx-lb-filters button.active {
++        color: #3df514;
++        border-color: rgb(61 245 20 / 55%);
++        background: rgb(61 245 20 / 8%);
++    }
++    .uwx-lb-list {
++        display: flex;
++        flex-direction: column;
++        gap: 4px;
++        margin-top: 12px;
++        max-height: 32rem;
++        overflow-y: auto;
++    }
++    .uwx-lb-row {
++        display: flex;
++        align-items: center;
++        gap: 12px;
++        padding: 8px 10px;
++        border-radius: 10px;
++        border: 1px solid transparent;
++        background: rgb(255 255 255 / 2%);
++    }
++    .uwx-lb-row:hover {
++        border-color: var(--border);
++    }
++    .uwx-lb-row.bad {
++        border-color: rgb(255 107 107 / 40%);
++        background: rgb(255 107 107 / 6%);
++    }
++    .uwx-lb-avatar {
++        display: grid;
++        place-items: center;
++        flex: none;
++        width: 34px;
++        height: 34px;
++        border-radius: 999px;
++        font-weight: 800;
++        background: rgb(255 255 255 / 6%);
++        border: 1px solid var(--border);
++    }
++    .uwx-lb-avatar.friend {
++        border-color: rgb(79 179 255 / 55%);
++        color: #4fb3ff;
++    }
++    .uwx-lb-row.staff .uwx-lb-avatar {
++        border-color: rgb(192 132 252 / 60%);
++        color: #c084fc;
++    }
++    .uwx-lb-row.bad .uwx-lb-avatar {
++        border-color: rgb(255 107 107 / 70%);
++        color: #ff6b6b;
++    }
++    .uwx-lb-name {
++        font-weight: 700;
++        text-align: left;
++        overflow: hidden;
++        text-overflow: ellipsis;
++        white-space: nowrap;
++        max-width: 100%;
++    }
++    .uwx-lb-name:hover {
++        text-decoration: underline;
++    }
++    .uwx-lb-chips {
++        display: flex;
++        flex-wrap: wrap;
++        gap: 4px;
++        margin-top: 2px;
++    }
++    .chip {
++        font-size: 10.5px;
++        padding: 0 8px;
++        border-radius: 999px;
++        border: 1px solid var(--border);
++        color: var(--muted-foreground);
++        white-space: nowrap;
++    }
++    .chip.bad { color: #ff8a8a; border-color: rgb(255 107 107 / 50%); font-weight: 700; }
++    .chip.staff { color: #c084fc; border-color: rgb(192 132 252 / 45%); }
++    .chip.new { color: #3df514; border-color: rgb(61 245 20 / 45%); font-weight: 700; }
++    .chip.out { color: #4fb3ff; border-color: rgb(79 179 255 / 45%); }
++    .chip.note { color: #ffb84d; border-color: rgb(255 184 77 / 40%); }
++    .uwx-lb-time {
++        font-size: 12px;
++        color: var(--muted-foreground);
++        font-variant-numeric: tabular-nums;
++        white-space: nowrap;
++    }
++    .uwx-lb-actions {
++        display: flex;
++        align-items: center;
++        gap: 2px;
++    }
++    @media (max-width: 700px) {
++        .uwx-lb-row { flex-wrap: wrap; }
++        .uwx-lb-actions { width: 100%; justify-content: flex-end; }
++    }
++</style>
