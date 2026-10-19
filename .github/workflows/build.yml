@@ -743,6 +743,23 @@ jobs:
           if (-not (Get-Content "src\stores\underweb.js" -Raw).Contains("stopAllInvites")) { throw "RC22: stop-all switch missing." }
           Write-Host "RC22 applied: UWX $version"
 
+      - name: Apply RC23 photos to Discord
+        shell: pwsh
+        working-directory: ${{ env.UWX_SOURCE }}
+        run: |
+          $patchFile = Join-Path $env:GITHUB_WORKSPACE "features\core\rc23-photos-discord.patch"
+          if (-not (Test-Path $patchFile)) { throw "RC23 patch not found." }
+          $patchText = [System.IO.File]::ReadAllText($patchFile).Replace("`r`n", "`n")
+          [System.IO.File]::WriteAllText($patchFile, $patchText, [System.Text.UTF8Encoding]::new($false))
+          git apply --check --verbose $patchFile
+          if ($LASTEXITCODE -ne 0) { throw "RC23 patch check failed." }
+          git apply --whitespace=nowarn $patchFile
+          if ($LASTEXITCODE -ne 0) { throw "RC23 patch failed." }
+          $version = (Get-Content "UWX_VERSION" -Raw).Trim()
+          if ($version -ne "0.6.4-rc23") { throw "RC23 version mismatch: $version" }
+          if (-not (Get-Content "src\stores\uwxShare.js" -Raw).Contains("setShareToDiscord")) { throw "RC23: Discord opt-in missing." }
+          Write-Host "RC23 applied: UWX $version"
+
       - name: Install dependencies and run UWX unit tests
         shell: pwsh
         working-directory: ${{ env.UWX_SOURCE }}

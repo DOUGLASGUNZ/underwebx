@@ -1,0 +1,253 @@
+diff --git a/CHANGELOG_UWX.md b/CHANGELOG_UWX.md
+index 6000ab2..e93617f 100644
+--- a/CHANGELOG_UWX.md
++++ b/CHANGELOG_UWX.md
+@@ -1,5 +1,10 @@
+ # UnderWeb X changelog
+ 
++## 0.6.4-rc23 — Photos to Discord
++
++- **Also share to the UnderWeb Discord** (Command → Post to your showcase): tick it and, once staff approve the photo, it's posted to the UnderWeb Discord with your title, caption and name. Off by default; UWX remembers your choice. Nothing unreviewed ever reaches Discord.
++- If the UnderWeb server isn't set up for Discord sharing yet, the photo still goes to your showcase and UWX tells you Discord wasn't included.
++
+ ## 0.6.3-rc22 — Invite safety, clearer invites, more themes
+ 
+ - **No more accidental spam.** Turning on automatic friend or group invites now asks first and tells you exactly who it would hit right away, how many, which message, and how often. "All online friends" gets a red warning. "Invite now" for 3+ people, "Invite N to group", invite setups with the send button, and Event Mode presets that switch invites on all ask first too.
+diff --git a/UWX_VERSION b/UWX_VERSION
+index e35100d..d96f7e0 100644
+--- a/UWX_VERSION
++++ b/UWX_VERSION
+@@ -1 +1 @@
+-0.6.3-rc22
++0.6.4-rc23
+diff --git a/src/shared/constants/uwx.js b/src/shared/constants/uwx.js
+index 934ba9c..fe91505 100644
+--- a/src/shared/constants/uwx.js
++++ b/src/shared/constants/uwx.js
+@@ -1,2 +1,2 @@
+-export const UWX_VERSION = '0.6.3-rc22';
++export const UWX_VERSION = '0.6.4-rc23';
+ export const UWX_MANIFEST_URL = 'https://underweb.cloud/api/uwx/manifest';
+diff --git a/src/shared/utils/uwxShare.js b/src/shared/utils/uwxShare.js
+index 34942bb..41b4e30 100644
+--- a/src/shared/utils/uwxShare.js
++++ b/src/shared/utils/uwxShare.js
+@@ -47,9 +47,13 @@ export function showcasePath(userId, now = Date.now(), rand = Math.random().toSt
+     return `${userId}/${now}-${String(rand).replace(/[^a-z0-9]/gi, '').slice(0, 16) || 'photo'}.jpg`;
+ }
+ 
+-/** The pending row the website's review queue expects. */
+-export function showcaseRow(userId, path, { title, caption }) {
+-    return {
++/**
++ * The pending row the website's review queue expects.
++ * share_to_discord is only sent when ticked, so posting still works on a server
++ * that doesn't have the column yet.
++ */
++export function showcaseRow(userId, path, { title, caption }, { shareToDiscord = false } = {}) {
++    const row = {
+         user_id: userId,
+         media_url: `pending://${path}`,
+         storage_path: path,
+@@ -60,6 +64,13 @@ export function showcaseRow(userId, path, { title, caption }) {
+         sort_order: 0,
+         moderation_status: 'pending'
+     };
++    if (shareToDiscord) row.share_to_discord = true;
++    return row;
++}
++
++/** True when the server rejected the row because it doesn't know share_to_discord yet. */
++export function missingDiscordColumn(error) {
++    return /share_to_discord/i.test(String(error?.message || ''));
+ }
+ 
+ /** Friendly text for what UnderWeb's server said no to. */
+diff --git a/src/stores/__tests__/uwxShare.test.js b/src/stores/__tests__/uwxShare.test.js
+index d3f7f5f..ded3d66 100644
+--- a/src/stores/__tests__/uwxShare.test.js
++++ b/src/stores/__tests__/uwxShare.test.js
+@@ -111,3 +111,52 @@ describe('UWX share store', () => {
+         expect(store.selectedPath).toBe('C:\\a.png');
+     });
+ });
++
++describe('UWX share → Discord opt-in', () => {
++    beforeEach(() => {
++        setActivePinia(createPinia());
++        for (const k of Object.keys(config)) delete config[k];
++        account.signedIn = true;
++        account.storageUpload.mockClear();
++        account.storageRemove.mockClear();
++        account.api.mockReset();
++        account.api.mockImplementation(async () => null);
++        toast.success.mockClear();
++        toast.info.mockClear();
++    });
++
++    test('off by default: the row never asks for Discord', async () => {
++        const store = useUwxShareStore();
++        await store.init();
++        await store.selectLatest();
++        await store.post();
++        const row = JSON.parse(account.api.mock.calls[0][1].body);
++        expect('share_to_discord' in row).toBe(false);
++    });
++
++    test('ticked: the row asks for Discord after approval, and the choice is remembered', async () => {
++        const store = useUwxShareStore();
++        await store.init();
++        await store.setShareToDiscord(true);
++        await store.selectLatest();
++        await store.post();
++        expect(JSON.parse(account.api.mock.calls[0][1].body)).toMatchObject({ share_to_discord: true, moderation_status: 'pending' });
++        expect(toast.success.mock.calls.at(-1)[0]).toMatch(/UnderWeb Discord/);
++        expect(JSON.parse(config.UWX_share).shareToDiscord).toBe(true);
++    });
++
++    test('server not updated yet: still posts to the showcase and says Discord is not on', async () => {
++        account.api.mockImplementationOnce(async () => {
++            throw Object.assign(new Error("Could not find the 'share_to_discord' column of 'creator_showcase' in the schema cache"), { status: 400 });
++        });
++        const store = useUwxShareStore();
++        await store.init();
++        await store.setShareToDiscord(true);
++        await store.selectLatest();
++        expect(await store.post()).toBe(true);
++        expect(account.api).toHaveBeenCalledTimes(2);
++        expect('share_to_discord' in JSON.parse(account.api.mock.calls[1][1].body)).toBe(false);
++        expect(toast.info.mock.calls.at(-1)[0]).toMatch(/isn’t switched on/);
++        expect(account.storageRemove).not.toHaveBeenCalled();
++    });
++});
+diff --git a/src/stores/uwxShare.js b/src/stores/uwxShare.js
+index 5211512..cc5b048 100644
+--- a/src/stores/uwxShare.js
++++ b/src/stores/uwxShare.js
+@@ -4,7 +4,7 @@ import { toast } from 'vue-sonner';
+ 
+ import configRepository from '../services/config';
+ import { encodePhoto } from '../services/uwxPhotoEncode';
+-import { postError, SHOWCASE_BUCKET, showcasePath, showcaseRow, suggestTitle, validatePost } from '../shared/utils/uwxShare';
++import { missingDiscordColumn, postError, SHOWCASE_BUCKET, showcasePath, showcaseRow, suggestTitle, validatePost } from '../shared/utils/uwxShare';
+ import { useUwxAccountStore } from './uwxAccount';
+ 
+ // Post VRChat photos to your UnderWeb showcase. Same flow as the website: the photo goes
+@@ -18,7 +18,7 @@ const isLinux = () => typeof LINUX !== 'undefined' && Boolean(LINUX);
+ export const useUwxShareStore = defineStore('UwxShare', () => {
+     const account = useUwxAccountStore();
+ 
+-    const prefs = ref({ offerAfterScreenshot: false });
++    const prefs = ref({ offerAfterScreenshot: false, shareToDiscord: false });
+     const recent = ref([]); // [{ at, title }]
+     const selectedPath = ref('');
+     // shallowRef + markRaw: the Blob must reach fetch() as a real Blob, not a Vue proxy.
+@@ -34,10 +34,10 @@ export const useUwxShareStore = defineStore('UwxShare', () => {
+     async function init() {
+         try {
+             const raw = JSON.parse((await configRepository.getString(KEY, '')) || '{}');
+-            prefs.value = { offerAfterScreenshot: Boolean(raw.offerAfterScreenshot) };
++            prefs.value = { offerAfterScreenshot: Boolean(raw.offerAfterScreenshot), shareToDiscord: Boolean(raw.shareToDiscord) };
+             recent.value = Array.isArray(raw.recent) ? raw.recent.slice(0, MAX_RECENT) : [];
+         } catch {
+-            prefs.value = { offerAfterScreenshot: false };
++            prefs.value = { offerAfterScreenshot: false, shareToDiscord: false };
+         }
+     }
+ 
+@@ -45,6 +45,12 @@ export const useUwxShareStore = defineStore('UwxShare', () => {
+         await configRepository.setString(KEY, JSON.stringify({ ...prefs.value, recent: recent.value }));
+     }
+ 
++    /** "Also share to the UnderWeb Discord" — remembered as your default for next time. */
++    async function setShareToDiscord(value) {
++        prefs.value = { ...prefs.value, shareToDiscord: Boolean(value) };
++        await save();
++    }
++
+     async function setOfferAfterScreenshot(value) {
+         prefs.value = { ...prefs.value, offerAfterScreenshot: Boolean(value) };
+         await save();
+@@ -120,14 +126,21 @@ export const useUwxShareStore = defineStore('UwxShare', () => {
+             path = showcasePath(account.userId);
+             await account.storageUpload(SHOWCASE_BUCKET, path, photo.value.blob, 'image/jpeg');
+             uploaded = true;
+-            await account.api('creator_showcase', {
+-                method: 'POST',
+-                headers: { Prefer: 'return=minimal' },
+-                body: JSON.stringify(showcaseRow(account.userId, path, checked))
+-            });
+-            recent.value = [{ at: Date.now(), title: checked.title }, ...recent.value].slice(0, MAX_RECENT);
++            const insert = (row) => account.api('creator_showcase', { method: 'POST', headers: { Prefer: 'return=minimal' }, body: JSON.stringify(row) });
++            const wantsDiscord = prefs.value.shareToDiscord;
++            let discordQueued = wantsDiscord;
++            try {
++                await insert(showcaseRow(account.userId, path, checked, { shareToDiscord: wantsDiscord }));
++            } catch (e) {
++                // Server not updated for Discord sharing yet: still post to the showcase.
++                if (!wantsDiscord || !missingDiscordColumn(e)) throw e;
++                await insert(showcaseRow(account.userId, path, checked));
++                discordQueued = false;
++                toast.info('Discord sharing isn’t switched on on the UnderWeb server yet — posted to your showcase only.');
++            }
++            recent.value = [{ at: Date.now(), title: checked.title, discord: discordQueued }, ...recent.value].slice(0, MAX_RECENT);
+             await save();
+-            toast.success('Sent to your showcase — it appears once staff approve it.');
++            toast.success(discordQueued ? 'Sent for review — once staff approve it, it goes on your showcase and the UnderWeb Discord.' : 'Sent to your showcase — it appears once staff approve it.');
+             clear();
+             return true;
+         } catch (e) {
+@@ -173,6 +186,7 @@ export const useUwxShareStore = defineStore('UwxShare', () => {
+         focusTick,
+         init,
+         setOfferAfterScreenshot,
++        setShareToDiscord,
+         select,
+         selectLatest,
+         selectFromFile,
+diff --git a/src/views/UnderWeb/UwxShareCard.vue b/src/views/UnderWeb/UwxShareCard.vue
+index 2536a10..e99dc26 100644
+--- a/src/views/UnderWeb/UwxShareCard.vue
++++ b/src/views/UnderWeb/UwxShareCard.vue
+@@ -20,6 +20,10 @@
+                 <div class="space-y-2 min-w-0">
+                     <Input v-model="title" maxlength="80" placeholder="Title" aria-label="Title" />
+                     <textarea v-model="caption" maxlength="500" rows="3" placeholder="Caption (optional)" aria-label="Caption" class="uwx-share-caption" />
++                    <label class="uwx-share-discord">
++                        <input type="checkbox" :checked="prefs.shareToDiscord" @change="(e) => setShareToDiscord(e.target.checked)" />
++                        <span><i class="ri-discord-line" /> Also share to the UnderWeb Discord <small>(after staff approve it)</small></span>
++                    </label>
+                     <p class="uwx-help"><i class="ri-shield-check-line" /> Only the picture is sent — the world, instance and player list VRCX saves inside the file are left out.</p>
+                     <div class="flex flex-wrap gap-2">
+                         <Button type="submit" :disabled="posting || !signedIn || !title.trim()"><i class="ri-upload-2-line" /> {{ posting ? 'Posting…' : 'Post for review' }}</Button>
+@@ -51,7 +55,7 @@
+ 
+     const store = useUwxShareStore();
+     const { photo, title, caption, loadingPhoto, posting, error, prefs, recent } = storeToRefs(store);
+-    const { selectLatest, selectFromFile, post, clear, setOfferAfterScreenshot } = store;
++    const { selectLatest, selectFromFile, post, clear, setOfferAfterScreenshot, setShareToDiscord } = store;
+     const { signedIn } = storeToRefs(useUwxAccountStore());
+ 
+     function ago(at) {
+@@ -108,6 +112,21 @@
+         color: #ff8a8a;
+         border-color: rgb(255 107 107 / 45%);
+     }
++    .uwx-share-discord {
++        display: flex;
++        align-items: center;
++        gap: 8px;
++        font-size: 13px;
++        cursor: pointer;
++    }
++    .uwx-share-discord input {
++        width: 16px;
++        height: 16px;
++        accent-color: var(--uwx-accent);
++    }
++    .uwx-share-discord small {
++        color: var(--muted-foreground);
++    }
+     .uwx-help {
+         font-size: 12px;
+         color: var(--muted-foreground);
