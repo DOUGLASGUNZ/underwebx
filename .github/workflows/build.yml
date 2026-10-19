@@ -708,11 +708,11 @@ jobs:
           if (-not (Get-Content "src\services\uwxPhotoEncode.js" -Raw).Contains("canvas")) { throw "RC20: photos are not re-encoded before upload." }
           Write-Host "RC20 applied: UWX $version"
 
-      - name: Apply RC21 invite safety
+      - name: Apply RC21 permanent ROOT ACCESS list
         shell: pwsh
         working-directory: ${{ env.UWX_SOURCE }}
         run: |
-          $patchFile = Join-Path $env:GITHUB_WORKSPACE "features\core\rc21-invite-safety.patch"
+          $patchFile = Join-Path $env:GITHUB_WORKSPACE "features\core\rc21-root-access.patch"
           if (-not (Test-Path $patchFile)) { throw "RC21 patch not found." }
           $patchText = [System.IO.File]::ReadAllText($patchFile).Replace("`r`n", "`n")
           [System.IO.File]::WriteAllText($patchFile, $patchText, [System.Text.UTF8Encoding]::new($false))
@@ -722,9 +722,26 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "RC21 patch failed." }
           $version = (Get-Content "UWX_VERSION" -Raw).Trim()
           if ($version -ne "0.6.2-rc21") { throw "RC21 version mismatch: $version" }
-          if (-not (Get-Content "src\views\UnderWeb\UnderWeb.vue" -Raw).Contains("guard.setFriendAuto")) { throw "RC21: friend auto-invite switch is not guarded." }
-          if (-not (Get-Content "src\stores\underweb.js" -Raw).Contains("stopAllInvites")) { throw "RC21: stop-all switch missing." }
+          if (-not (Get-Content "src\coordinators\gameLogCoordinator.js" -Raw).Contains("reportRootAccess")) { throw "RC21: root reports are not hooked up." }
           Write-Host "RC21 applied: UWX $version"
+
+      - name: Apply RC22 invite safety
+        shell: pwsh
+        working-directory: ${{ env.UWX_SOURCE }}
+        run: |
+          $patchFile = Join-Path $env:GITHUB_WORKSPACE "features\core\rc22-invite-safety.patch"
+          if (-not (Test-Path $patchFile)) { throw "RC22 patch not found." }
+          $patchText = [System.IO.File]::ReadAllText($patchFile).Replace("`r`n", "`n")
+          [System.IO.File]::WriteAllText($patchFile, $patchText, [System.Text.UTF8Encoding]::new($false))
+          git apply --check --verbose $patchFile
+          if ($LASTEXITCODE -ne 0) { throw "RC22 patch check failed." }
+          git apply --whitespace=nowarn $patchFile
+          if ($LASTEXITCODE -ne 0) { throw "RC22 patch failed." }
+          $version = (Get-Content "UWX_VERSION" -Raw).Trim()
+          if ($version -ne "0.6.3-rc22") { throw "RC22 version mismatch: $version" }
+          if (-not (Get-Content "src\views\UnderWeb\UnderWeb.vue" -Raw).Contains("guard.setFriendAuto")) { throw "RC22: friend auto-invite switch is not guarded." }
+          if (-not (Get-Content "src\stores\underweb.js" -Raw).Contains("stopAllInvites")) { throw "RC22: stop-all switch missing." }
+          Write-Host "RC22 applied: UWX $version"
 
       - name: Install dependencies and run UWX unit tests
         shell: pwsh
@@ -732,7 +749,7 @@ jobs:
         run: |
           npm ci
           if ($LASTEXITCODE -ne 0) { throw "npm ci failed." }
-          npx vitest run src/stores/__tests__/uwxInviter.test.js src/stores/__tests__/uwxGroupTools.test.js src/shared/utils/__tests__/uwxOsc.test.js src/shared/utils/__tests__/uwxAudit.test.js src/stores/__tests__/uwxGroupAudit.test.js src/shared/utils/__tests__/uwxRelease.test.js src/stores/__tests__/vrcxUpdater.test.js src/shared/utils/__tests__/uwxEvent.test.js src/stores/__tests__/uwxEventMode.test.js src/stores/__tests__/uwxLobbyGuard.test.js src/stores/__tests__/uwxAccountLabels.test.js src/shared/utils/__tests__/uwxStaffInsights.test.js src/stores/__tests__/uwxDiscordAlerts.test.js src/stores/__tests__/uwxInvitePresets.test.js src/shared/utils/__tests__/uwxLobby.test.js src/stores/__tests__/uwxAccess.test.js src/shared/utils/__tests__/uwxTheme.test.js src/shared/utils/__tests__/uwxCrew.test.js src/stores/__tests__/uwxCrew.test.js src/shared/utils/__tests__/uwxShare.test.js src/stores/__tests__/uwxShare.test.js src/shared/utils/__tests__/uwxInviteSafety.test.js
+          npx vitest run src/stores/__tests__/uwxInviter.test.js src/stores/__tests__/uwxGroupTools.test.js src/shared/utils/__tests__/uwxOsc.test.js src/shared/utils/__tests__/uwxAudit.test.js src/stores/__tests__/uwxGroupAudit.test.js src/shared/utils/__tests__/uwxRelease.test.js src/stores/__tests__/vrcxUpdater.test.js src/shared/utils/__tests__/uwxEvent.test.js src/stores/__tests__/uwxEventMode.test.js src/stores/__tests__/uwxLobbyGuard.test.js src/stores/__tests__/uwxAccountLabels.test.js src/shared/utils/__tests__/uwxStaffInsights.test.js src/stores/__tests__/uwxDiscordAlerts.test.js src/stores/__tests__/uwxInvitePresets.test.js src/shared/utils/__tests__/uwxLobby.test.js src/stores/__tests__/uwxAccess.test.js src/shared/utils/__tests__/uwxTheme.test.js src/shared/utils/__tests__/uwxCrew.test.js src/stores/__tests__/uwxCrew.test.js src/shared/utils/__tests__/uwxShare.test.js src/stores/__tests__/uwxShare.test.js src/shared/utils/__tests__/uwxInviteSafety.test.js src/shared/utils/__tests__/uwxRoot.test.js
           if ($LASTEXITCODE -ne 0) { throw "UWX unit tests failed." }
 
       - name: Build UnderWeb X

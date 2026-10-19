@@ -1,11 +1,11 @@
 diff --git a/CHANGELOG_UWX.md b/CHANGELOG_UWX.md
-index 54794b6..16ee7c9 100644
+index 56e6caa..6000ab2 100644
 --- a/CHANGELOG_UWX.md
 +++ b/CHANGELOG_UWX.md
 @@ -1,5 +1,15 @@
  # UnderWeb X changelog
  
-+## 0.6.2-rc21 — Invite safety, clearer invites, more themes
++## 0.6.3-rc22 — Invite safety, clearer invites, more themes
 +
 +- **No more accidental spam.** Turning on automatic friend or group invites now asks first and tells you exactly who it would hit right away, how many, which message, and how often. "All online friends" gets a red warning. "Invite now" for 3+ people, "Invite N to group", invite setups with the send button, and Event Mode presets that switch invites on all ask first too.
 +- **A pop-up for every invite** (friend and group), plus one live counter per batch ("Friend invites: 3 of 10 sent") with a **Stop** button. You can turn the per-invite pop-ups off on the Invites tab.
@@ -15,23 +15,23 @@ index 54794b6..16ee7c9 100644
 +- **6 new client themes**: Ember, Abyss, Synthwave, Toxic, Cobalt, Bone.
 +- **5 new chatbox themes**: Terminal, Cinema, Retro, Soft, Glitch — all with "Now showing" layouts.
 +
- ## 0.6.1-rc20 — Now showing, your crew, photos to the showcase
+ ## 0.6.2-rc21 — Permanent ROOT ACCESS list
  
- - **Now showing** (OSC Lab → new chatbox module): what the world's video player is playing, e.g. "🍿 Now showing: Static Hearts". Tokens for title, who queued it (off by default), time, length, time left and a progress bar. Read from VRChat's log — links are never put in the chatbox, only a title (or "a YouTube video" if VRCX has no YouTube API key). Hides itself when you leave the instance. Every chatbox theme has a matching layout.
+ - When the UnderWeb hub tells VRChat's log that someone in your instance has ROOT ACCESS (they finished CLEARANCE), UWX passes their display name to underweb.cloud so they stay on THE CORE board for good, not just while they're in the instance.
 diff --git a/UWX_VERSION b/UWX_VERSION
-index 4e33e61..3f56aa4 100644
+index 3f56aa4..e35100d 100644
 --- a/UWX_VERSION
 +++ b/UWX_VERSION
 @@ -1 +1 @@
--0.6.1-rc20
-+0.6.2-rc21
+-0.6.2-rc21
++0.6.3-rc22
 diff --git a/src/shared/constants/uwx.js b/src/shared/constants/uwx.js
-index e54fe8d..f3d3653 100644
+index f3d3653..934ba9c 100644
 --- a/src/shared/constants/uwx.js
 +++ b/src/shared/constants/uwx.js
 @@ -1,2 +1,2 @@
--export const UWX_VERSION = '0.6.1-rc20';
-+export const UWX_VERSION = '0.6.2-rc21';
+-export const UWX_VERSION = '0.6.2-rc21';
++export const UWX_VERSION = '0.6.3-rc22';
  export const UWX_MANIFEST_URL = 'https://underweb.cloud/api/uwx/manifest';
 diff --git a/src/shared/utils/__tests__/uwxInviteSafety.test.js b/src/shared/utils/__tests__/uwxInviteSafety.test.js
 new file mode 100644
