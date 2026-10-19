@@ -1,0 +1,147 @@
+diff --git a/CHANGELOG_UWX.md b/CHANGELOG_UWX.md
+index 54794b6..56e6caa 100644
+--- a/CHANGELOG_UWX.md
++++ b/CHANGELOG_UWX.md
+@@ -1,5 +1,10 @@
+ # UnderWeb X changelog
+ 
++## 0.6.2-rc21 — Permanent ROOT ACCESS list
++
++- When the UnderWeb hub tells VRChat's log that someone in your instance has ROOT ACCESS (they finished CLEARANCE), UWX passes their display name to underweb.cloud so they stay on THE CORE board for good, not just while they're in the instance.
++- Only the name and the world's check code are sent: no instance, world, lobby or anything about you. The server only accepts codes the hub world made, and each name is sent once per session.
++
+ ## 0.6.1-rc20 — Now showing, your crew, photos to the showcase
+ 
+ - **Now showing** (OSC Lab → new chatbox module): what the world's video player is playing, e.g. "🍿 Now showing: Static Hearts". Tokens for title, who queued it (off by default), time, length, time left and a progress bar. Read from VRChat's log — links are never put in the chatbox, only a title (or "a YouTube video" if VRCX has no YouTube API key). Hides itself when you leave the instance. Every chatbox theme has a matching layout.
+diff --git a/UWX_VERSION b/UWX_VERSION
+index 4e33e61..3f56aa4 100644
+--- a/UWX_VERSION
++++ b/UWX_VERSION
+@@ -1 +1 @@
+-0.6.1-rc20
++0.6.2-rc21
+diff --git a/src/coordinators/gameLogCoordinator.js b/src/coordinators/gameLogCoordinator.js
+index 836d4da..c6374ca 100644
+--- a/src/coordinators/gameLogCoordinator.js
++++ b/src/coordinators/gameLogCoordinator.js
+@@ -19,6 +19,7 @@ import { getGroupName } from '../shared/utils';
+ import { userRequest } from '../api';
+ import { watchState } from '../services/watchState';
+ import { toast } from 'vue-sonner';
++import { reportRootAccess } from '../shared/utils/uwxRoot';
+ 
+ import { useAdvancedSettingsStore } from '../stores/settings/advanced';
+ import { useFriendStore } from '../stores/friend';
+@@ -338,6 +339,9 @@ export function addGameLogEntry(gameLog, location) {
+                 gameLogStore.addGameLogLSMedia(gameLog, location);
+             } else if (type === 'VideoPlay(PopcornPalace)') {
+                 gameLogStore.addGameLogPopcornPalace(gameLog, location);
++            } else if (type === 'UWRoot') {
++                // UnderWeb hub: someone here has ROOT ACCESS -> the permanent list on underweb.cloud
++                reportRootAccess(gameLog.data);
+             }
+             break;
+         case 'photon-id':
+diff --git a/src/shared/constants/uwx.js b/src/shared/constants/uwx.js
+index e54fe8d..f3d3653 100644
+--- a/src/shared/constants/uwx.js
++++ b/src/shared/constants/uwx.js
+@@ -1,2 +1,2 @@
+-export const UWX_VERSION = '0.6.1-rc20';
++export const UWX_VERSION = '0.6.2-rc21';
+ export const UWX_MANIFEST_URL = 'https://underweb.cloud/api/uwx/manifest';
+diff --git a/src/shared/utils/__tests__/uwxRoot.test.js b/src/shared/utils/__tests__/uwxRoot.test.js
+new file mode 100644
+index 0000000..99e4432
+--- /dev/null
++++ b/src/shared/utils/__tests__/uwxRoot.test.js
+@@ -0,0 +1,37 @@
++import { describe, expect, test, vi } from 'vitest';
++
++import { createRootReporter, parseRootLine } from '../uwxRoot';
++
++describe('UWX root access reports', () => {
++    test('parses the world line, names with spaces and Cyrillic letters included', () => {
++        expect(parseRootLine('UWRoot Dаrko\t915006-329339')).toEqual({ name: 'Dаrko', code: '915006-329339' });
++        expect(parseRootLine('UWRoot Some Body Here\t000001-999978\r\n')).toEqual({ name: 'Some Body Here', code: '000001-999978' });
++    });
++
++    test('ignores anything else', () => {
++        expect(parseRootLine('VideoPlay(PyPyDance) "x"')).toBeNull();
++        expect(parseRootLine('UWRoot NoCode')).toBeNull();
++        expect(parseRootLine('UWRoot Name\tabc')).toBeNull();
++        expect(parseRootLine('UWRoot \t123456-123456')).toBeNull();
++        expect(parseRootLine('UWRoot ' + 'x'.repeat(65) + '\t123456-123456')).toBeNull();
++        expect(parseRootLine(undefined)).toBeNull();
++    });
++
++    test('sends only name + code, once per name', async () => {
++        const fetchImpl = vi.fn(async () => ({ ok: true }));
++        const report = createRootReporter({ fetchImpl, url: 'https://example.test/report' });
++        expect(await report('UWRoot Vex\t123456-654321')).toBe(true);
++        expect(await report('UWRoot Vex\t123456-654321')).toBe(false);
++        expect(fetchImpl).toHaveBeenCalledTimes(1);
++        const [url, init] = fetchImpl.mock.calls[0];
++        expect(url).toBe('https://example.test/report');
++        expect(JSON.parse(init.body)).toEqual({ name: 'Vex', code: '123456-654321' });
++    });
++
++    test('retries a name after a network failure', async () => {
++        const fetchImpl = vi.fn().mockRejectedValueOnce(new Error('offline')).mockResolvedValue({ ok: true });
++        const report = createRootReporter({ fetchImpl });
++        expect(await report('UWRoot Vex\t123456-654321')).toBe(false);
++        expect(await report('UWRoot Vex\t123456-654321')).toBe(true);
++    });
++});
+diff --git a/src/shared/utils/uwxRoot.js b/src/shared/utils/uwxRoot.js
+new file mode 100644
+index 0000000..983b9ca
+--- /dev/null
++++ b/src/shared/utils/uwxRoot.js
+@@ -0,0 +1,46 @@
++// UnderWeb hub world: the permanent ROOT ACCESS list on THE CORE board.
++//
++// When someone in your instance has finished CLEARANCE, the hub world writes
++//   [VRCX] UWRoot <their display name><TAB><code>
++// to VRChat's log. UWX passes that name + code to underweb.cloud, which checks the
++// code (only the world can make it) and adds the name to the list. Nothing else is
++// sent: no instance, no world, no other players, and nothing about you.
++
++export const ROOT_REPORT_URL = 'https://pxipclkptxpqukefwexh.supabase.co/functions/v1/hub-root/report';
++
++/** "UWRoot Name With Spaces\t123456-654321" -> { name, code }, or null if it isn't one. */
++export function parseRootLine(data) {
++    const text = String(data ?? '');
++    if (!text.startsWith('UWRoot ')) return null;
++    const rest = text.slice(7).replace(/[\r\n]+$/, '');
++    const tab = rest.lastIndexOf('\t');
++    if (tab <= 0) return null;
++    const name = rest.slice(0, tab);
++    const code = rest.slice(tab + 1).trim();
++    if (!name || name.length > 64 || /[\t\r\n]/.test(name)) return null;
++    if (!/^\d{6}-\d{6}$/.test(code)) return null;
++    return { name, code };
++}
++
++/** One report per name per UWX session (the server ignores repeats anyway). */
++export function createRootReporter({ fetchImpl = (...a) => fetch(...a), url = ROOT_REPORT_URL } = {}) {
++    const sent = new Set();
++    return async function report(data) {
++        const entry = parseRootLine(data);
++        if (!entry || sent.has(entry.name)) return false;
++        sent.add(entry.name);
++        try {
++            const res = await fetchImpl(url, {
++                method: 'POST',
++                headers: { 'Content-Type': 'application/json' },
++                body: JSON.stringify(entry)
++            });
++            return !!res?.ok;
++        } catch {
++            sent.delete(entry.name); // offline: try again the next time the world logs it
++            return false;
++        }
++    };
++}
++
++export const reportRootAccess = createRootReporter();
