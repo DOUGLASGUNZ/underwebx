@@ -1,0 +1,1124 @@
+diff --git a/CHANGELOG_UWX.md b/CHANGELOG_UWX.md
+index 54794b6..16ee7c9 100644
+--- a/CHANGELOG_UWX.md
++++ b/CHANGELOG_UWX.md
+@@ -1,5 +1,15 @@
+ # UnderWeb X changelog
+ 
++## 0.6.2-rc21 — Invite safety, clearer invites, more themes
++
++- **No more accidental spam.** Turning on automatic friend or group invites now asks first and tells you exactly who it would hit right away, how many, which message, and how often. "All online friends" gets a red warning. "Invite now" for 3+ people, "Invite N to group", invite setups with the send button, and Event Mode presets that switch invites on all ask first too.
++- **A pop-up for every invite** (friend and group), plus one live counter per batch ("Friend invites: 3 of 10 sent") with a **Stop** button. You can turn the per-invite pop-ups off on the Invites tab.
++- **Stop all invites**: one red button (Command and Invites) turns both automatic invites off and stops anything sending mid-batch.
++- **Safety cap**: automatic friend invites send at most 8 per pass (every 15 seconds), never a whole friends list at once.
++- **Clearer invite cards**: "Group invites — ask people in this lobby to join your group" vs "Friend invites — ask friends to come to you", a big AUTO ON / AUTO OFF switch, and a plain-English line saying what's happening right now (e.g. "On — inviting favorite friends (5 online) to you, each at most once per 30 min. Next: Vex and Kai.").
++- **6 new client themes**: Ember, Abyss, Synthwave, Toxic, Cobalt, Bone.
++- **5 new chatbox themes**: Terminal, Cinema, Retro, Soft, Glitch — all with "Now showing" layouts.
++
+ ## 0.6.1-rc20 — Now showing, your crew, photos to the showcase
+ 
+ - **Now showing** (OSC Lab → new chatbox module): what the world's video player is playing, e.g. "🍿 Now showing: Static Hearts". Tokens for title, who queued it (off by default), time, length, time left and a progress bar. Read from VRChat's log — links are never put in the chatbox, only a title (or "a YouTube video" if VRCX has no YouTube API key). Hides itself when you leave the instance. Every chatbox theme has a matching layout.
+diff --git a/UWX_VERSION b/UWX_VERSION
+index 4e33e61..3f56aa4 100644
+--- a/UWX_VERSION
++++ b/UWX_VERSION
+@@ -1 +1 @@
+-0.6.1-rc20
++0.6.2-rc21
+diff --git a/src/shared/constants/uwx.js b/src/shared/constants/uwx.js
+index e54fe8d..f3d3653 100644
+--- a/src/shared/constants/uwx.js
++++ b/src/shared/constants/uwx.js
+@@ -1,2 +1,2 @@
+-export const UWX_VERSION = '0.6.1-rc20';
++export const UWX_VERSION = '0.6.2-rc21';
+ export const UWX_MANIFEST_URL = 'https://underweb.cloud/api/uwx/manifest';
+diff --git a/src/shared/utils/__tests__/uwxInviteSafety.test.js b/src/shared/utils/__tests__/uwxInviteSafety.test.js
+new file mode 100644
+index 0000000..b1f3f1b
+--- /dev/null
++++ b/src/shared/utils/__tests__/uwxInviteSafety.test.js
+@@ -0,0 +1,66 @@
++import { describe, expect, test } from 'vitest';
++
++import {
++    eventStartConfirm,
++    friendAutoConfirm,
++    friendBatchConfirm,
++    friendStatus,
++    groupAutoConfirm,
++    groupBatchConfirm,
++    groupStatus,
++    namesPreview
++} from '../uwxInviteSafety';
++
++const names = (n) => Array.from({ length: n }, (_, i) => `P${i + 1}`);
++
++describe('UWX invite safety text', () => {
++    test('names preview', () => {
++        expect(namesPreview([])).toBe('nobody right now');
++        expect(namesPreview(['Vex'])).toBe('Vex');
++        expect(namesPreview(['Vex', 'Kai'])).toBe('Vex and Kai');
++        expect(namesPreview(names(8))).toBe('P1, P2, P3, P4, P5 and 3 more');
++    });
++
++    test('turning on auto invites for ALL online friends is a loud, red confirm with names and count', () => {
++        const c = friendAutoConfirm({ scopeId: 'all-online', scopeLabel: 'All online friends', eligibleNames: names(37), poolCount: 41, messageText: 'MVN at the Hub', cooldownMinutes: 30 });
++        expect(c.title).toBe('Auto-invite ALL your online friends?');
++        expect(c.description).toMatch(/37 people: P1, P2, P3, P4, P5 and 32 more/);
++        expect(c.description).toMatch(/41 online/);
++        expect(c.description).toMatch(/“MVN at the Hub”/);
++        expect(c.confirmText).toBe('Turn on · invite 37 now');
++        expect(c.destructive).toBe(true);
++    });
++
++    test('a small favorites setup is a normal confirm', () => {
++        const c = friendAutoConfirm({ scopeId: 'favorites', scopeLabel: 'Favorite friends', eligibleNames: ['Vex', 'Kai'], poolCount: 4, cooldownMinutes: 30 });
++        expect(c.title).toBe('Turn on automatic friend invites?');
++        expect(c.description).toMatch(/2 people: Vex and Kai/);
++        expect(c.description).toMatch(/No message attached/);
++        expect(c.destructive).toBe(false);
++    });
++
++    test('batch confirms', () => {
++        expect(friendBatchConfirm({ names: names(12), scopeLabel: 'Favorite friends', messageText: '' })).toMatchObject({ title: 'Send 12 friend invites now?', confirmText: 'Invite 12', destructive: true });
++        expect(groupBatchConfirm({ groupName: 'The UnderWeb', names: ['Vex'] })).toMatchObject({ title: 'Send 1 group invite to The UnderWeb?', destructive: false });
++        expect(groupAutoConfirm({ groupName: 'The UnderWeb', eligibleNames: [], dwellSeconds: 60 }).description).toMatch(/after 60s here/);
++    });
++
++    test('event start only asks when the preset sends invites', () => {
++        expect(eventStartConfirm({ eventName: 'Hub Hangout', friendAuto: false, groupAuto: false })).toBe(null);
++        const c = eventStartConfirm({ eventName: 'MVN', friendAuto: true, friendScopeLabel: 'Favorite friends', friendCount: 6, groupAuto: true, groupName: 'The UnderWeb', groupCount: 3 });
++        expect(c.description).toBe('This turns on auto friend invites to favorite friends (6 people right now) and automatic group invites to The UnderWeb (3 eligible here). Everything goes back to your usual settings when the event ends.');
++    });
++
++    test('status lines say exactly what is happening', () => {
++        expect(friendStatus({ enabled: false }).state).toBe('off');
++        expect(friendStatus({ enabled: true, canInviteHere: false, blockedReason: 'Only the instance owner can invite here.' }).text).toMatch(/paused here: Only the instance owner/);
++        expect(friendStatus({ enabled: true, canInviteHere: true, autoAllowedHere: false }).state).toBe('blocked');
++        expect(friendStatus({ enabled: true, canInviteHere: true, autoAllowedHere: true, scopeLabel: 'Favorite friends', poolCount: 5, eligibleNames: ['Vex', 'Kai'], cooldownMinutes: 30 }).text).toBe(
++            'On — inviting favorite friends (5 online) to you, each at most once per 30 min. Next: Vex and Kai.'
++        );
++        expect(groupStatus({ enabled: true, canRecruitHere: true, groupName: 'The UnderWeb', eligibleCount: 2, dwellSeconds: 60 }).text).toBe(
++            "On — people here who aren't in The UnderWeb get a group invite after 60s. 2 people ready now."
++        );
++        expect(groupStatus({ enabled: true, canRecruitHere: false, blockedText: 'Not our instance.' }).state).toBe('blocked');
++    });
++});
+diff --git a/src/shared/utils/__tests__/uwxOsc.test.js b/src/shared/utils/__tests__/uwxOsc.test.js
+index 4155d88..b54b0ef 100644
+--- a/src/shared/utils/__tests__/uwxOsc.test.js
++++ b/src/shared/utils/__tests__/uwxOsc.test.js
+@@ -313,3 +313,20 @@ describe('videoTitle', () => {
+         expect(videoTitle(null)).toBe('');
+     });
+ });
++
++describe('chatbox theme catalogue', () => {
++    test('ids are unique, frames fit, and missing data never leaves a dangling separator', () => {
++        expect(new Set(CHATBOX_THEMES.map((t) => t.id)).size).toBe(CHATBOX_THEMES.length);
++        expect(CHATBOX_THEMES.length).toBeGreaterThanOrEqual(11);
++        for (const theme of CHATBOX_THEMES) {
++            expect(Array.from(theme.frame.header).length).toBeLessThanOrEqual(40);
++            const s = normalizeSettings({ modules: Object.fromEntries(Object.entries(theme.templates).map(([k, t]) => [k, { enabled: true, template: t }])) });
++            const lines = renderModuleLines(
++                s,
++                { media: { status: 'playing', title: 'Song', artist: '' }, video: { title: 'Clip', lengthSeconds: 0, startedAt: T0 }, weather: { icon: '☁', temp: '50°F', condition: '' } },
++                T0
++            );
++            for (const l of lines) expect(l.text, `${theme.id}/${l.key}`).not.toMatch(/[·|—\-/~]\s*$/);
++        }
++    });
++});
+diff --git a/src/shared/utils/uwxInviteSafety.js b/src/shared/utils/uwxInviteSafety.js
+new file mode 100644
+index 0000000..533d811
+--- /dev/null
++++ b/src/shared/utils/uwxInviteSafety.js
+@@ -0,0 +1,117 @@
++// Invite safety: the plain-English "are you sure" text and status lines for friend
++// (instance) invites and group invites. Pure — the views show these in dialogs/cards.
++
++/** Manual batches this size or bigger ask first. */
++export const CONFIRM_BATCH_AT = 3;
++/** Automatic friend invites never send more than this in one go (15s apart). */
++export const AUTO_FRIEND_MAX_PER_SCAN = 8;
++/** At or above this many people, the confirm button is red. */
++export const BIG_BATCH = 10;
++
++const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
++
++/** "Vex, Kai, Moth and 4 more" */
++export function namesPreview(names, max = 5) {
++    const list = (names || []).filter(Boolean);
++    if (!list.length) return 'nobody right now';
++    if (list.length <= max) return list.length === 1 ? list[0] : `${list.slice(0, -1).join(', ')} and ${list.at(-1)}`;
++    return `${list.slice(0, max).join(', ')} and ${list.length - max} more`;
++}
++
++const messageLine = (text) => (text ? `Message: “${text}”.` : 'No message attached.');
++
++/**
++ * Turning ON automatic friend (instance) invites.
++ * @param {{ scopeId: string, scopeLabel: string, eligibleNames: string[], poolCount: number, messageText?: string, cooldownMinutes: number }} o
++ */
++export function friendAutoConfirm(o) {
++    const n = o.eligibleNames.length;
++    const everyone = o.scopeId === 'all-online';
++    return {
++        title: everyone ? 'Auto-invite ALL your online friends?' : 'Turn on automatic friend invites?',
++        description: [
++            `UWX will keep sending VRChat invites to ${o.scopeLabel.toLowerCase()} (${o.poolCount} online) to join you here, and again whenever you move instance.`,
++            n ? `Right away that's ${plural(n, 'person', 'people')}: ${namesPreview(o.eligibleNames)}.` : 'Nobody would be invited right this second.',
++            `Each person gets at most one invite per ${o.cooldownMinutes} minutes per instance, up to ${AUTO_FRIEND_MAX_PER_SCAN} every 15 seconds.`,
++            messageLine(o.messageText)
++        ].join(' '),
++        confirmText: n ? `Turn on · invite ${n} now` : 'Turn on',
++        destructive: everyone || n >= BIG_BATCH
++    };
++}
++
++/** "Invite now" for friends. */
++export function friendBatchConfirm({ names, scopeLabel, messageText }) {
++    const n = names.length;
++    return {
++        title: `Send ${plural(n, 'friend invite')} now?`,
++        description: `${scopeLabel}: ${namesPreview(names, 8)}. They'll get a VRChat invite to this instance, one every 2.5 seconds. ${messageLine(messageText)} You can stop it from the pop-up.`,
++        confirmText: `Invite ${n}`,
++        destructive: n >= BIG_BATCH
++    };
++}
++
++/** Turning ON automatic group invites. */
++export function groupAutoConfirm({ groupName, eligibleNames, dwellSeconds }) {
++    const n = eligibleNames.length;
++    return {
++        title: `Turn on automatic group invites to ${groupName}?`,
++        description: [
++            `Anyone in this lobby who isn't in ${groupName} gets a VRChat group invite after ${dwellSeconds}s here — and new people as they join.`,
++            n ? `Right away: ${namesPreview(eligibleNames)}.` : 'Nobody here is eligible right now.',
++            'Only in our instances. Members, labeled people and your do-not-invite list are skipped; each person once per day.'
++        ].join(' '),
++        confirmText: n ? `Turn on · invite ${n} now` : 'Turn on',
++        destructive: n >= BIG_BATCH
++    };
++}
++
++/** "Invite N to group" button. */
++export function groupBatchConfirm({ groupName, names }) {
++    const n = names.length;
++    return {
++        title: `Send ${plural(n, 'group invite')} to ${groupName}?`,
++        description: `${namesPreview(names, 8)}. Each is checked first — anyone already in the group is skipped. One every 3 seconds; you can stop it from the pop-up.`,
++        confirmText: `Invite ${n} to group`,
++        destructive: n >= BIG_BATCH
++    };
++}
++
++/**
++ * Starting an Event Mode preset that turns invites on.
++ * @returns {null | { title, description, confirmText, destructive }} null when the preset sends nothing
++ */
++export function eventStartConfirm({ eventName, friendAuto, friendScopeLabel, friendCount, groupAuto, groupName, groupCount }) {
++    if (!friendAuto && !groupAuto) return null;
++    const parts = [];
++    if (friendAuto) parts.push(`auto friend invites to ${friendScopeLabel.toLowerCase()} (${plural(friendCount, 'person', 'people')} right now)`);
++    if (groupAuto) parts.push(`automatic group invites to ${groupName} (${groupCount} eligible here)`);
++    const total = (friendAuto ? friendCount : 0) + (groupAuto ? groupCount : 0);
++    return {
++        title: `Start ${eventName}?`,
++        description: `This turns on ${parts.join(' and ')}. Everything goes back to your usual settings when the event ends.`,
++        confirmText: 'Start event',
++        destructive: friendScopeLabel.toLowerCase().startsWith('all') || total >= BIG_BATCH
++    };
++}
++
++/**
++ * One-line status for a card: what is happening right now, in plain words.
++ * @returns {{ state: 'on'|'off'|'blocked', text: string }}
++ */
++export function friendStatus({ enabled, canInviteHere, autoAllowedHere, blockedReason, scopeLabel, poolCount, eligibleNames, cooldownMinutes }) {
++    if (!enabled) return { state: 'off', text: `Off — nothing is sent unless you press Invite now.` };
++    if (!canInviteHere) return { state: 'blocked', text: `On, but paused here: ${blockedReason || 'VRChat won’t let you invite into this instance.'}` };
++    if (!autoAllowedHere) return { state: 'blocked', text: 'On, but paused here: automatic invites only run in approved group instances (see "Auto-invite in any instance").' };
++    const next = eligibleNames.length ? ` Next: ${namesPreview(eligibleNames, 3)}.` : ' Everyone in that list is already here or recently invited.';
++    return { state: 'on', text: `On — inviting ${scopeLabel.toLowerCase()} (${poolCount} online) to you, each at most once per ${cooldownMinutes} min.${next}` };
++}
++
++export function groupStatus({ enabled, canRecruitHere, groupName, eligibleCount, dwellSeconds, blockedText }) {
++    if (!enabled) return { state: 'off', text: 'Off — no group invites are sent unless you press the button.' };
++    if (!canRecruitHere) return { state: 'blocked', text: `On, but paused here: ${blockedText}` };
++    return {
++        state: 'on',
++        text: `On — people here who aren't in ${groupName} get a group invite after ${dwellSeconds}s.${eligibleCount ? ` ${plural(eligibleCount, 'person', 'people')} ready now.` : ''}`
++    };
++}
+diff --git a/src/shared/utils/uwxOsc.js b/src/shared/utils/uwxOsc.js
+index 7dd3f8a..f1bd3ef 100644
+--- a/src/shared/utils/uwxOsc.js
++++ b/src/shared/utils/uwxOsc.js
+@@ -62,6 +62,36 @@ export const CHATBOX_THEMES = Object.freeze([
+         name: 'UnderWeb',
+         frame: { header: '░▒▓ U N D E R W E B ▓▒░', footer: '' },
+         templates: { music: '🎧 {artist} — {title} {time}', video: '🍿 {title} | {time} / {duration}', weather: '{icon} {temp} | {condition}', status: '{status}', heart: '❤️ {bpm} BPM', world: '🌐 {world}' }
++    },
++    {
++        id: 'terminal',
++        name: 'Terminal',
++        frame: { header: '> uwx --status', footer: '' },
++        templates: { music: '> playing: {title} · {artist}', video: '> now_showing: {title}', weather: '> weather: {temp} · {condition}', status: '> {status}', heart: '> bpm: {bpm}', world: '> world: {world}' }
++    },
++    {
++        id: 'cinema',
++        name: 'Cinema',
++        frame: { header: '🎞 ──── CINEMA ──── 🎞', footer: '' },
++        templates: { music: '♫ {title} — {artist}', video: '▶ {title} | {remaining}', weather: '{icon} {temp}', status: '{status}', heart: '♥ {bpm}', world: '{world}' }
++    },
++    {
++        id: 'retro',
++        name: 'Retro',
++        frame: { header: '▀▄▀▄▀▄▀▄▀▄▀▄▀▄▀▄', footer: '▄▀▄▀▄▀▄▀▄▀▄▀▄▀▄▀' },
++        templates: { music: '♪ {title} · {artist}', video: '📼 {title}', weather: '{icon} {temp}', status: '☆ {status} ☆', heart: '♥ {bpm}', world: '⌂ {world}' }
++    },
++    {
++        id: 'soft',
++        name: 'Soft',
++        frame: { header: '⋆｡˚ ☁ ˚｡⋆', footer: '' },
++        templates: { music: '♡ {title} · {artist}', video: '♡ watching {title}', weather: '{icon} {temp}', status: '✿ {status}', heart: '♡ {bpm}', world: '☁ {world}' }
++    },
++    {
++        id: 'glitch',
++        name: 'Glitch',
++        frame: { header: '▓▒░ S I G N A L ░▒▓', footer: '' },
++        templates: { music: '▚ {title} · {artist}', video: '▚ {title} · {time}', weather: '▚ {temp} · {condition}', status: '▚ {status}', heart: '▚ {bpm} bpm', world: '▚ {world}' }
+     }
+ ]);
+ 
+diff --git a/src/shared/utils/uwxTheme.js b/src/shared/utils/uwxTheme.js
+index 870304d..e5c684b 100644
+--- a/src/shared/utils/uwxTheme.js
++++ b/src/shared/utils/uwxTheme.js
+@@ -8,7 +8,13 @@ export const THEME_PRESETS = Object.freeze([
+     { id: 'ice', name: 'Ice', accent: '#38bdf8' },
+     { id: 'gold', name: 'Gold', accent: '#fbbf24' },
+     { id: 'rose', name: 'Rose', accent: '#fb7185' },
+-    { id: 'mono', name: 'Mono', accent: '#d4d4d8' }
++    { id: 'mono', name: 'Mono', accent: '#d4d4d8' },
++    { id: 'ember', name: 'Ember', accent: '#ff7a1a' },
++    { id: 'abyss', name: 'Abyss', accent: '#14d9c4' },
++    { id: 'synthwave', name: 'Synthwave', accent: '#ff3df5' },
++    { id: 'toxic', name: 'Toxic', accent: '#c6ff1a' },
++    { id: 'cobalt', name: 'Cobalt', accent: '#3b6bff' },
++    { id: 'bone', name: 'Bone', accent: '#e8dcc4' }
+ ]);
+ 
+ export const DEFAULT_THEME = Object.freeze({ enabled: true, preset: 'underweb', custom: '', tint: 'subtle' });
+diff --git a/src/stores/__tests__/uwxInviter.test.js b/src/stores/__tests__/uwxInviter.test.js
+index 9ef8ce9..a69c7ef 100644
+--- a/src/stores/__tests__/uwxInviter.test.js
++++ b/src/stores/__tests__/uwxInviter.test.js
+@@ -30,7 +30,8 @@ vi.mock('../../shared/utils', async () => ({
+     ...(await vi.importActual('../../shared/utils/location'))
+ }));
+ vi.mock('../../services/watchState', () => ({ watchState: { isLoggedIn: true } }));
+-vi.mock('vue-sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }));
++const toast = { success: vi.fn(), error: vi.fn(), info: vi.fn(), loading: vi.fn(), dismiss: vi.fn() };
++vi.mock('vue-sonner', () => ({ toast }));
+ 
+ const ME = 'usr_00000000-0000-0000-0000-000000000000';
+ const A = 'usr_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+@@ -351,3 +352,64 @@ describe('UWX never group-invites labeled people', () => {
+         expect(groupRequest.sendGroupInvite).not.toHaveBeenCalled();
+     });
+ });
++
++describe('UWX invite safety', () => {
++    const many = Array.from({ length: 20 }, (_, i) => `usr_${String(i).padStart(8, '0')}-0000-0000-0000-000000000000`);
++    beforeEach(() => {
++        vi.useFakeTimers();
++        setActivePinia(createPinia());
++        notificationRequest.sendInvite.mockReset().mockResolvedValue({ json: {} });
++        friendStore.friends = new Map(many.map((id) => [id, friend(id)]));
++        locationStore.lastLocation.location = at('~region(us)');
++        locationStore.lastLocation.friendList = new Map();
++        Object.values(toast).forEach((f) => f.mockClear());
++    });
++
++    test('a pop-up for every invite sent, plus one live progress pop-up with Stop', async () => {
++        const store = useUnderWebStore();
++        const pending = store.inviteFriendsNow(many.slice(0, 3));
++        await vi.runAllTimersAsync();
++        await pending;
++        const sentToasts = toast.success.mock.calls.filter(([t]) => t.startsWith('Invite sent to'));
++        expect(sentToasts).toHaveLength(3);
++        const progress = toast.loading.mock.calls.map(([t, o]) => [t, o.id, o.action.label]);
++        expect(progress.at(-1)).toEqual(['Friend invites: 3 of 3 sent', 'uwx-invite-batch-friend', 'Stop']);
++        expect(toast.dismiss).toHaveBeenCalledWith('uwx-invite-batch-friend');
++    });
++
++    test('per-invite pop-ups can be turned off', async () => {
++        const store = useUnderWebStore();
++        await store.setNotifyEachInvite(false);
++        const pending = store.inviteFriendsNow(many.slice(0, 2));
++        await vi.runAllTimersAsync();
++        await pending;
++        expect(toast.success.mock.calls.filter(([t]) => t.startsWith('Invite sent to'))).toHaveLength(0);
++    });
++
++    test('Stop halts a batch mid-way and turns automatic invites off', async () => {
++        const store = useUnderWebStore();
++        await store.setAutoInviteAnywhere(true);
++        store.autoInviteEnabled = true;
++        const pending = store.inviteFriendsNow(many.slice(0, 10));
++        await vi.advanceTimersByTimeAsync(2600); // two sent
++        await store.stopAllInvites();
++        await vi.runAllTimersAsync();
++        const result = await pending;
++        expect(result.sent).toBeLessThanOrEqual(3);
++        expect(result.skipped.filter((r) => r.reason === 'you pressed Stop').length).toBeGreaterThanOrEqual(7);
++        expect(store.autoInviteEnabled).toBe(false);
++        expect(store.groupRecruitEnabled).toBe(false);
++    });
++
++    test('automatic friend invites never blast a whole friends list in one pass', async () => {
++        const store = useUnderWebStore();
++        await store.setAutoInviteAnywhere(true);
++        await store.setInviteScope('all-online');
++        store.autoInviteEnabled = true;
++        const pending = store.scanAndInvite({ source: 'automatic' });
++        await vi.runAllTimersAsync();
++        const { sent } = await pending;
++        expect(sent).toBe(8);
++        expect(notificationRequest.sendInvite).toHaveBeenCalledTimes(8);
++    });
++});
+diff --git a/src/stores/underweb.js b/src/stores/underweb.js
+index 2b6660c..8d6b867 100644
+--- a/src/stores/underweb.js
++++ b/src/stores/underweb.js
+@@ -5,6 +5,7 @@ import { toast } from 'vue-sonner';
+ import { groupRequest, inviteMessagesRequest, notificationRequest, queryRequest } from '../api';
+ import configRepository from '../services/config';
+ import { checkCanInvite, parseLocation } from '../shared/utils';
++import { AUTO_FRIEND_MAX_PER_SCAN } from '../shared/utils/uwxInviteSafety';
+ import { watchState } from '../services/watchState';
+ import { useFriendStore } from './friend';
+ import { useInstanceStore } from './instance';
+@@ -27,7 +28,8 @@ const CONFIG = Object.freeze({
+     autoInviteAnywhere: 'UWX_autoInviteAnywhere',
+     recruitInOwnInstances: 'UWX_groupRecruitInOwnInstances',
+     recruitHomeGroupId: 'UWX_groupRecruitHomeGroupId',
+-    inviteMessageSlot: 'UWX_inviteMessageSlot'
++    inviteMessageSlot: 'UWX_inviteMessageSlot',
++    notifyEachInvite: 'UWX_notifyEachInvite'
+ });
+ 
+ export const INVITE_MESSAGE_SLOTS = 12;
+@@ -92,6 +94,12 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+     const inviteMessagesLoading = ref(false);
+     const inviteMessagesError = ref('');
+ 
++    // A pop-up for every invite that goes out (friend or group). On by default.
++    const notifyEachInvite = ref(true);
++    // "Stop all invites": any batch that started before this moment stops.
++    let stopRequestedAt = 0;
++    const stoppedSince = (startedAt) => stopRequestedAt >= startedAt;
++
+     let intervalHandle = null;
+     let unwatchLocation = null;
+     let unwatchLogin = null;
+@@ -223,24 +231,27 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+             .filter((friend) => friend && friend.state === 'online');
+     });
+ 
+-    const invitePoolFriends = computed(() => {
+-        if (inviteScope.value === 'favorites') {
++    /** Online friends an invite audience covers (used for the current scope and for Event Mode previews). */
++    function poolForScope(scope) {
++        if (scope === 'favorites') {
+             return favoriteOnlineFriends.value;
+         }
+-        if (inviteScope.value === 'all-online') {
++        if (scope === 'all-online') {
+             return allOnlineFriends.value;
+         }
+-        if (inviteScope.value === 'staff') {
++        if (scope === 'staff') {
+             return allOnlineFriends.value.filter((friend) => networkStore.staffUserIds.has(friend.id));
+         }
+-        if (inviteScope.value === 'creators') {
++        if (scope === 'creators') {
+             return allOnlineFriends.value.filter((friend) => networkStore.creatorUserIds.has(friend.id));
+         }
+-        if (inviteScope.value === 'partners') {
++        if (scope === 'partners') {
+             return allOnlineFriends.value.filter((friend) => networkStore.partnerUserIds.has(friend.id));
+         }
+         return selectedFriends.value;
+-    });
++    }
++
++    const invitePoolFriends = computed(() => poolForScope(inviteScope.value));
+ 
+     function isFriendEligible(friend) {
+         if (!friend || friend.state !== 'online' || excludedUserIds.value.includes(friend.id)) {
+@@ -369,6 +380,55 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+         }
+     }
+ 
++    async function loadNotifySetting() {
++        try {
++            notifyEachInvite.value = await configRepository.getBool(CONFIG.notifyEachInvite, true);
++        } catch {
++            notifyEachInvite.value = true;
++        }
++    }
++
++    async function setNotifyEachInvite(value) {
++        notifyEachInvite.value = Boolean(value);
++        await configRepository.setBool(CONFIG.notifyEachInvite, notifyEachInvite.value);
++    }
++
++    /** Pop-up for one invite that went out. */
++    function notifySent(kind, name, detail) {
++        if (!notifyEachInvite.value) return;
++        toast.success(kind === 'group' ? `Group invite sent to ${name}` : `Invite sent to ${name}`, { description: detail, duration: 3500 });
++    }
++
++    /** One live pop-up per batch: "Friend invites 3 of 10" with a Stop button. */
++    function batchProgress(kind, done, total, finished = false) {
++        if (total < 2) return;
++        const id = `uwx-invite-batch-${kind}`;
++        const label = kind === 'group' ? 'Group invites' : 'Friend invites';
++        if (finished) {
++            toast.dismiss?.(id);
++            return;
++        }
++        toast.loading?.(`${label}: ${done} of ${total} sent`, {
++            id,
++            duration: Infinity,
++            action: { label: 'Stop', onClick: () => void stopAllInvites() }
++        });
++    }
++
++    /** Kill switch: turn both automatic invites off and stop anything sending right now. */
++    async function stopAllInvites() {
++        stopRequestedAt = Date.now();
++        const wasOn = autoInviteEnabled.value || groupRecruitEnabled.value || isScanning.value || isRecruiting.value || isManualInviting.value;
++        await Promise.all([
++            autoInviteEnabled.value ? setAutoInviteEnabled(false) : null,
++            groupRecruitEnabled.value ? setGroupRecruitEnabled(false) : null
++        ]);
++        toast.dismiss?.('uwx-invite-batch-friend');
++        toast.dismiss?.('uwx-invite-batch-group');
++        addLog('warning', 'All invites stopped.');
++        toast.success(wasOn ? 'All invites stopped. Automatic friend and group invites are off.' : 'Nothing was sending — all invites are off.');
++    }
++
+     async function setAutoInviteEnabled(value) {
+         autoInviteEnabled.value = Boolean(value);
+         await configRepository.setBool(CONFIG.enabled, autoInviteEnabled.value);
+@@ -462,10 +522,16 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+         }
+ 
+         isManualInviting.value = true;
++        const batchStartedAt = Date.now();
+         try {
+             const worldName = await getWorldName();
+             addLog('info', `Invite now: sending ${queue.length} invite(s).`);
++            batchProgress('friend', 0, queue.length);
+             for (const [index, friend] of queue.entries()) {
++                if (stoppedSince(batchStartedAt)) {
++                    queue.slice(index).forEach((f) => result.skipped.push({ userId: f.id, reason: 'you pressed Stop' }));
++                    break;
++                }
+                 if (currentLocationTag.value !== scanLocationTag || !canInviteHere.value) {
+                     queue.slice(index).forEach((f) => result.skipped.push({ userId: f.id, reason: 'you changed instance' }));
+                     addLog('warning', 'Invite batch stopped because you changed instance.');
+@@ -474,6 +540,7 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+                 try {
+                     await sendInviteToFriend(friend, worldName);
+                     result.sent += 1;
++                    batchProgress('friend', result.sent, queue.length);
+                 } catch (error) {
+                     const status = error?.status || error?.statusCode || error?.response?.status;
+                     const message = error?.error?.message || error?.message || 'Unknown invite error';
+@@ -492,6 +559,7 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+             }
+         } finally {
+             isManualInviting.value = false;
++            batchProgress('friend', 0, queue.length, true);
+         }
+         lastManualResult.value = { at: Date.now(), ...result };
+         const parts = [`${result.sent} sent`];
+@@ -750,6 +818,7 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+         sessionInvitesSent.value += 1;
+         await persistRecentInvites();
+         addLog('success', `Invited ${friend.displayName}.`, { userId: friend.id });
++        notifySent('friend', friend.displayName, `Friend invite to ${worldName || 'your instance'}${inviteMessageSlot.value >= 0 ? ' · with your message' : ''}`);
+     }
+ 
+ 
+@@ -792,6 +861,7 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+             userId: player.userId,
+             groupId
+         });
++        notifySent('group', player.displayName, 'VRChat group invite');
+     }
+ 
+     /**
+@@ -825,7 +895,7 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+         }
+         try {
+             await sendGroupRecruitInvite({ userId: player.userId, displayName: name });
+-            toast.success(`Group invite sent to ${name}.`);
++            if (!notifyEachInvite.value) toast.success(`Group invite sent to ${name}.`);
+             return 'sent';
+         } catch (error) {
+             const status = error?.status || error?.statusCode || error?.response?.status;
+@@ -862,9 +932,12 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+ 
+         isRecruiting.value = true;
+         let sent = 0;
++        const batchStartedAt = Date.now();
++        batchProgress('group', 0, candidates.length);
+         try {
+             addLog('info', `Group Recruiter found ${candidates.length} eligible lobby occupant(s).`);
+             for (const player of candidates) {
++                if (stoppedSince(batchStartedAt)) break;
+                 if (
+                     (!force && !groupRecruitEnabled.value) ||
+                     !canRecruitHere.value ||
+@@ -907,6 +980,7 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+                 try {
+                     await sendGroupRecruitInvite(player);
+                     sent += 1;
++                    batchProgress('group', sent, candidates.length);
+                 } catch (error) {
+                     const message = error?.error?.message || error?.message || 'Unknown group invite error';
+                     const status = error?.status || error?.statusCode || error?.response?.status;
+@@ -940,6 +1014,7 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+             return { sent };
+         } finally {
+             isRecruiting.value = false;
++            batchProgress('group', 0, candidates.length, true);
+         }
+     }
+ 
+@@ -974,7 +1049,12 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+         let sent = 0;
+         try {
+             const worldName = await getWorldName();
+-            const candidates = [...eligibleInviteFriends.value];
++            let candidates = [...eligibleInviteFriends.value];
++            // Safety cap: automatic runs send a few at a time, never a whole friends list in one go.
++            if (source !== 'manual' && candidates.length > AUTO_FRIEND_MAX_PER_SCAN) {
++                addLog('info', `Auto-invite: ${candidates.length} eligible; sending ${AUTO_FRIEND_MAX_PER_SCAN} now, the rest on later passes.`);
++                candidates = candidates.slice(0, AUTO_FRIEND_MAX_PER_SCAN);
++            }
+             if (!candidates.length) {
+                 if (source === 'manual') {
+                     toast.info('No friends in the active invite scope are currently eligible.');
+@@ -983,7 +1063,10 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+             }
+ 
+             addLog('info', `Invite scan found ${candidates.length} eligible friend(s) in ${inviteScope.value} scope.`);
++            const batchStartedAt = Date.now();
++            batchProgress('friend', 0, candidates.length);
+             for (const friend of candidates) {
++                if (stoppedSince(batchStartedAt)) break;
+                 if (
+                     (!force && !autoInviteEnabled.value) ||
+                     !canAutoInviteHere.value ||
+@@ -1001,6 +1084,7 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+                 try {
+                     await sendInviteToFriend(friend, worldName);
+                     sent += 1;
++                    batchProgress('friend', sent, candidates.length);
+                 } catch (error) {
+                     const message = error?.error?.message || error?.message || 'Unknown invite error';
+                     addLog('error', `Failed to invite ${friend.displayName}: ${message}`, { userId: friend.id });
+@@ -1022,6 +1106,7 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+             return { sent };
+         } finally {
+             isScanning.value = false;
++            batchProgress('friend', 0, 2, true);
+         }
+     }
+ 
+@@ -1044,6 +1129,7 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+             return;
+         }
+         await loadSettings();
++        await loadNotifySetting();
+         await networkStore.initUnderWebNetwork();
+         initialized.value = true;
+         startScanLoop();
+@@ -1144,6 +1230,9 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+         groupRecruitMinPresenceSeconds,
+         isRecruiting,
+         groupRecruitLastScanAt,
++        notifyEachInvite,
++        setNotifyEachInvite,
++        stopAllInvites,
+         sessionGroupInvitesSent,
+         currentLocationTag,
+         currentParsedLocation,
+@@ -1175,6 +1264,8 @@ export const useUnderWebStore = defineStore('UnderWeb', () => {
+         favoriteOnlineFriends,
+         allOnlineFriends,
+         invitePoolFriends,
++        poolForScope,
++        isFriendEligible,
+         eligibleSelectedFriends,
+         eligibleInviteFriends,
+         initUnderWeb,
+diff --git a/src/views/UnderWeb/UnderWeb.vue b/src/views/UnderWeb/UnderWeb.vue
+index fb31ce5..169c07c 100644
+--- a/src/views/UnderWeb/UnderWeb.vue
++++ b/src/views/UnderWeb/UnderWeb.vue
+@@ -100,10 +100,13 @@
+                         <div>
+                             <CardTitle>Invites</CardTitle>
+                             <CardDescription>
+-                                {{ showGroupInvites ? 'Two different things: bringing people into your VRChat group, and bringing friends to where you are.' : 'Bring friends to where you are, with a message.' }}
++                                {{ showGroupInvites ? 'Two different things: asking people to join your VRChat group, and asking friends to come to you.' : 'Ask friends to come to where you are, with a message.' }}
+                             </CardDescription>
+                         </div>
+-                        <Button size="sm" variant="ghost" @click="activePanel = 'invites'">All invite settings <i class="ri-arrow-right-line" /></Button>
++                        <div class="flex flex-wrap items-center gap-2">
++                            <Button v-if="anyInviteActive" size="sm" variant="destructive" @click="guard.stopAll()"><i class="ri-stop-circle-line" /> Stop all invites</Button>
++                            <Button size="sm" variant="ghost" @click="activePanel = 'invites'">All invite settings <i class="ri-arrow-right-line" /></Button>
++                        </div>
+                     </div>
+                 </CardHeader>
+                 <CardContent>
+@@ -113,18 +116,25 @@
+                                 <span class="uwx-invite-icon"><i class="ri-group-line" /></span>
+                                 <div class="min-w-0 flex-1">
+                                     <div class="uwx-invite-kicker">GROUP INVITES</div>
+-                                    <strong>Recruit this lobby into {{ recruitGroupName || 'your group' }}</strong>
++                                    <strong>Ask people in this lobby to join {{ recruitGroupName || 'your group' }}</strong>
++                                    <small class="uwx-invite-what">They get a VRChat <b>group</b> invite. Nobody is moved anywhere.</small>
+                                 </div>
+-                                <Switch :model-value="groupRecruitEnabled" aria-label="Automatic group invites" @update:modelValue="setGroupRecruitEnabled" />
++                                <label class="uwx-auto-switch" :class="{ on: groupRecruitEnabled }">
++                                    <span>{{ groupRecruitEnabled ? 'AUTO ON' : 'AUTO OFF' }}</span>
++                                    <Switch :model-value="groupRecruitEnabled" aria-label="Automatic group invites" @update:modelValue="guard.setGroupAuto" />
++                                </label>
+                             </div>
++                            <p class="uwx-invite-status" :class="groupStatusLine.state">
++                                <i :class="groupStatusLine.state === 'on' ? 'ri-play-circle-line' : groupStatusLine.state === 'blocked' ? 'ri-pause-circle-line' : 'ri-stop-circle-line'" />
++                                {{ groupStatusLine.text }}
++                            </p>
+                             <p class="uwx-invite-permission" :class="recruitStatus.ok ? 'ok' : 'blocked'">
+                                 <i :class="recruitStatus.ok ? 'ri-checkbox-circle-line' : 'ri-information-line'" />
+                                 {{ recruitStatus.text }}
+                             </p>
+                             <div class="uwx-invite-tile-stats">
+-                                <span><strong>{{ eligibleLobbyRecruits.length }}</strong> can be invited</span>
++                                <span><strong>{{ eligibleLobbyRecruits.length }}</strong> not in the group yet</span>
+                                 <span><strong>{{ sessionGroupInvitesSent }}</strong> sent this session</span>
+-                                <span><strong>{{ groupRecruitEnabled ? 'Auto' : 'Manual' }}</strong></span>
+                             </div>
+                             <div class="flex flex-wrap gap-2">
+                                 <Button v-if="currentGroupId && !isCurrentGroupAllowed" @click="addCurrentGroup">Approve {{ currentGroupName }}</Button>
+@@ -140,19 +150,26 @@
+                             <div class="uwx-invite-tile-head">
+                                 <span class="uwx-invite-icon"><i class="ri-door-open-line" /></span>
+                                 <div class="min-w-0 flex-1">
+-                                    <div class="uwx-invite-kicker">INSTANCE INVITES</div>
+-                                    <strong>Bring friends to where you are</strong>
++                                    <div class="uwx-invite-kicker">FRIEND INVITES</div>
++                                    <strong>Ask friends to come to you</strong>
++                                    <small class="uwx-invite-what">They get a normal VRChat invite to this instance.</small>
+                                 </div>
+-                                <Switch :model-value="autoInviteEnabled" aria-label="Automatic instance invites" @update:modelValue="setAutoInviteEnabled" />
++                                <label class="uwx-auto-switch" :class="{ on: autoInviteEnabled }">
++                                    <span>{{ autoInviteEnabled ? 'AUTO ON' : 'AUTO OFF' }}</span>
++                                    <Switch :model-value="autoInviteEnabled" aria-label="Automatic friend invites" @update:modelValue="guard.setFriendAuto" />
++                                </label>
+                             </div>
++                            <p class="uwx-invite-status" :class="friendStatusLine.state">
++                                <i :class="friendStatusLine.state === 'on' ? 'ri-play-circle-line' : friendStatusLine.state === 'blocked' ? 'ri-pause-circle-line' : 'ri-stop-circle-line'" />
++                                {{ friendStatusLine.text }}
++                            </p>
+                             <p class="uwx-invite-permission" :class="canInviteHere ? 'ok' : 'blocked'">
+                                 <i :class="canInviteHere ? 'ri-checkbox-circle-line' : 'ri-forbid-line'" />
+                                 {{ canInviteHere ? 'You can invite people into this instance.' : inviteBlockedReason }}
+                             </p>
+                             <div class="uwx-invite-tile-stats">
+-                                <span><strong>{{ invitePoolFriends.length }}</strong> {{ inviteScopeLabel.toLowerCase() }}</span>
++                                <span>Who: <strong>{{ inviteScopeLabel }}</strong> ({{ invitePoolFriends.length }} online)</span>
+                                 <span><strong>{{ sessionInvitesSent }}</strong> sent this session</span>
+-                                <span><strong>{{ autoInviteEnabled ? 'Auto' : 'Manual' }}</strong></span>
+                             </div>
+                             <div class="flex flex-wrap gap-2">
+                                 <Button :disabled="isManualInviting || !canInviteHere || !invitePoolFriends.length" @click="inviteNow">
+@@ -178,6 +195,14 @@
+             <UwxCrewCard v-if="activePanel === 'command'" />
+             <UwxShareCard v-if="activePanel === 'command'" />
+ 
++            <div v-show="activePanel === 'invites'" class="uwx-card-wide uwx-invite-safety-bar">
++                <label class="uwx-inline-toggle">
++                    <Switch :model-value="notifyEachInvite" @update:modelValue="setNotifyEachInvite" />
++                    <span><strong>Pop-up for every invite</strong><small>See each friend and group invite as it goes out, plus a live counter with a Stop button.</small></span>
++                </label>
++                <Button variant="destructive" :disabled="!anyInviteActive" @click="guard.stopAll()"><i class="ri-stop-circle-line" /> Stop all invites</Button>
++            </div>
++
+             <p v-if="activePanel === 'invites' && !showGroupInvites" class="uwx-card-wide uwx-member-hint">
+                 <i class="ri-information-line" /> Group invites appear here automatically if your VRChat role in a group can send them.
+             </p>
+@@ -189,7 +214,7 @@
+                             <span class="uwx-invite-icon"><i class="ri-group-line" /></span>
+                             <div>
+                                 <div class="uwx-invite-kicker">GROUP INVITES</div>
+-                                <CardTitle>Recruit people into your VRChat group</CardTitle>
++                                <CardTitle>Ask people to join your VRChat group</CardTitle>
+                             </div>
+                         </div>
+                         <Badge variant="outline">{{ recruitGroupName ? 'Inviting to ' + recruitGroupName : 'Not available here' }}</Badge>
+@@ -204,12 +229,19 @@
+                                     instance, or your own instance.
+                                     The switch does it automatically after they've been here for the dwell time; the button does it once, now.
+                                 </p>
++                                <p class="uwx-invite-status mt-2" :class="groupStatusLine.state">
++                                    <i :class="groupStatusLine.state === 'on' ? 'ri-play-circle-line' : groupStatusLine.state === 'blocked' ? 'ri-pause-circle-line' : 'ri-stop-circle-line'" />
++                                    {{ groupStatusLine.text }}
++                                </p>
+                                 <p class="uwx-invite-permission mt-2" :class="recruitStatus.ok ? 'ok' : 'blocked'">
+                                     <i :class="recruitStatus.ok ? 'ri-checkbox-circle-line' : 'ri-information-line'" />
+                                     {{ recruitStatus.text }}
+                                 </p>
+                             </div>
+-                            <Switch :model-value="groupRecruitEnabled" @update:modelValue="setGroupRecruitEnabled" />
++                            <label class="uwx-auto-switch" :class="{ on: groupRecruitEnabled }">
++                                <span>{{ groupRecruitEnabled ? 'AUTO ON' : 'AUTO OFF' }}</span>
++                                <Switch :model-value="groupRecruitEnabled" aria-label="Automatic group invites" @update:modelValue="guard.setGroupAuto" />
++                            </label>
+                         </div>
+ 
+                         <div class="uwx-stat-row mt-4">
+@@ -327,8 +359,8 @@
+                         <div class="flex items-start gap-3">
+                             <span class="uwx-invite-icon"><i class="ri-door-open-line" /></span>
+                             <div>
+-                                <div class="uwx-invite-kicker">INSTANCE INVITES</div>
+-                                <CardTitle>Bring friends to where you are</CardTitle>
++                                <div class="uwx-invite-kicker">FRIEND INVITES</div>
++                                <CardTitle>Ask friends to come to you</CardTitle>
+                             </div>
+                         </div>
+                         <Button size="sm" variant="ghost" @click="activePanel = 'people'">Pick friends / block someone</Button>
+@@ -342,12 +374,19 @@
+                                     Sends a normal VRChat <strong>instance invite</strong> so friends can join you where you are. Works in any instance
+                                     VRChat lets you invite into. The switch does it automatically; "Invite now" sends once.
+                                 </p>
++                                <p class="uwx-invite-status mt-2" :class="friendStatusLine.state">
++                                    <i :class="friendStatusLine.state === 'on' ? 'ri-play-circle-line' : friendStatusLine.state === 'blocked' ? 'ri-pause-circle-line' : 'ri-stop-circle-line'" />
++                                    {{ friendStatusLine.text }}
++                                </p>
+                                 <p class="uwx-invite-permission mt-2" :class="canInviteHere ? 'ok' : 'blocked'">
+                                     <i :class="canInviteHere ? 'ri-checkbox-circle-line' : 'ri-forbid-line'" />
+                                     {{ canInviteHere ? 'You can invite people into this instance.' : inviteBlockedReason }}
+                                 </p>
+                             </div>
+-                            <Switch :model-value="autoInviteEnabled" @update:modelValue="setAutoInviteEnabled" />
++                            <label class="uwx-auto-switch" :class="{ on: autoInviteEnabled }">
++                                <span>{{ autoInviteEnabled ? 'AUTO ON' : 'AUTO OFF' }}</span>
++                                <Switch :model-value="autoInviteEnabled" aria-label="Automatic friend invites" @update:modelValue="guard.setFriendAuto" />
++                            </label>
+                         </div>
+ 
+                         <div class="uwx-stat-row mt-4">
+@@ -1054,6 +1093,8 @@
+     import UwxLobbyBoard from './UwxLobbyBoard.vue';
+     import UwxCrewCard from './UwxCrewCard.vue';
+     import UwxShareCard from './UwxShareCard.vue';
++    import { useInviteGuard } from './useInviteGuard';
++    import { friendStatus, groupStatus } from '../../shared/utils/uwxInviteSafety';
+     import { useUwxShareStore } from '../../stores/uwxShare';
+ 
+     import { UWX_VERSION } from '../../shared/constants/uwx';
+@@ -1175,7 +1216,8 @@
+         return `Invite ${scopeNames[preset.scope] || preset.scope}${msg}`;
+     }
+     async function applyInvitePreset(id, now = false) {
+-        await invitePresetsStore.apply(id, { inviteNow: now });
++        await invitePresetsStore.apply(id);
++        if (now) await guard.inviteFriends(invitePoolFriends.value.map((friend) => friend.id));
+     }
+     async function saveInvitePreset() {
+         const { ok, value } = await modalStore.prompt({
+@@ -1361,6 +1403,35 @@
+         }
+     );
+ 
++    const guard = useInviteGuard();
++    const { notifyEachInvite } = storeToRefs(underWebStore);
++    const { setNotifyEachInvite } = underWebStore;
++    const anyInviteActive = computed(
++        () => autoInviteEnabled.value || groupRecruitEnabled.value || underWebStore.isScanning || isRecruiting.value || isManualInviting.value
++    );
++    const friendStatusLine = computed(() =>
++        friendStatus({
++            enabled: autoInviteEnabled.value,
++            canInviteHere: canInviteHere.value,
++            autoAllowedHere: underWebStore.canAutoInviteHere,
++            blockedReason: inviteBlockedReason.value,
++            scopeLabel: inviteScopeLabel.value,
++            poolCount: invitePoolFriends.value.length,
++            eligibleNames: eligibleInviteFriends.value.map((f) => f.displayName),
++            cooldownMinutes: cooldownMinutes.value
++        })
++    );
++    const groupStatusLine = computed(() =>
++        groupStatus({
++            enabled: groupRecruitEnabled.value,
++            canRecruitHere: canRecruitHere.value,
++            groupName: recruitGroupName.value || 'your group',
++            eligibleCount: eligibleLobbyRecruits.value.length,
++            dwellSeconds: groupRecruitMinPresenceSeconds.value,
++            blockedText: recruitStatus.value.text
++        })
++    );
++
+     const inviteScopeLabel = computed(() => {
+         const labels = {
+             selected: 'Selected friends',
+@@ -1638,7 +1709,7 @@
+     }
+ 
+     function inviteNow() {
+-        void underWebStore.inviteFriendsNow(invitePoolFriends.value.map((friend) => friend.id));
++        void guard.inviteFriends(invitePoolFriends.value.map((friend) => friend.id));
+     }
+ 
+     function setAutoInviteAnywhere(value) {
+@@ -1651,16 +1722,7 @@
+     }
+ 
+     function recruitNow() {
+-        const count = eligibleLobbyRecruits.value.length;
+-        if (!count) {
+-            toast.info('No eligible lobby occupants to recruit right now.');
+-            return;
+-        }
+-        const confirmed = window.confirm(
+-            `Invite ${count} eligible lobby occupant${count === 1 ? '' : 's'} into the current VRChat group?\n\nExisting group members, exclusions, and unverified membership states will be skipped.`
+-        );
+-        if (!confirmed) return;
+-        void scanAndRecruitGroup({ source: 'manual', force: true });
++        void guard.recruitLobby();
+     }
+ 
+     function openUnderWeb() {
+@@ -1842,6 +1904,74 @@
+     /* Invites: green = group invites, blue = instance invites, everywhere they appear. */
+     .uwx-invite-kind-group { --invite: var(--uwx-accent); --invite-soft: rgb(var(--uwx-accent-rgb) / 10%); }
+     .uwx-invite-kind-instance { --invite: #4fb3ff; --invite-soft: rgb(79 179 255 / 10%); }
++    .uwx-invite-what {
++        display: block;
++        margin-top: 2px;
++        font-size: 12px;
++        color: var(--muted-foreground);
++    }
++    .uwx-auto-switch {
++        display: inline-flex;
++        flex: none;
++        align-items: center;
++        gap: 8px;
++        padding: 4px 6px 4px 10px;
++        border-radius: 999px;
++        border: 1px solid var(--border);
++        cursor: pointer;
++    }
++    .uwx-auto-switch span {
++        font-size: 10.5px;
++        font-weight: 900;
++        letter-spacing: 0.08em;
++        color: var(--muted-foreground);
++    }
++    .uwx-auto-switch.on {
++        border-color: var(--invite, var(--uwx-accent));
++        background: var(--invite-soft, rgb(var(--uwx-accent-rgb) / 10%));
++    }
++    .uwx-auto-switch.on span {
++        color: var(--invite, var(--uwx-accent));
++    }
++    .uwx-invite-status {
++        display: flex;
++        align-items: flex-start;
++        gap: 8px;
++        margin: 10px 0 6px;
++        padding: 8px 10px;
++        border-radius: 10px;
++        font-size: 13px;
++        line-height: 1.4;
++        border: 1px solid var(--border);
++        color: var(--muted-foreground);
++    }
++    .uwx-invite-status i {
++        font-size: 16px;
++        line-height: 1.2;
++    }
++    .uwx-invite-status.on {
++        color: var(--foreground);
++        border-color: var(--invite, var(--uwx-accent));
++        background: var(--invite-soft, rgb(var(--uwx-accent-rgb) / 8%));
++    }
++    .uwx-invite-status.on i {
++        color: var(--invite, var(--uwx-accent));
++    }
++    .uwx-invite-status.blocked {
++        border-color: rgb(255 184 77 / 45%);
++        color: #ffcf85;
++    }
++    .uwx-invite-safety-bar {
++        display: flex;
++        flex-wrap: wrap;
++        align-items: center;
++        justify-content: space-between;
++        gap: 12px;
++        padding: 12px 16px;
++        border-radius: 14px;
++        border: 1px solid var(--border);
++        background: var(--card);
++    }
+     .uwx-invite-tiles {
+         display: grid;
+         grid-template-columns: repeat(2, minmax(0, 1fr));
+diff --git a/src/views/UnderWeb/UwxEventMode.vue b/src/views/UnderWeb/UwxEventMode.vue
+index 215e2cc..e34b2a0 100644
+--- a/src/views/UnderWeb/UwxEventMode.vue
++++ b/src/views/UnderWeb/UwxEventMode.vue
+@@ -138,6 +138,7 @@
+ 
+     import { formatDuration } from '../../shared/utils/uwxEvent';
+     import { useUwxEventModeStore } from '../../stores/uwxEventMode';
++    import { useInviteGuard } from './useInviteGuard';
+     import { useUwxAccessStore } from '../../stores/uwxAccess';
+     import { useUnderWebNetworkStore, useUnderWebStore, useModalStore } from '../../stores';
+ 
+@@ -187,7 +188,10 @@
+         await store.deletePreset(id);
+     }
+ 
++    const guard = useInviteGuard();
+     async function startPreset(id) {
++        const preset = presets.value.find((p) => p.id === id);
++        if (!preset || !(await guard.confirmEventStart(preset, eventName.value.trim()))) return;
+         const ok = await store.start(id, { name: eventName.value });
+         if (ok) eventName.value = '';
+     }
+diff --git a/src/views/UnderWeb/useInviteGuard.js b/src/views/UnderWeb/useInviteGuard.js
+new file mode 100644
+index 0000000..09821d1
+--- /dev/null
++++ b/src/views/UnderWeb/useInviteGuard.js
+@@ -0,0 +1,104 @@
++// "Are you sure?" for everything that sends invites. Every switch and button that can
++// invite people goes through here, so turning something on always shows who it would hit.
++
++import { toast } from 'vue-sonner';
++
++import {
++    CONFIRM_BATCH_AT,
++    eventStartConfirm,
++    friendAutoConfirm,
++    friendBatchConfirm,
++    groupAutoConfirm,
++    groupBatchConfirm
++} from '../../shared/utils/uwxInviteSafety';
++import { useGroupStore, useModalStore, useUnderWebStore } from '../../stores';
++import { useUwxAccessStore } from '../../stores/uwxAccess';
++
++export const SCOPE_LABELS = Object.freeze({
++    selected: 'Selected friends',
++    favorites: 'Favorite friends',
++    'all-online': 'All online friends',
++    staff: 'UnderWeb staff',
++    creators: 'UnderWeb creators',
++    partners: 'UnderWeb partners'
++});
++
++export function useInviteGuard() {
++    const underweb = useUnderWebStore();
++    const modal = useModalStore();
++    const groupStore = useGroupStore();
++
++    const groupName = () => groupStore.currentUserGroups.get(underweb.recruitGroupId)?.name || 'your group';
++    const nameOf = (f) => f?.displayName || f?.ref?.displayName || f?.id;
++    const ask = async (c) => (await modal.confirm({ ...c, dismissible: true })).ok;
++
++    async function setFriendAuto(value) {
++        if (!value) return underweb.setAutoInviteEnabled(false);
++        const ok = await ask(
++            friendAutoConfirm({
++                scopeId: underweb.inviteScope,
++                scopeLabel: SCOPE_LABELS[underweb.inviteScope] || 'Selected friends',
++                eligibleNames: underweb.eligibleInviteFriends.map(nameOf),
++                poolCount: underweb.invitePoolFriends.length,
++                messageText: underweb.selectedInviteMessage,
++                cooldownMinutes: underweb.cooldownMinutes
++            })
++        );
++        if (ok) await underweb.setAutoInviteEnabled(true);
++    }
++
++    async function setGroupAuto(value) {
++        if (!value) return underweb.setGroupRecruitEnabled(false);
++        const ok = await ask(
++            groupAutoConfirm({
++                groupName: groupName(),
++                eligibleNames: underweb.eligibleLobbyRecruits.map((p) => p.displayName),
++                dwellSeconds: underweb.groupRecruitMinPresenceSeconds
++            })
++        );
++        if (ok) await underweb.setGroupRecruitEnabled(true);
++    }
++
++    /** "Invite now" for a list of friend ids. Asks first for 3 or more. */
++    async function inviteFriends(ids) {
++        const list = (ids || []).filter(Boolean);
++        if (!list.length) {
++            toast.info('Nobody to invite.');
++            return null;
++        }
++        if (list.length >= CONFIRM_BATCH_AT) {
++            const names = list.map((id) => underweb.selectedFriends.find((f) => f.id === id) || underweb.allOnlineFriends.find((f) => f.id === id)).map((f, i) => nameOf(f) || list[i]);
++            const ok = await ask(friendBatchConfirm({ names, scopeLabel: SCOPE_LABELS[underweb.inviteScope] || 'Friends', messageText: underweb.selectedInviteMessage }));
++            if (!ok) return null;
++        }
++        return underweb.inviteFriendsNow(list);
++    }
++
++    async function recruitLobby() {
++        const names = underweb.eligibleLobbyRecruits.map((p) => p.displayName);
++        if (!names.length) {
++            toast.info('Nobody in this lobby can get a group invite right now.');
++            return null;
++        }
++        if (!(await ask(groupBatchConfirm({ groupName: groupName(), names })))) return null;
++        return underweb.scanAndRecruitGroup({ source: 'manual', force: true });
++    }
++
++    /** Before Event Mode switches invites on. */
++    async function confirmEventStart(preset, eventName) {
++        const groupAuto = Boolean(preset.recruit && useUwxAccessStore().showGroupInvites);
++        const pool = underweb.poolForScope(preset.scope).filter((f) => underweb.isFriendEligible(f));
++        const c = eventStartConfirm({
++            eventName: eventName || preset.name,
++            friendAuto: Boolean(preset.autoInvite),
++            friendScopeLabel: SCOPE_LABELS[preset.scope] || 'Favorite friends',
++            friendCount: pool.length,
++            groupAuto,
++            groupName: groupName(),
++            groupCount: underweb.eligibleLobbyRecruits.length
++        });
++        return c ? ask(c) : true;
++    }
++
++    return { setFriendAuto, setGroupAuto, inviteFriends, recruitLobby, confirmEventStart, stopAll: () => underweb.stopAllInvites() };
++}
