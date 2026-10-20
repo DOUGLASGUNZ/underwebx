@@ -1,0 +1,154 @@
+diff --git a/CHANGELOG_UWX.md b/CHANGELOG_UWX.md
+index 56e6caa..a75b1d9 100644
+--- a/CHANGELOG_UWX.md
++++ b/CHANGELOG_UWX.md
+@@ -1,5 +1,10 @@
+ # UnderWeb X changelog
+ 
++## 0.6.3-rc22 — Creator Room likes
++
++- When someone in your instance taps ♥ under a card in the UnderWeb hub's Creator Room, UWX passes the like to underweb.cloud so the creator sees it on their profile (and the count shows under the card).
++- Only their display name, the card id and the world's check code are sent: no instance, world or anything about you. The server only accepts codes the hub world made and counts one like per name per card.
++
+ ## 0.6.2-rc21 — Permanent ROOT ACCESS list
+ 
+ - When the UnderWeb hub tells VRChat's log that someone in your instance has ROOT ACCESS (they finished CLEARANCE), UWX passes their display name to underweb.cloud so they stay on THE CORE board for good, not just while they're in the instance.
+diff --git a/UWX_VERSION b/UWX_VERSION
+index 3f56aa4..e35100d 100644
+--- a/UWX_VERSION
++++ b/UWX_VERSION
+@@ -1 +1 @@
+-0.6.2-rc21
++0.6.3-rc22
+diff --git a/src/coordinators/gameLogCoordinator.js b/src/coordinators/gameLogCoordinator.js
+index c6374ca..2855235 100644
+--- a/src/coordinators/gameLogCoordinator.js
++++ b/src/coordinators/gameLogCoordinator.js
+@@ -20,6 +20,7 @@ import { userRequest } from '../api';
+ import { watchState } from '../services/watchState';
+ import { toast } from 'vue-sonner';
+ import { reportRootAccess } from '../shared/utils/uwxRoot';
++import { reportHubLike } from '../shared/utils/uwxLikes';
+ 
+ import { useAdvancedSettingsStore } from '../stores/settings/advanced';
+ import { useFriendStore } from '../stores/friend';
+@@ -342,6 +343,9 @@ export function addGameLogEntry(gameLog, location) {
+             } else if (type === 'UWRoot') {
+                 // UnderWeb hub: someone here has ROOT ACCESS -> the permanent list on underweb.cloud
+                 reportRootAccess(gameLog.data);
++            } else if (type === 'UWLike') {
++                // UnderWeb hub: someone here tapped ♥ on a Creator Room card -> the creator's likes on underweb.cloud
++                reportHubLike(gameLog.data);
+             }
+             break;
+         case 'photon-id':
+diff --git a/src/shared/constants/uwx.js b/src/shared/constants/uwx.js
+index f3d3653..934ba9c 100644
+--- a/src/shared/constants/uwx.js
++++ b/src/shared/constants/uwx.js
+@@ -1,2 +1,2 @@
+-export const UWX_VERSION = '0.6.2-rc21';
++export const UWX_VERSION = '0.6.3-rc22';
+ export const UWX_MANIFEST_URL = 'https://underweb.cloud/api/uwx/manifest';
+diff --git a/src/shared/utils/__tests__/uwxLikes.test.js b/src/shared/utils/__tests__/uwxLikes.test.js
+new file mode 100644
+index 0000000..ea607ae
+--- /dev/null
++++ b/src/shared/utils/__tests__/uwxLikes.test.js
+@@ -0,0 +1,40 @@
++import { describe, expect, test, vi } from 'vitest';
++
++import { createLikeReporter, parseLikeLine } from '../uwxLikes';
++
++const CARD = '582affa4-c6d4-4bcb-bdf3-a26bf40dcad7';
++
++describe('UWX hub likes', () => {
++    test('parses the world line, names with spaces and Cyrillic letters included', () => {
++        expect(parseLikeLine(`UWLike Dаrko\t${CARD}\t915006-329339`)).toEqual({ name: 'Dаrko', card: CARD, code: '915006-329339' });
++        expect(parseLikeLine(`UWLike Some Body\t${CARD.toUpperCase()}\t000001-999978\r\n`)).toEqual({ name: 'Some Body', card: CARD, code: '000001-999978' });
++    });
++
++    test('ignores anything else', () => {
++        expect(parseLikeLine('UWRoot Vex\t123456-654321')).toBeNull();
++        expect(parseLikeLine(`UWLike Vex\t${CARD}`)).toBeNull();
++        expect(parseLikeLine('UWLike Vex\tnot-a-card\t123456-654321')).toBeNull();
++        expect(parseLikeLine(`UWLike Vex\t${CARD}\tabc`)).toBeNull();
++        expect(parseLikeLine(`UWLike \t${CARD}\t123456-654321`)).toBeNull();
++        expect(parseLikeLine(`UWLike ${'x'.repeat(65)}\t${CARD}\t123456-654321`)).toBeNull();
++        expect(parseLikeLine(undefined)).toBeNull();
++    });
++
++    test('sends only name + card + code, once per name and card', async () => {
++        const fetchImpl = vi.fn(async () => ({ ok: true }));
++        const report = createLikeReporter({ fetchImpl, url: 'https://example.test/report' });
++        expect(await report(`UWLike Vex\t${CARD}\t123456-654321`)).toBe(true);
++        expect(await report(`UWLike Vex\t${CARD}\t123456-654321`)).toBe(false);
++        expect(fetchImpl).toHaveBeenCalledTimes(1);
++        const [url, init] = fetchImpl.mock.calls[0];
++        expect(url).toBe('https://example.test/report');
++        expect(JSON.parse(init.body)).toEqual({ name: 'Vex', card: CARD, code: '123456-654321' });
++    });
++
++    test('retries after a network failure', async () => {
++        const fetchImpl = vi.fn().mockRejectedValueOnce(new Error('offline')).mockResolvedValue({ ok: true });
++        const report = createLikeReporter({ fetchImpl });
++        expect(await report(`UWLike Vex\t${CARD}\t123456-654321`)).toBe(false);
++        expect(await report(`UWLike Vex\t${CARD}\t123456-654321`)).toBe(true);
++    });
++});
+diff --git a/src/shared/utils/uwxLikes.js b/src/shared/utils/uwxLikes.js
+new file mode 100644
+index 0000000..c084f14
+--- /dev/null
++++ b/src/shared/utils/uwxLikes.js
+@@ -0,0 +1,50 @@
++// UnderWeb hub world: ♥ likes from the Creator Room.
++//
++// When someone in your instance taps ♥ under a card, the hub world writes
++//   [VRCX] UWLike <their display name><TAB><card id><TAB><code>
++// to VRChat's log (for every like in the instance, not just yours). UWX passes name + card + code
++// to underweb.cloud, which checks the code (only the world can make it), so the creator sees the like.
++// Nothing else is sent: no instance, no world, nothing about you.
++
++export const LIKE_REPORT_URL = 'https://pxipclkptxpqukefwexh.supabase.co/functions/v1/hub-likes/report';
++
++const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
++
++/** "UWLike Name With Spaces\t<uuid>\t123456-654321" -> { name, card, code }, or null if it isn't one. */
++export function parseLikeLine(data) {
++    const text = String(data ?? '');
++    if (!text.startsWith('UWLike ')) return null;
++    const parts = text.slice(7).replace(/[\r\n]+$/, '').split('\t');
++    if (parts.length !== 3) return null;
++    const [name, card, codeRaw] = parts;
++    const code = codeRaw.trim();
++    if (!name || name.length > 64) return null;
++    if (!UUID.test(card)) return null;
++    if (!/^\d{6}-\d{6}$/.test(code)) return null;
++    return { name, card: card.toLowerCase(), code };
++}
++
++/** One report per name + card per UWX session (the server ignores repeats anyway). */
++export function createLikeReporter({ fetchImpl = (...a) => fetch(...a), url = LIKE_REPORT_URL } = {}) {
++    const sent = new Set();
++    return async function report(data) {
++        const entry = parseLikeLine(data);
++        if (!entry) return false;
++        const key = entry.name + '\t' + entry.card;
++        if (sent.has(key)) return false;
++        sent.add(key);
++        try {
++            const res = await fetchImpl(url, {
++                method: 'POST',
++                headers: { 'Content-Type': 'application/json' },
++                body: JSON.stringify(entry)
++            });
++            return !!res?.ok;
++        } catch {
++            sent.delete(key); // offline: try again the next time the world logs it
++            return false;
++        }
++    };
++}
++
++export const reportHubLike = createLikeReporter();
