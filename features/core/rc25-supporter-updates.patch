@@ -1,0 +1,386 @@
+diff --git a/CHANGELOG_UWX.md b/CHANGELOG_UWX.md
+index 8658c81..2c7852f 100644
+--- a/CHANGELOG_UWX.md
++++ b/CHANGELOG_UWX.md
+@@ -1,5 +1,11 @@
+ # UnderWeb X changelog
+ 
++## 0.6.6-rc25 — Updates for supporters
++
++- **UWX updates now come through your UnderWeb account.** UWX is for UnderWeb's Patreon supporters: the update check asks UnderWeb as you, and UnderWeb only lists releases for active supporters (and staff).
++- Not signed in, or not a supporter yet? The update window says why, and UWX reminds you at most once a day. Patreon supporters are matched by the Discord they linked on Patreon (or the same email), and staff can add people by hand.
++- Download links from UnderWeb are short-lived, so UWX fetches a fresh one right before downloading. The installer's size and SHA-256 are still checked before anything is installed.
++
+ ## 0.6.5-rc24 — Creator Room likes
+ 
+ - When someone in your instance taps ♥ under a card in the UnderWeb hub's Creator Room, UWX passes the like to underweb.cloud so the creator sees it on their profile (and the count shows under the card).
+diff --git a/UWX_VERSION b/UWX_VERSION
+index 96862cd..985c204 100644
+--- a/UWX_VERSION
++++ b/UWX_VERSION
+@@ -1 +1 @@
+-0.6.5-rc24
++0.6.6-rc25
+diff --git a/src/components/dialogs/VRCXUpdateDialog.vue b/src/components/dialogs/VRCXUpdateDialog.vue
+index 6256c33..bdee922 100644
+--- a/src/components/dialogs/VRCXUpdateDialog.vue
++++ b/src/components/dialogs/VRCXUpdateDialog.vue
+@@ -31,6 +31,11 @@
+                             </Alert>
+                         </TabsContent>
+                     </Tabs>
++                    <Alert v-if="updateAccess === 'sign_in' || updateAccess === 'supporter'" class="mt-3">
++                        <AlertCircle class="text-muted-foreground" />
++                        <AlertTitle>{{ updateAccess === 'sign_in' ? 'Sign in to UnderWeb for updates' : 'Updates are for Patreon supporters' }}</AlertTitle>
++                        <AlertDescription>{{ updateAccessMessage }}</AlertDescription>
++                    </Alert>
+                     <FieldGroup class="mt-3">
+                         <Field>
+                             <FieldLabel>{{ t('dialog.vrcx_updater.release') }}</FieldLabel>
+@@ -103,7 +108,9 @@
+         VRCXUpdateDialog,
+         pendingVRCXInstall,
+         updateInProgress,
+-        updateProgress
++        updateProgress,
++        updateAccess,
++        updateAccessMessage
+     } = storeToRefs(VRCXUpdaterStore);
+     const { installVRCXUpdate, loadBranchVersions, restartVRCX, updateProgressText, cancelUpdate } = VRCXUpdaterStore;
+ 
+diff --git a/src/shared/constants/settings.js b/src/shared/constants/settings.js
+index e97df40..71e2612 100644
+--- a/src/shared/constants/settings.js
++++ b/src/shared/constants/settings.js
+@@ -13,9 +13,9 @@ const VRChatCameraResolutions = [
+     { name: '7680x4320 (8K)', width: 7680, height: 4320 }
+ ];
+ 
+-// UWX: updates come from UnderWeb X's own GitHub releases (see shared/utils/uwxRelease.js),
++// UWX: updates come from UnderWeb's supporter-only release list (see shared/utils/uwxRelease.js),
+ // never from VRCX's update server — that would offer stock VRCX and replace UWX.
+-const UWX_RELEASES_API = 'https://api.github.com/repos/DOUGLASGUNZ/underwebx/releases?per_page=30';
++const UWX_RELEASES_API = 'https://pxipclkptxpqukefwexh.supabase.co/functions/v1/uwx-releases';
+ const branches = {
+     Stable: {
+         name: 'Stable',
+diff --git a/src/shared/constants/uwx.js b/src/shared/constants/uwx.js
+index 3ea43cd..f4f458b 100644
+--- a/src/shared/constants/uwx.js
++++ b/src/shared/constants/uwx.js
+@@ -1,2 +1,2 @@
+-export const UWX_VERSION = '0.6.5-rc24';
++export const UWX_VERSION = '0.6.6-rc25';
+ export const UWX_MANIFEST_URL = 'https://underweb.cloud/api/uwx/manifest';
+diff --git a/src/shared/utils/__tests__/uwxRelease.test.js b/src/shared/utils/__tests__/uwxRelease.test.js
+index d547770..62efe83 100644
+--- a/src/shared/utils/__tests__/uwxRelease.test.js
++++ b/src/shared/utils/__tests__/uwxRelease.test.js
+@@ -46,6 +46,24 @@ describe('uwxRelease', () => {
+         expect(setupAsset({ assets: [asset({ state: 'starter' })] })).toBeNull();
+     });
+ 
++    it("accepts GitHub's short-lived download links (private repo) but nothing else", () => {
++        const cdn = 'https://release-assets.githubusercontent.com/github-production-release-asset/1/abc?sp=r&sig=x';
++        expect(setupAsset({ assets: [asset({ browser_download_url: cdn })] })).toMatchObject({ downloadUrl: cdn, hashString: HASH });
++        expect(setupAsset({ assets: [asset({ browser_download_url: 'https://objects.githubusercontent.com/github-production-release-asset-2e65be/1/x' })] })).not.toBeNull();
++        expect(setupAsset({ assets: [asset({ browser_download_url: 'https://release-assets.githubusercontent.com.evil.example/x' })] })).toBeNull();
++        expect(setupAsset({ assets: [asset({ browser_download_url: 'https://evil.example/release-assets.githubusercontent.com/x' })] })).toBeNull();
++        expect(setupAsset({ assets: [asset({ browser_download_url: 'http://release-assets.githubusercontent.com/x' })] })).toBeNull();
++    });
++
++    it("accepts GitHub's short-lived download links (private repo) but nothing else", () => {
++        const cdn = 'https://release-assets.githubusercontent.com/github-production-release-asset/1/abc?sp=r&sig=x';
++        expect(setupAsset({ assets: [asset({ browser_download_url: cdn })] })).toMatchObject({ downloadUrl: cdn, hashString: HASH });
++        expect(setupAsset({ assets: [asset({ browser_download_url: 'https://objects.githubusercontent.com/github-production-release-asset-2e65be/1/x' })] })).not.toBeNull();
++        expect(setupAsset({ assets: [asset({ browser_download_url: 'https://release-assets.githubusercontent.com.evil.example/x' })] })).toBeNull();
++        expect(setupAsset({ assets: [asset({ browser_download_url: 'https://evil.example/release-assets.githubusercontent.com/x' })] })).toBeNull();
++        expect(setupAsset({ assets: [asset({ browser_download_url: 'http://release-assets.githubusercontent.com/x' })] })).toBeNull();
++    });
++
+     it('Stable ignores pre-releases; Beta includes them; drafts never count', () => {
+         const list = [release('v0.5.4-rc13'), release('v0.5.0'), release('v0.6.0', { draft: true })];
+         expect(channelReleases(list, 'Stable').map((r) => r.tag_name)).toEqual(['v0.5.0']);
+diff --git a/src/shared/utils/uwxRelease.js b/src/shared/utils/uwxRelease.js
+index 8fa9c33..ee3368a 100644
+--- a/src/shared/utils/uwxRelease.js
++++ b/src/shared/utils/uwxRelease.js
+@@ -1,15 +1,20 @@
+-// UWX updates come from UnderWeb X's own GitHub releases — never from VRCX's update server,
++// UWX updates come from UnderWeb X's own releases — never from VRCX's update server,
+ // which would offer stock VRCX and replace UWX.
+ //   Stable channel: normal releases only.  Beta channel: also pre-releases (rc builds).
+-// Release data is untrusted input: only an UnderWebX_*_Setup.exe asset hosted on
+-// github.com with a SHA-256 digest is ever downloaded, and the hash is checked before install.
++// UWX is for UnderWeb's Patreon supporters, so the release list comes from UnderWeb's
++// `uwx-releases` function (signed in + supporter check), in GitHub's release format.
++// Release data is still untrusted input: only an UnderWebX_*_Setup.exe asset on GitHub
++// (the release page or GitHub's download servers) with a SHA-256 digest is ever downloaded,
++// and the size and hash are checked before install.
+ 
+-export const UWX_RELEASES_URL = 'https://api.github.com/repos/DOUGLASGUNZ/underwebx/releases?per_page=30';
++export const UWX_RELEASES_FUNCTION = 'uwx-releases';
++export const UWX_RELEASES_URL = 'https://pxipclkptxpqukefwexh.supabase.co/functions/v1/uwx-releases';
+ export const UWX_RELEASES_PAGE = 'https://github.com/DOUGLASGUNZ/underwebx/releases';
+ export const UWX_CHANNELS = Object.freeze(['Stable', 'Beta']);
+ 
+ const SETUP_NAME = /^UnderWebX_[\w.-]*_Setup\.exe$/i;
+-const DOWNLOAD_ORIGIN = /^https:\/\/github\.com\/DOUGLASGUNZ\/underwebx\/releases\/download\//i;
++const DOWNLOAD_ORIGIN =
++    /^https:\/\/(github\.com\/DOUGLASGUNZ\/underwebx\/releases\/download\/|release-assets\.githubusercontent\.com\/|objects\.githubusercontent\.com\/)/i;
+ 
+ /**
+  * "v0.5.4-rc13", "UnderWeb X v0.5.4-rc13", "0.5.2-rc11" -> { major, minor, patch, pre }
+diff --git a/src/stores/__tests__/vrcxUpdater.test.js b/src/stores/__tests__/vrcxUpdater.test.js
+index ec98d8d..73b6207 100644
+--- a/src/stores/__tests__/vrcxUpdater.test.js
++++ b/src/stores/__tests__/vrcxUpdater.test.js
+@@ -7,11 +7,16 @@ const mocks = vi.hoisted(() => ({
+         setString: vi.fn()
+     },
+     changeLogRemoveLinks: vi.fn((value) => value),
+-    toast: {
++    toast: Object.assign(vi.fn(), {
+         error: vi.fn(),
+         success: vi.fn(),
+         warning: vi.fn()
+-    }
++    }),
++    callFunction: vi.fn()
++}));
++
++vi.mock('../uwxAccount', () => ({
++    useUwxAccountStore: () => ({ callFunction: (...args) => mocks.callFunction(...args) })
+ }));
+ 
+ vi.mock('../../services/config', () => ({
+@@ -87,3 +92,55 @@ describe('useVRCXUpdaterStore.setAutoUpdateVRCX', () => {
+         expect(mocks.configRepository.setString).toHaveBeenCalledWith('VRCX_autoUpdateVRCX', 'Notify');
+     });
+ });
++
++describe('UWX updates come from UnderWeb, for supporters', () => {
++    beforeEach(async () => {
++        mocks.configRepository.getString.mockImplementation((key, defaultValue) => Promise.resolve(key === 'VRCX_autoUpdateVRCX' ? 'Notify' : (defaultValue ?? '')));
++        mocks.configRepository.setString.mockResolvedValue(undefined);
++        globalThis.AppApi = { GetVersion: vi.fn().mockResolvedValue('2026.1.0') };
++        setActivePinia(createPinia());
++        useVRCXUpdaterStore();
++        await flushPromises();
++        vi.clearAllMocks();
++        mocks.configRepository.getString.mockImplementation((key, defaultValue) => Promise.resolve(defaultValue ?? ''));
++    });
++
++    test('asks UnderWeb (as you) for the release list', async () => {
++        mocks.callFunction.mockResolvedValue({ status: 200, json: [] });
++        const store = useVRCXUpdaterStore();
++        await store.checkForVRCXUpdate();
++        expect(mocks.callFunction).toHaveBeenCalledWith('uwx-releases', { method: 'GET' });
++        expect(store.updateAccess).toBe('');
++    });
++
++    test('not a supporter: says why, once a day', async () => {
++        mocks.callFunction.mockResolvedValue({ status: 403, json: { error: 'supporter_required', message: 'Supporters only.' } });
++        const store = useVRCXUpdaterStore();
++        expect(await store.checkForVRCXUpdate()).toBe(false);
++        expect(store.updateAccess).toBe('supporter');
++        expect(store.updateAccessMessage).toBe('Supporters only.');
++        expect(mocks.toast).toHaveBeenCalledTimes(1);
++        const today = new Date().toISOString().slice(0, 10);
++        expect(mocks.configRepository.setString).toHaveBeenCalledWith('UWX_updateAccessNoticeDay', today);
++
++        mocks.configRepository.getString.mockImplementation((key, defaultValue) => Promise.resolve(key === 'UWX_updateAccessNoticeDay' ? today : (defaultValue ?? '')));
++        await store.checkForVRCXUpdate();
++        expect(mocks.toast).toHaveBeenCalledTimes(1);
++    });
++
++    test('not signed in: points to UnderWeb sign-in', async () => {
++        mocks.callFunction.mockResolvedValue({ status: 401, json: { error: 'sign_in_required' } });
++        const store = useVRCXUpdaterStore();
++        expect(await store.checkForVRCXUpdate()).toBe(false);
++        expect(store.updateAccess).toBe('sign_in');
++        expect(store.updateAccessMessage).toMatch(/Sign in to your UnderWeb account/);
++    });
++
++    test('server down: stays quiet', async () => {
++        mocks.callFunction.mockResolvedValue({ status: 0, json: { error: 'offline' } });
++        const store = useVRCXUpdaterStore();
++        expect(await store.checkForVRCXUpdate()).toBe(false);
++        expect(store.updateAccess).toBe('offline');
++        expect(mocks.toast).not.toHaveBeenCalled();
++    });
++});
+diff --git a/src/stores/uwxAccount.js b/src/stores/uwxAccount.js
+index 3189de1..6855a9b 100644
+--- a/src/stores/uwxAccount.js
++++ b/src/stores/uwxAccount.js
+@@ -177,6 +177,31 @@ export const useUwxAccountStore = defineStore('UwxAccount', () => {
+ 
+     const rpc = (name, args = {}) => api(`rpc/${name}`, { method: 'POST', body: JSON.stringify(args) });
+ 
++    /**
++     * Call an UnderWeb edge function as you (signs you back in from the saved session first).
++     * Never throws for HTTP errors: returns { status, json }. status 0 = not signed in / offline.
++     * @param {string} name e.g. 'uwx-releases'
++     * @param {RequestInit} [options]
++     */
++    async function callFunction(name, options = {}) {
++        await init();
++        if (!signedIn.value && !(await refresh())) return { status: 401, json: { error: 'sign_in_required' } };
++        if (Date.now() > expiresAt.value - 60 * 1000) await refresh();
++        const doFetch = () =>
++            fetch(`${UNDERWEB_SUPABASE_URL}/functions/v1/${name}`, {
++                ...options,
++                headers: { apikey: UNDERWEB_ANON_KEY, Authorization: `Bearer ${accessToken.value}`, ...(options.headers || {}) }
++            });
++        try {
++            let response = await doFetch();
++            if (response.status === 401 && (await refresh())) response = await doFetch();
++            const json = await response.json().catch(() => null);
++            return { status: response.status, json };
++        } catch {
++            return { status: 0, json: { error: 'offline' } };
++        }
++    }
++
+     /** Upload a file to UnderWeb storage as you (the bucket's own rules decide if it's allowed). */
+     async function storageUpload(bucket, objectPath, blob, contentType) {
+         if (!signedIn.value && !(await refresh())) throw new Error('Sign in to UnderWeb first.');
+@@ -266,6 +291,7 @@ export const useUwxAccountStore = defineStore('UwxAccount', () => {
+         signOut,
+         api,
+         rpc,
++        callFunction,
+         storageUpload,
+         storageRemove,
+         loadPermissions
+diff --git a/src/stores/vrcxUpdater.js b/src/stores/vrcxUpdater.js
+index 57209fc..336ae15 100644
+--- a/src/stores/vrcxUpdater.js
++++ b/src/stores/vrcxUpdater.js
+@@ -7,7 +7,8 @@ import { logWebRequest } from '../services/appConfig';
+ import { branches } from '../shared/constants';
+ import { getWhatsNewRelease, normalizeReleaseVersion } from '../shared/constants/whatsNewReleases';
+ import { changeLogRemoveLinks } from '../shared/utils';
+-import { channelReleases, pickUpdate, setupAsset, UWX_CHANNELS } from '../shared/utils/uwxRelease';
++import { channelReleases, pickUpdate, setupAsset, UWX_CHANNELS, UWX_RELEASES_FUNCTION } from '../shared/utils/uwxRelease';
++import { useUwxAccountStore } from './uwxAccount';
+ import { UWX_VERSION } from '../shared/constants/uwx';
+ 
+ import configRepository from '../services/config';
+@@ -226,21 +227,43 @@ export const useVRCXUpdaterStore = defineStore('VRCXUpdater', () => {
+         return asset ? { downloadUrl: asset.downloadUrl, hashString: asset.hashString, size: asset.size } : { downloadUrl: '', hashString: '', size: 0 };
+     }
+ 
++    // Why the last update check couldn't list releases: '' | 'sign_in' | 'supporter' | 'offline'.
++    const updateAccess = ref('');
++    const updateAccessMessage = ref('');
++    const ACCESS_NOTICE_KEY = 'UWX_updateAccessNoticeDay';
++
+     async function fetchUwxReleases() {
+-        const url = branches[branch.value]?.urlReleases || branches.Stable.urlReleases;
+-        const response = await webApiService.execute({
+-            url,
+-            method: 'GET',
+-            headers: { Accept: 'application/vnd.github+json' }
+-        });
+-        let json = null;
+-        try {
+-            json = JSON.parse(response.data);
+-        } catch {
+-            json = null;
++        // UWX is for UnderWeb's Patreon supporters: the release list comes from UnderWeb as you.
++        const account = useUwxAccountStore();
++        const { status, json } = await account.callFunction(UWX_RELEASES_FUNCTION, { method: 'GET' });
++        logWebRequest('[UWX RELEASES]', UWX_RELEASES_FUNCTION, `(${status})`, Array.isArray(json) ? `${json.length} releases` : json?.error);
++        if (status === 200 && Array.isArray(json)) {
++            updateAccess.value = '';
++            updateAccessMessage.value = '';
++        } else if (status === 401) {
++            updateAccess.value = 'sign_in';
++            updateAccessMessage.value = 'Sign in to your UnderWeb account (UnderWeb → System tab) to get UWX updates.';
++        } else if (status === 403) {
++            updateAccess.value = 'supporter';
++            updateAccessMessage.value =
++                json?.message || 'UWX updates are for UnderWeb Patreon supporters. Link the Discord you use on Patreon to your UnderWeb account, or ask staff.';
++        } else {
++            updateAccess.value = 'offline';
++            updateAccessMessage.value = json?.message || "Couldn't reach UnderWeb's update server. UWX will try again later.";
+         }
+-        logWebRequest('[EXTERNAL GET]', url, `(${response.status})`, Array.isArray(json) ? `${json.length} releases` : json);
+-        return { status: response.status, json };
++        return { status, json };
++    }
++
++    /** Tell the person once a day why updates aren't coming through (not signed in / not a supporter). */
++    async function noticeUpdateAccess() {
++        if (updateAccess.value !== 'sign_in' && updateAccess.value !== 'supporter') return;
++        const today = new Date().toISOString().slice(0, 10);
++        if ((await configRepository.getString(ACCESS_NOTICE_KEY, '')) === today) return;
++        await configRepository.setString(ACCESS_NOTICE_KEY, today);
++        toast(updateAccess.value === 'sign_in' ? 'UWX updates need your UnderWeb account' : 'UWX updates are for Patreon supporters', {
++            description: updateAccessMessage.value,
++            duration: 12000
++        });
+     }
+ 
+     async function checkForVRCXUpdate() {
+@@ -256,8 +279,9 @@ export const useVRCXUpdaterStore = defineStore('VRCXUpdater', () => {
+             checkingForVRCXUpdate.value = false;
+         }
+         if (result.status !== 200 || !Array.isArray(result.json)) {
+-            // GitHub rate limit or outage: stay quiet, try again next launch.
++            // Not signed in / not a supporter: say so (once a day). Outage: stay quiet, try again later.
+             console.warn('UWX update check unavailable', result.status);
++            await noticeUpdateAccess();
+             return false;
+         }
+         pendingVRCXUpdate.value = false;
+@@ -320,11 +344,7 @@ export const useVRCXUpdaterStore = defineStore('VRCXUpdater', () => {
+             checkingForVRCXUpdate.value = false;
+         }
+         if (result.status !== 200 || !Array.isArray(result.json)) {
+-            toast.error(
+-                t('message.vrcx_updater.failed', {
+-                    message: `${result.status} ${result.json?.message || 'GitHub unavailable'}`
+-                })
+-            );
++            toast.error(updateAccessMessage.value || t('message.vrcx_updater.failed', { message: String(result.status) }));
+             return;
+         }
+         const releases = channelReleases(result.json, branch.value);
+@@ -359,9 +379,22 @@ export const useVRCXUpdaterStore = defineStore('VRCXUpdater', () => {
+             workerTimers.setTimeout(() => downloadFileProgress(), 150);
+         }
+     }
+-    function installVRCXUpdate() {
+-        for (const release of VRCXUpdateDialog.value.releases) {
+-            if (release.name !== VRCXUpdateDialog.value.release) {
++    async function installVRCXUpdate() {
++        const wanted = VRCXUpdateDialog.value.release;
++        // Download links from UnderWeb are short-lived: get a fresh one for the chosen release.
++        let releases = VRCXUpdateDialog.value.releases;
++        try {
++            const result = await fetchUwxReleases();
++            if (result.status === 200 && Array.isArray(result.json)) releases = channelReleases(result.json, branch.value);
++            else {
++                toast.error(updateAccessMessage.value || 'Could not get the update right now.');
++                return;
++            }
++        } catch {
++            // fall back to the list already shown
++        }
++        for (const release of releases) {
++            if (release.name !== wanted) {
+                 continue;
+             }
+             const { downloadUrl, hashString, size } = getAssetOfInterest(release.assets);
+@@ -433,6 +466,8 @@ export const useVRCXUpdaterStore = defineStore('VRCXUpdater', () => {
+         updateInProgress,
+         updateProgress,
+         noUpdater,
++        updateAccess,
++        updateAccessMessage,
+ 
+         setAutoUpdateVRCX,
+         setBranch,
