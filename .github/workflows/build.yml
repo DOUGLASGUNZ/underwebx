@@ -777,6 +777,23 @@ jobs:
           if (-not (Get-Content "src\coordinators\gameLogCoordinator.js" -Raw).Contains("reportHubLike")) { throw "RC24: like reports are not hooked up." }
           Write-Host "RC24 applied: UWX $version"
 
+      - name: Apply RC25 supporter-only updates
+        shell: pwsh
+        working-directory: ${{ env.UWX_SOURCE }}
+        run: |
+          $patchFile = Join-Path $env:GITHUB_WORKSPACE "features\core\rc25-supporter-updates.patch"
+          if (-not (Test-Path $patchFile)) { throw "RC25 patch not found." }
+          $patchText = [System.IO.File]::ReadAllText($patchFile).Replace("`r`n", "`n")
+          [System.IO.File]::WriteAllText($patchFile, $patchText, [System.Text.UTF8Encoding]::new($false))
+          git apply --check --verbose $patchFile
+          if ($LASTEXITCODE -ne 0) { throw "RC25 patch check failed." }
+          git apply --whitespace=nowarn $patchFile
+          if ($LASTEXITCODE -ne 0) { throw "RC25 patch failed." }
+          $version = (Get-Content "UWX_VERSION" -Raw).Trim()
+          if ($version -ne "0.6.6-rc25") { throw "RC25 version mismatch: $version" }
+          if (-not (Get-Content "src\shared\utils\uwxRelease.js" -Raw).Contains("UWX_RELEASES_FUNCTION")) { throw "RC25: updater still points at GitHub." }
+          Write-Host "RC25 applied: UWX $version"
+
       - name: Install dependencies and run UWX unit tests
         shell: pwsh
         working-directory: ${{ env.UWX_SOURCE }}
