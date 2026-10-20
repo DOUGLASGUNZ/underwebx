@@ -1,0 +1,687 @@
+diff --git a/CHANGELOG_UWX.md b/CHANGELOG_UWX.md
+index 2c7852f..6d0fa0a 100644
+--- a/CHANGELOG_UWX.md
++++ b/CHANGELOG_UWX.md
+@@ -1,5 +1,10 @@
+ # UnderWeb X changelog
+ 
++## 0.6.7-rc26 — Approvals for staff
++
++- **Approvals tab** (UnderWeb staff): the same queues as Staff on underweb.cloud, right inside UWX — photos & work (with a private preview), hub cards, role applications, VRChat checks and events. Approve or deny in one click; the UnderWeb server still decides what your role is allowed to approve.
++- Your badge now shows your actual UnderWeb role (Owner, Director, Event Staff…) instead of just "UnderWeb staff".
++
+ ## 0.6.6-rc25 — Updates for supporters
+ 
+ - **UWX updates now come through your UnderWeb account.** UWX is for UnderWeb's Patreon supporters: the update check asks UnderWeb as you, and UnderWeb only lists releases for active supporters (and staff).
+diff --git a/UWX_VERSION b/UWX_VERSION
+index 985c204..8323bbd 100644
+--- a/UWX_VERSION
++++ b/UWX_VERSION
+@@ -1 +1 @@
+-0.6.6-rc25
++0.6.7-rc26
+diff --git a/src/shared/constants/uwx.js b/src/shared/constants/uwx.js
+index f4f458b..88a188d 100644
+--- a/src/shared/constants/uwx.js
++++ b/src/shared/constants/uwx.js
+@@ -1,2 +1,2 @@
+-export const UWX_VERSION = '0.6.6-rc25';
++export const UWX_VERSION = '0.6.7-rc26';
+ export const UWX_MANIFEST_URL = 'https://underweb.cloud/api/uwx/manifest';
+diff --git a/src/stores/__tests__/uwxAccountLabels.test.js b/src/stores/__tests__/uwxAccountLabels.test.js
+index 2ef6147..52b5069 100644
+--- a/src/stores/__tests__/uwxAccountLabels.test.js
++++ b/src/stores/__tests__/uwxAccountLabels.test.js
+@@ -48,6 +48,16 @@ describe('UnderWeb sign-in in UWX', () => {
+         toast.error.mockClear();
+     });
+ 
++    test('knows your highest UnderWeb role (Owner shows as Owner, not just staff)', async () => {
++        routes.push(['/rest/v1/user_roles', () => json(200, [{ role_slug: 'member' }, { role_slug: 'owner' }])]);
++        routes.push(['/rest/v1/role_definitions', () => json(200, [{ slug: 'member', name: 'Member', authority_rank: 1 }, { slug: 'owner', name: 'Owner', authority_rank: 100 }])]);
++        const account = useUwxAccountStore();
++        await account.requestCode('darko@example.com');
++        await account.verifyCode('123456');
++        expect(account.topRole).toEqual({ slug: 'owner', name: 'Owner', rank: 100 });
++        expect(calls.find((c) => c.path.startsWith('/rest/v1/user_roles')).path).toContain('user_id=eq.uid-darko');
++    });
++
+     test('email code sign-in never creates accounts, keeps only the refresh token, and loads staff permissions', async () => {
+         const account = useUwxAccountStore();
+         expect(await account.requestCode('Darko@Example.com')).toBe(true);
+diff --git a/src/stores/__tests__/uwxApprovals.test.js b/src/stores/__tests__/uwxApprovals.test.js
+new file mode 100644
+index 0000000..bb66c9e
+--- /dev/null
++++ b/src/stores/__tests__/uwxApprovals.test.js
+@@ -0,0 +1,92 @@
++import { beforeEach, describe, expect, test, vi } from 'vitest';
++import { createPinia, setActivePinia } from 'pinia';
++
++const account = vi.hoisted(() => ({
++    signedIn: true,
++    rpc: vi.fn(),
++    api: vi.fn(),
++    callFunction: vi.fn(),
++    storageSign: vi.fn(async () => 'https://signed.example/preview.jpg')
++}));
++vi.mock('../uwxAccount', () => ({ useUwxAccountStore: () => account }));
++
++const { useUwxApprovalsStore } = await import('../uwxApprovals');
++
++const forbidden = Object.assign(new Error('permission denied for table role_applications'), { status: 403 });
++
++function routes() {
++    account.rpc.mockImplementation(async (name, args) => {
++        if (name === 'uw_showcase_review_queue') return [{ id: 'm1', user_id: 'u1', title: 'Hub night', storage_path: 'u1/1.jpg', media_type: 'image' }];
++        if (name === 'uw_vrchat_verification_queue') return [{ id: 'v1', user_id: 'u2', verification_code: 'UW-ABC' }];
++        if (name === 'uw_staff_resolve_members') return args.p_user_ids.map((id) => ({ id, display_name: `Name ${id}`, username: id }));
++        return null;
++    });
++    account.api.mockImplementation(async (path) => {
++        if (path.startsWith('hub_creator_cards')) return [{ user_id: 'u3', kind: 'market', headline: 'Shop' }];
++        if (path.startsWith('role_applications')) throw forbidden;
++        if (path.startsWith('role_definitions')) return [];
++        if (path.startsWith('network_events')) return [{ id: 'e1', title: 'Hub opening', created_by: 'u4' }];
++        return [];
++    });
++}
++
++describe('UWX staff approvals', () => {
++    beforeEach(() => {
++        setActivePinia(createPinia());
++        vi.clearAllMocks();
++        routes();
++    });
++
++    test('loads every queue as you; sections you cannot see stay empty without an error', async () => {
++        const s = useUwxApprovalsStore();
++        await s.load();
++        expect(s.lists.media).toHaveLength(1);
++        expect(s.lists.media[0].preview).toBe('https://signed.example/preview.jpg');
++        expect(account.storageSign).toHaveBeenCalledWith('creator-showcase-pending', 'u1/1.jpg');
++        expect(s.lists.hubcards).toHaveLength(1);
++        expect(s.lists.vrchat).toHaveLength(1);
++        expect(s.lists.events).toHaveLength(1);
++        expect(s.lists.roles).toEqual([]);
++        expect(s.errors.roles).toBe('');
++        expect(s.total).toBe(4);
++        expect(s.nameOf('u4')).toBe('Name u4');
++    });
++
++    test('approving a photo goes through the approve function and removes it from the list', async () => {
++        account.callFunction.mockResolvedValue({ status: 200, json: { ok: true } });
++        const s = useUwxApprovalsStore();
++        await s.load();
++        expect(await s.approveMedia(s.lists.media[0])).toBe('');
++        expect(account.callFunction).toHaveBeenCalledWith('approve-showcase-media', expect.objectContaining({ method: 'POST', body: JSON.stringify({ media_id: 'm1' }) }));
++        expect(s.lists.media).toHaveLength(0);
++    });
++
++    test('a failed decision keeps the item and explains why', async () => {
++        account.callFunction.mockResolvedValue({ status: 403, json: { error: 'Media reviewer authority required' } });
++        const s = useUwxApprovalsStore();
++        await s.load();
++        expect(await s.approveMedia(s.lists.media[0])).toMatch(/permission/);
++        expect(s.lists.media).toHaveLength(1);
++    });
++
++    test('denying a role application or rejecting an event needs a reason', async () => {
++        const s = useUwxApprovalsStore();
++        await s.load();
++        expect(await s.reviewRole({ id: 'a1' }, 'denied', '')).toMatch(/reason/);
++        expect(await s.reviewEvent(s.lists.events[0], 'rejected', ' ')).toMatch(/reason/);
++        expect(account.rpc).not.toHaveBeenCalledWith('uw_review_event', expect.anything());
++        expect(await s.reviewEvent(s.lists.events[0], 'published', '')).toBe('');
++        expect(account.rpc).toHaveBeenCalledWith('uw_review_event', { p_event_id: 'e1', p_decision: 'published', p_note: null });
++        expect(s.lists.events).toHaveLength(0);
++    });
++
++    test('hub cards and VRChat checks use the server review functions', async () => {
++        const s = useUwxApprovalsStore();
++        await s.load();
++        await s.reviewHubCard(s.lists.hubcards[0], true);
++        expect(account.rpc).toHaveBeenCalledWith('uw_review_hub_card', { p_user_id: 'u3', p_approve: true, p_note: null });
++        await s.reviewVrchat(s.lists.vrchat[0], false);
++        expect(account.rpc).toHaveBeenCalledWith('uw_review_vrchat_connection', { p_connection_id: 'v1', p_approve: false });
++        expect(s.total).toBe(2);
++    });
++});
+diff --git a/src/stores/uwxAccess.js b/src/stores/uwxAccess.js
+index 7465d5a..74aa748 100644
+--- a/src/stores/uwxAccess.js
++++ b/src/stores/uwxAccess.js
+@@ -41,7 +41,8 @@ export const useUwxAccessStore = defineStore('UwxAccess', () => {
+     const underwebStaff = computed(() => Boolean(account.signedIn && (account.isStaff || account.canReviewSafety)));
+     const groupStaff = computed(() => moderatedGroups.value.length > 0 || inviteGroupIds.value.length > 0);
+     const level = computed(() => accessLevel({ underwebStaff: underwebStaff.value, groupStaff: groupStaff.value }));
+-    const label = computed(() => ACCESS_LABELS[level.value]);
++    // UnderWeb staff see their actual role (Owner, Director, Event Staff…) instead of a generic label.
++    const label = computed(() => (level.value === 'underweb-staff' && account.topRole?.name ? account.topRole.name : ACCESS_LABELS[level.value]));
+ 
+     /** Can you send group invites to the group that applies where you are? */
+     const canGroupInviteHere = computed(() => Boolean(underweb.recruitGroupId && inviteGroupIds.value.includes(underweb.recruitGroupId)));
+diff --git a/src/stores/uwxAccount.js b/src/stores/uwxAccount.js
+index 6855a9b..fdf854c 100644
+--- a/src/stores/uwxAccount.js
++++ b/src/stores/uwxAccount.js
+@@ -33,6 +33,8 @@ export const useUwxAccountStore = defineStore('UwxAccount', () => {
+     const expiresAt = ref(0);
+     const isStaff = ref(false);
+     const canReviewSafety = ref(false);
++    /** Your highest UnderWeb role, e.g. { slug: 'owner', name: 'Owner', rank: 100 } (null for members). */
++    const topRole = ref(null);
+     const busy = ref(false);
+     const codeSentTo = ref('');
+     const initialized = ref(false);
+@@ -70,6 +72,7 @@ export const useUwxAccountStore = defineStore('UwxAccount', () => {
+         expiresAt.value = 0;
+         isStaff.value = false;
+         canReviewSafety.value = false;
++        topRole.value = null;
+         await configRepository.setString(REFRESH_KEY, '');
+     }
+ 
+@@ -247,6 +250,41 @@ export const useUwxAccountStore = defineStore('UwxAccount', () => {
+         } catch {
+             canReviewSafety.value = false;
+         }
++        topRole.value = await loadTopRole();
++    }
++
++    /** Your highest active UnderWeb role, read from your own rows (RLS: only yours). */
++    async function loadTopRole() {
++        try {
++            const rows = await api(`user_roles?select=role_slug&user_id=eq.${encodeURIComponent(userId.value)}&status=eq.active`);
++            const slugs = [...new Set((Array.isArray(rows) ? rows : []).map((r) => String(r.role_slug || '')).filter((s) => /^[a-z0-9_-]{1,40}$/.test(s)))];
++            if (!slugs.length) return null;
++            const defs = await api(`role_definitions?select=slug,name,authority_rank&slug=in.(${slugs.join(',')})`);
++            const best = (Array.isArray(defs) ? defs : []).sort((a, b) => Number(b.authority_rank || 0) - Number(a.authority_rank || 0))[0];
++            return best ? { slug: best.slug, name: String(best.name || best.slug), rank: Number(best.authority_rank) || 0 } : null;
++        } catch {
++            return null;
++        }
++    }
++
++    /** A private file link that works for a few minutes (e.g. a photo waiting for review). */
++    async function storageSign(bucket, objectPath, expiresIn = 600) {
++        const json = await apiRaw(`storage/v1/object/sign/${bucket}/${String(objectPath).split('/').map(encodeURIComponent).join('/')}`, { expiresIn });
++        const signed = json?.signedURL || json?.signedUrl || '';
++        return signed ? `${UNDERWEB_SUPABASE_URL}/storage/v1${signed.startsWith('/') ? '' : '/'}${signed}` : '';
++    }
++
++    async function apiRaw(path, body) {
++        if (!signedIn.value && !(await refresh())) throw new Error('Sign in to UnderWeb first.');
++        if (Date.now() > expiresAt.value - 60 * 1000) await refresh();
++        const response = await fetch(`${UNDERWEB_SUPABASE_URL}/${path}`, {
++            method: 'POST',
++            headers: { apikey: UNDERWEB_ANON_KEY, Authorization: `Bearer ${accessToken.value}`, 'Content-Type': 'application/json' },
++            body: JSON.stringify(body || {})
++        });
++        const json = await response.json().catch(() => null);
++        if (!response.ok) throw new Error(json?.message || json?.error || `Request failed (${response.status}).`);
++        return json;
+     }
+ 
+     async function init() {
+@@ -281,6 +319,7 @@ export const useUwxAccountStore = defineStore('UwxAccount', () => {
+         userId,
+         isStaff,
+         canReviewSafety,
++        topRole,
+         signedIn,
+         busy,
+         codeSentTo,
+@@ -292,6 +331,7 @@ export const useUwxAccountStore = defineStore('UwxAccount', () => {
+         api,
+         rpc,
+         callFunction,
++        storageSign,
+         storageUpload,
+         storageRemove,
+         loadPermissions
+diff --git a/src/stores/uwxApprovals.js b/src/stores/uwxApprovals.js
+new file mode 100644
+index 0000000..1104ac8
+--- /dev/null
++++ b/src/stores/uwxApprovals.js
+@@ -0,0 +1,158 @@
++import { computed, reactive, ref } from 'vue';
++import { defineStore } from 'pinia';
++
++import { useUwxAccountStore } from './uwxAccount';
++
++// Staff approvals from inside UWX: the same queues as Staff on underweb.cloud.
++// Every list and every decision goes through the UnderWeb server as you, so the
++// server's own rules decide what you can see and approve (UWX hiding a button is
++// only a convenience). A section you have no access to just stays empty.
++
++export const APPROVAL_SECTIONS = Object.freeze([
++    { id: 'media', label: 'Photos & work' },
++    { id: 'hubcards', label: 'Hub cards' },
++    { id: 'roles', label: 'Role applications' },
++    { id: 'vrchat', label: 'VRChat checks' },
++    { id: 'events', label: 'Events' }
++]);
++
++const errText = (e) => String(e?.message || e || 'Something went wrong.');
++const denied = (e) => e?.status === 401 || e?.status === 403 || /permission|not allowed|authority|required|denied/i.test(errText(e));
++
++export const useUwxApprovalsStore = defineStore('UwxApprovals', () => {
++    const account = useUwxAccountStore();
++
++    const lists = reactive({ media: [], hubcards: [], roles: [], vrchat: [], events: [] });
++    const errors = reactive({ media: '', hubcards: '', roles: '', vrchat: '', events: '' });
++    const names = ref({});
++    const roleNames = ref({});
++    const loading = ref(false);
++    const busyId = ref('');
++    const loadedAt = ref(0);
++
++    const total = computed(() => APPROVAL_SECTIONS.reduce((n, s) => n + lists[s.id].length, 0));
++    const nameOf = (id) => names.value[id]?.name || names.value[id]?.username || `Member ${String(id || '').slice(0, 6)}`;
++    const roleName = (slug) => roleNames.value[slug] || slug;
++
++    async function resolveNames(ids) {
++        const unique = [...new Set(ids.filter(Boolean))].filter((id) => !names.value[id]);
++        if (!unique.length) return;
++        for (const fn of ['uw_staff_resolve_members', 'uw_moderation_resolve_members']) {
++            try {
++                const rows = await account.rpc(fn, { p_user_ids: unique });
++                const next = { ...names.value };
++                for (const r of rows || []) next[r.id] = { name: r.display_name || r.username || '', username: r.username || '' };
++                names.value = next;
++                if (unique.every((id) => next[id])) return;
++            } catch {
++                // try the next resolver
++            }
++        }
++    }
++
++    async function section(id, fn) {
++        errors[id] = '';
++        try {
++            lists[id] = (await fn()) || [];
++        } catch (e) {
++            lists[id] = [];
++            errors[id] = denied(e) ? '' : errText(e);
++        }
++    }
++
++    async function load() {
++        if (!account.signedIn) return;
++        loading.value = true;
++        await Promise.all([
++            section('media', async () => {
++                const rows = (await account.rpc('uw_showcase_review_queue')) || [];
++                return Promise.all(
++                    rows.map(async (r) => ({ ...r, preview: r.storage_path ? await account.storageSign('creator-showcase-pending', r.storage_path).catch(() => '') : '' }))
++                );
++            }),
++            section('hubcards', () => account.api('hub_creator_cards?select=*&status=eq.pending&order=updated_at.asc')),
++            section('roles', async () => {
++                const [apps, defs] = await Promise.all([
++                    account.api('role_applications?select=*&status=in.(pending,reviewing)&order=submitted_at.asc'),
++                    account.api('role_definitions?select=slug,name').catch(() => [])
++                ]);
++                roleNames.value = Object.fromEntries((defs || []).map((d) => [d.slug, d.name]));
++                return apps;
++            }),
++            section('vrchat', () => account.rpc('uw_vrchat_verification_queue')),
++            section('events', () =>
++                account.api('network_events?select=id,title,description,starts_at,location,group_scope,created_by,created_at&status=eq.pending&order=starts_at.asc')
++            )
++        ]);
++        await resolveNames([
++            ...lists.media.map((r) => r.user_id),
++            ...lists.hubcards.map((r) => r.user_id),
++            ...lists.roles.map((r) => r.user_id),
++            ...lists.vrchat.map((r) => r.user_id),
++            ...lists.events.map((r) => r.created_by)
++        ]);
++        loadedAt.value = Date.now();
++        loading.value = false;
++    }
++
++    /** Run one decision; on success drop the item from its list. Returns '' or an error message. */
++    async function decide(sectionId, id, fn) {
++        busyId.value = id;
++        try {
++            await fn();
++            lists[sectionId] = lists[sectionId].filter((x) => (x.id ?? x.user_id) !== id);
++            return '';
++        } catch (e) {
++            return denied(e) ? "You don't have permission to decide this one." : errText(e);
++        } finally {
++            busyId.value = '';
++        }
++    }
++
++    const approveMedia = (item) =>
++        decide('media', item.id, async () => {
++            const { status, json } = await account.callFunction('approve-showcase-media', {
++                method: 'POST',
++                headers: { 'Content-Type': 'application/json' },
++                body: JSON.stringify({ media_id: item.id })
++            });
++            if (status !== 200 || !json?.ok) throw Object.assign(new Error(json?.error || `Approval failed (${status}).`), { status });
++        });
++    const denyMedia = (item, reason) =>
++        decide('media', item.id, () => account.rpc('uw_review_showcase_media', { p_media_id: item.id, p_approve: false, p_reason: reason || null }));
++
++    const reviewHubCard = (item, approve, note) =>
++        decide('hubcards', item.user_id, () => account.rpc('uw_review_hub_card', { p_user_id: item.user_id, p_approve: approve, p_note: note || null }));
++
++    const reviewRole = (item, decision, note) => {
++        if (decision === 'denied' && String(note || '').trim().length < 3) return Promise.resolve('Add a short reason before denying.');
++        return decide('roles', item.id, () =>
++            account.rpc('uw_review_role_application', { p_application_id: item.id, p_decision: decision, p_review_note: String(note || '').trim() })
++        );
++    };
++
++    const reviewVrchat = (item, approve) => decide('vrchat', item.id, () => account.rpc('uw_review_vrchat_connection', { p_connection_id: item.id, p_approve: approve }));
++
++    const reviewEvent = (item, decision, note) => {
++        if (decision === 'rejected' && String(note || '').trim().length < 3) return Promise.resolve('Add a short reason before rejecting.');
++        return decide('events', item.id, () => account.rpc('uw_review_event', { p_event_id: item.id, p_decision: decision, p_note: String(note || '').trim() || null }));
++    };
++
++    return {
++        lists,
++        errors,
++        loading,
++        busyId,
++        loadedAt,
++        total,
++        nameOf,
++        roleName,
++        load,
++        approveMedia,
++        denyMedia,
++        reviewHubCard,
++        reviewRole,
++        reviewVrchat,
++        reviewEvent
++    };
++});
+diff --git a/src/views/UnderWeb/UnderWeb.vue b/src/views/UnderWeb/UnderWeb.vue
+index 169c07c..9aa611e 100644
+--- a/src/views/UnderWeb/UnderWeb.vue
++++ b/src/views/UnderWeb/UnderWeb.vue
+@@ -824,6 +824,7 @@
+             </Card>
+ 
+             <UwxLabelReviewQueue v-if="activePanel === 'safety' && canReviewSafety" />
++            <UwxApprovals v-if="activePanel === 'approvals' && underwebStaff" />
+ 
+             <Card v-show="activePanel === 'system'" class="uwx-card">
+                 <CardHeader>
+@@ -1113,6 +1114,7 @@
+     import UwxAppearanceCard from './UwxAppearanceCard.vue';
+     import { useUwxInvitePresetsStore } from '../../stores/uwxInvitePresets';
+     import UwxLabelReviewQueue from './UwxLabelReviewQueue.vue';
++    import UwxApprovals from './UwxApprovals.vue';
+     import { useUserStore } from '../../stores/user';
+     import { categoryLabel } from '../../shared/utils/uwxSafety';
+     import { useSafetyReportingStore } from '../../stores/safetyReporting';
+@@ -1254,13 +1256,13 @@
+     );
+     const access = useUwxAccessStore();
+     access.init();
+-    const { level: accessLevel, label: accessLabel, showGroupInvites, showGroupsTab } = storeToRefs(access);
++    const { level: accessLevel, label: accessLabel, showGroupInvites, showGroupsTab, underwebStaff } = storeToRefs(access);
+     const accessHint = computed(() =>
+         accessLevel.value === 'member'
+             ? 'Member view. Staff tools appear automatically if your VRChat group role or UnderWeb role allows them.'
+             : accessLevel.value === 'group-staff'
+               ? 'Group staff: your VRChat group role can moderate or invite. Sign in to UnderWeb (System) for UnderWeb staff tools.'
+-              : 'UnderWeb staff: all staff tools are on.'
++              : 'UnderWeb staff: all staff tools are on, including Approvals.'
+     );
+     const panelTabs = [
+         { id: 'command', label: 'Command', short: 'Live ops', icon: 'ri-dashboard-3-line' },
+@@ -1269,16 +1271,21 @@
+         { id: 'osc', label: 'OSC Lab', short: 'Chatbox', icon: 'ri-chat-3-line' },
+         { id: 'people', label: 'People', short: 'Friends + roles', icon: 'ri-team-line' },
+         { id: 'safety', label: 'Safety Intel', short: 'Shared warnings', icon: 'ri-shield-check-line' },
++        { id: 'approvals', label: 'Approvals', short: 'Staff queues', icon: 'ri-checkbox-multiple-line' },
+         { id: 'system', label: 'System', short: 'Safety + updates', icon: 'ri-settings-3-line' }
+     ];
+     const visibleTabs = computed(() =>
+         panelTabs
+             .filter((t) => t.id !== 'groups' || showGroupsTab.value)
++            .filter((t) => t.id !== 'approvals' || underwebStaff.value)
+             .map((t) => (t.id === 'invites' && !showGroupInvites.value ? { ...t, short: 'Friends + messages' } : t))
+     );
+     watch(showGroupsTab, (show) => {
+         if (!show && activePanel.value === 'groups') activePanel.value = 'command';
+     });
++    watch(underwebStaff, (staff) => {
++        if (!staff && activePanel.value === 'approvals') activePanel.value = 'command';
++    });
+     const panelMeta = {
+         command: { eyebrow: 'LIVE OPERATIONS', title: 'Command Center', description: 'Quick invite controls, Radar, events, and connected accounts.' },
+         invites: { eyebrow: 'INVITES', title: 'Group & instance invites', description: 'Group invites ask people to join your VRChat group. Instance invites bring friends to where you are.' },
+@@ -1286,6 +1293,7 @@
+         osc: { eyebrow: 'REAL-TIME CONTROL', title: 'OSC Lab', description: 'What shows in your VRChat chatbox: music, weather, statuses and heart rate.' },
+         people: { eyebrow: 'NETWORK PEOPLE', title: 'People & Activity', description: 'Inspect roles, manage exclusions, and review what UWX did this session.' },
+         safety: { eyebrow: 'COMMUNITY AWARENESS', title: 'Safety Intel', description: 'Reviewed shared warnings for crashing, doxxing threats, harassment, malicious behavior, and other community risks.' },
++        approvals: { eyebrow: 'STAFF', title: 'Approvals', description: 'Photos, hub cards, role applications, VRChat checks and events waiting for a decision — same as Staff on underweb.cloud.' },
+         system: { eyebrow: 'LOCAL CONTROL', title: 'System & Safety', description: 'Notifications, releases, local data boundaries, and the global disarm control.' }
+     };
+     const activePanelMeta = computed(() => {
+diff --git a/src/views/UnderWeb/UwxApprovals.vue b/src/views/UnderWeb/UwxApprovals.vue
+new file mode 100644
+index 0000000..8c83921
+--- /dev/null
++++ b/src/views/UnderWeb/UwxApprovals.vue
+@@ -0,0 +1,209 @@
++<template>
++    <Card class="uwx-card uwx-card-wide">
++        <CardHeader>
++            <div class="flex flex-wrap items-start justify-between gap-4">
++                <div>
++                    <CardTitle>Waiting for staff</CardTitle>
++                    <CardDescription>The same queues as Staff on underweb.cloud. Decisions are checked by the UnderWeb server, so you only see what your role can approve.</CardDescription>
++                </div>
++                <Button size="sm" variant="outline" :disabled="loading" @click="load">
++                    <i :class="loading ? 'ri-loader-4-line animate-spin' : 'ri-refresh-line'" /> Refresh
++                </Button>
++            </div>
++            <div class="uwx-appr-tabs">
++                <button v-for="s in APPROVAL_SECTIONS" :key="s.id" type="button" class="uwx-appr-tab" :class="{ on: tab === s.id }" @click="tab = s.id">
++                    {{ s.label }}<span v-if="lists[s.id].length" class="uwx-appr-count">{{ lists[s.id].length }}</span>
++                </button>
++            </div>
++        </CardHeader>
++        <CardContent>
++            <p v-if="errors[tab]" class="text-sm text-destructive">{{ errors[tab] }}</p>
++            <p v-else-if="!lists[tab].length" class="text-sm text-muted-foreground">{{ loading ? 'Loading…' : 'Nothing waiting. 🎉' }}</p>
++
++            <!-- Photos & work -->
++            <div v-else-if="tab === 'media'" class="uwx-queue">
++                <div v-for="m in lists.media" :key="m.id" class="uwx-queue-item uwx-appr-row">
++                    <div class="uwx-appr-media">
++                        <video v-if="m.preview && m.media_type === 'video'" :src="m.preview" controls playsinline />
++                        <img v-else-if="m.preview" :src="m.preview" alt="" />
++                        <span v-else class="text-xs text-muted-foreground">No preview</span>
++                    </div>
++                    <div class="min-w-0 flex-1">
++                        <strong>{{ m.title || 'Untitled' }}</strong>
++                        <span v-if="m.share_to_discord" class="uwx-queue-cat">Wants Discord</span>
++                        <div class="text-xs text-muted-foreground">by {{ nameOf(m.user_id) }} · {{ when(m.created_at) }}</div>
++                        <p v-if="m.caption" class="uwx-queue-summary">{{ m.caption }}</p>
++                        <div class="flex flex-wrap gap-2 mt-2">
++                            <Button size="sm" :disabled="busyId === m.id" @click="run(() => approveMedia(m), 'Approved and published.')">Approve</Button>
++                            <Button size="sm" variant="outline" :disabled="busyId === m.id" @click="denyMediaAsk(m)">Deny</Button>
++                        </div>
++                    </div>
++                </div>
++            </div>
++
++            <!-- Hub cards -->
++            <div v-else-if="tab === 'hubcards'" class="uwx-queue">
++                <div v-for="c in lists.hubcards" :key="c.user_id" class="uwx-queue-item uwx-appr-row">
++                    <div class="uwx-appr-media"><img v-if="safeImage(c)" :src="c.image_url" alt="" /></div>
++                    <div class="min-w-0 flex-1">
++                        <strong>{{ nameOf(c.user_id) }}</strong>
++                        <span class="uwx-queue-cat">{{ c.kind === 'dj' ? 'Resident DJ' : 'Creator Market' }}</span>
++                        <p class="uwx-queue-summary">{{ c.headline || '—' }}</p>
++                        <div class="text-xs text-muted-foreground break-all">{{ c.link_url || 'no link' }}</div>
++                        <div class="flex flex-wrap gap-2 mt-2">
++                            <Button size="sm" :disabled="busyId === c.user_id" @click="run(() => reviewHubCard(c, true), 'Approved — it goes into the hub at the next update.')">Approve</Button>
++                            <Button size="sm" variant="outline" :disabled="busyId === c.user_id" @click="rejectHubAsk(c)">Reject</Button>
++                        </div>
++                    </div>
++                </div>
++            </div>
++
++            <!-- Role applications -->
++            <div v-else-if="tab === 'roles'" class="uwx-queue">
++                <div v-for="a in lists.roles" :key="a.id" class="uwx-queue-item">
++                    <strong>{{ nameOf(a.user_id) }}</strong> <span class="text-muted-foreground">wants</span> <strong>{{ roleName(a.role_slug) }}</strong>
++                    <div class="text-xs text-muted-foreground">{{ a.status }} · {{ when(a.submitted_at) }}</div>
++                    <p class="uwx-queue-summary">{{ a.applicant_note || 'No note from the applicant.' }}</p>
++                    <input v-model="notes[a.id]" class="uwx-report-input" maxlength="300" placeholder="Note (required to deny, shown to the applicant)" />
++                    <div class="flex flex-wrap gap-2 mt-2">
++                        <Button size="sm" :disabled="busyId === a.id" @click="run(() => reviewRole(a, 'accepted', notes[a.id]), `${roleName(a.role_slug)} granted.`)">Approve</Button>
++                        <Button size="sm" variant="outline" :disabled="busyId === a.id" @click="run(() => reviewRole(a, 'denied', notes[a.id]), 'Application denied.')">Deny</Button>
++                    </div>
++                </div>
++            </div>
++
++            <!-- VRChat checks -->
++            <div v-else-if="tab === 'vrchat'" class="uwx-queue">
++                <p class="text-xs text-muted-foreground mb-2">Open their VRChat profile and check the code is in their bio. Only verify if it matches exactly.</p>
++                <div v-for="v in lists.vrchat" :key="v.id" class="uwx-queue-item">
++                    <strong>{{ nameOf(v.user_id) }}</strong>
++                    <div class="text-xs text-muted-foreground">claims {{ v.display_name || v.external_id }} · {{ when(v.verification_requested_at) }}</div>
++                    <div class="uwx-appr-code">{{ v.verification_code }}</div>
++                    <div class="flex flex-wrap gap-2 mt-2">
++                        <Button v-if="v.profile_url" size="sm" variant="ghost" @click="openExternalLink(v.profile_url)"><i class="ri-external-link-line" /> VRChat profile</Button>
++                        <Button size="sm" :disabled="busyId === v.id" @click="run(() => reviewVrchat(v, true), 'Verified.')">Code matches — verify</Button>
++                        <Button size="sm" variant="outline" :disabled="busyId === v.id" @click="denyVrchatAsk(v)">Not found — deny</Button>
++                    </div>
++                </div>
++            </div>
++
++            <!-- Events -->
++            <div v-else-if="tab === 'events'" class="uwx-queue">
++                <div v-for="e in lists.events" :key="e.id" class="uwx-queue-item">
++                    <strong>{{ e.title }}</strong>
++                    <div class="text-xs text-muted-foreground">{{ when(e.starts_at) }}<template v-if="e.location"> · {{ e.location }}</template> · proposed by {{ nameOf(e.created_by) }}</div>
++                    <p v-if="e.description" class="uwx-queue-summary">{{ e.description }}</p>
++                    <input v-model="notes[e.id]" class="uwx-report-input" maxlength="300" placeholder="Note (required to reject)" />
++                    <div class="flex flex-wrap gap-2 mt-2">
++                        <Button size="sm" :disabled="busyId === e.id" @click="run(() => reviewEvent(e, 'published', notes[e.id]), 'Event published.')">Approve & publish</Button>
++                        <Button size="sm" variant="outline" :disabled="busyId === e.id" @click="run(() => reviewEvent(e, 'rejected', notes[e.id]), 'Event rejected.')">Reject</Button>
++                    </div>
++                </div>
++            </div>
++        </CardContent>
++    </Card>
++</template>
++
++<script setup>
++    import { onMounted, reactive, ref } from 'vue';
++    import { storeToRefs } from 'pinia';
++    import { toast } from 'vue-sonner';
++    import { Button } from '@/components/ui/button';
++    import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
++
++    import { openExternalLink } from '../../shared/utils';
++    import { APPROVAL_SECTIONS, useUwxApprovalsStore } from '../../stores/uwxApprovals';
++
++    const approvals = useUwxApprovalsStore();
++    const { lists, errors, loading, busyId } = storeToRefs(approvals);
++    const { load, nameOf, roleName, approveMedia, denyMedia, reviewHubCard, reviewRole, reviewVrchat, reviewEvent } = approvals;
++
++    const tab = ref('media');
++    const notes = reactive({});
++    const STORAGE = 'https://pxipclkptxpqukefwexh.supabase.co/storage/v1/object/public/';
++    const safeImage = (c) => typeof c.image_url === 'string' && c.image_url.startsWith(STORAGE);
++    const when = (v) => (v ? new Date(v).toLocaleString() : '');
++
++    async function run(fn, ok) {
++        const err = await fn();
++        if (err) toast.error(err);
++        else toast.success(ok);
++    }
++    function denyMediaAsk(m) {
++        const reason = window.prompt('Why not? (optional, shown to the poster)');
++        if (reason === null) return;
++        run(() => denyMedia(m, reason), 'Denied. It stays private.');
++    }
++    function rejectHubAsk(c) {
++        const note = window.prompt('Why not? (optional, shown to the creator)');
++        if (note === null) return;
++        run(() => reviewHubCard(c, false, note), 'Rejected.');
++    }
++    function denyVrchatAsk(v) {
++        if (!window.confirm('Deny this claim? They can fix their bio and submit again.')) return;
++        run(() => reviewVrchat(v, false), 'Claim denied.');
++    }
++
++    onMounted(() => {
++        // Pick the first section that has something waiting.
++        load().then(() => {
++            const first = APPROVAL_SECTIONS.find((s) => lists.value[s.id].length);
++            if (first) tab.value = first.id;
++        });
++    });
++</script>
++
++<style scoped>
++    .uwx-appr-tabs {
++        display: flex;
++        flex-wrap: wrap;
++        gap: 6px;
++        margin-top: 12px;
++    }
++    .uwx-appr-tab {
++        padding: 6px 12px;
++        border-radius: 999px;
++        border: 1px solid var(--border, rgba(255, 255, 255, 0.15));
++        background: transparent;
++        color: inherit;
++        font-size: 13px;
++        cursor: pointer;
++    }
++    .uwx-appr-tab.on {
++        background: var(--uwx-accent, #38ff72);
++        border-color: var(--uwx-accent, #38ff72);
++        color: #031007;
++        font-weight: 700;
++    }
++    .uwx-appr-count {
++        margin-left: 6px;
++        font-weight: 700;
++    }
++    .uwx-appr-row {
++        display: flex;
++        gap: 12px;
++        align-items: flex-start;
++    }
++    .uwx-appr-media {
++        flex: none;
++        width: 160px;
++        aspect-ratio: 16 / 10;
++        border-radius: 8px;
++        overflow: hidden;
++        background: rgba(255, 255, 255, 0.04);
++        display: grid;
++        place-items: center;
++    }
++    .uwx-appr-media img,
++    .uwx-appr-media video {
++        width: 100%;
++        height: 100%;
++        object-fit: cover;
++    }
++    .uwx-appr-code {
++        font-family: ui-monospace, monospace;
++        font-size: 16px;
++        letter-spacing: 0.1em;
++        margin-top: 6px;
++    }
++</style>
