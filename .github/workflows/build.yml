@@ -846,6 +846,22 @@ jobs:
           if (-not (Test-Path "src\views\UnderWeb\UwxStaffDashboard.vue")) { throw "RC28: Staff Dashboard missing." }
           Write-Host "RC28 applied: UWX $version"
 
+      - name: Apply RC29 moderation log
+        shell: pwsh
+        working-directory: ${{ env.UWX_SOURCE }}
+        run: |
+          $patchFile = Join-Path $env:GITHUB_WORKSPACE "features\core\rc29-mod-log.patch"
+          if (-not (Test-Path $patchFile)) { throw "RC29 patch not found." }
+          $patchText = [System.IO.File]::ReadAllText($patchFile).Replace("`r`n", "`n")
+          [System.IO.File]::WriteAllText($patchFile, $patchText, [System.Text.UTF8Encoding]::new($false))
+          git apply --check --verbose $patchFile
+          if ($LASTEXITCODE -ne 0) { throw "RC29 patch check failed." }
+          git apply --whitespace=nowarn $patchFile
+          if ($LASTEXITCODE -ne 0) { throw "RC29 patch failed." }
+          $version = (Get-Content "UWX_VERSION" -Raw).Trim()
+          if ($version -ne "0.6.10-rc29") { throw "RC29 version mismatch: $version" }
+          Write-Host "RC29 applied: UWX $version"
+
       - name: Install dependencies and run UWX unit tests
         shell: pwsh
         working-directory: ${{ env.UWX_SOURCE }}

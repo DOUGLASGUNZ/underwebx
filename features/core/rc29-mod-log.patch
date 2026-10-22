@@ -1,0 +1,236 @@
+diff --git a/CHANGELOG_UWX.md b/CHANGELOG_UWX.md
+index c12cf14..ac9ae38 100644
+--- a/CHANGELOG_UWX.md
++++ b/CHANGELOG_UWX.md
+@@ -1,5 +1,10 @@
+ # UnderWeb X changelog
+ 
++## 0.6.10-rc29 — Moderation log in Discord
++
++- **Discord moderation log:** UnderWeb's server posts bans, unbans, removals, instance kicks and warnings, and case updates (opened, status changes, recorded actions, appeals) to your private staff channel. It works even when nobody has UWX open, and each item posts exactly once no matter how many staff are syncing. It never posts evidence, notes, locations or instance links.
++- **Owners** can post a one-time **history summary** (totals, a month-by-month breakdown, the last 25 actions and open cases) from Group Intel → Settings & sharing.
++
+ ## 0.6.9-rc28 — Staff Dashboard & alerts
+ 
+ - **Staff tab:**
+diff --git a/UWX_VERSION b/UWX_VERSION
+index be7760c..cc57e41 100644
+--- a/UWX_VERSION
++++ b/UWX_VERSION
+@@ -1 +1 @@
+-0.6.9-rc28
++0.6.10-rc29
+diff --git a/src/shared/constants/uwx.js b/src/shared/constants/uwx.js
+index dfa90dd..5009305 100644
+--- a/src/shared/constants/uwx.js
++++ b/src/shared/constants/uwx.js
+@@ -1,2 +1,2 @@
+-export const UWX_VERSION = '0.6.9-rc28';
++export const UWX_VERSION = '0.6.10-rc29';
+ export const UWX_MANIFEST_URL = 'https://underweb.cloud/api/uwx/manifest';
+diff --git a/src/stores/__tests__/uwxModeration.test.js b/src/stores/__tests__/uwxModeration.test.js
+index ad155ed..c14843f 100644
+--- a/src/stores/__tests__/uwxModeration.test.js
++++ b/src/stores/__tests__/uwxModeration.test.js
+@@ -18,7 +18,7 @@ const audit = reactive({ groupId: GROUP, entries: [], nudge: vi.fn() });
+ vi.mock('../uwxGroupAudit', () => ({ useUwxGroupAuditStore: () => audit }));
+ const tools = { moderate: vi.fn() };
+ vi.mock('../uwxGroupTools', () => ({ useUwxGroupToolsStore: () => tools }));
+-const intel = reactive({ namesFor: async () => [], settings: { groupId: GROUP }, remote: null, level: 0, perms: { audit: false }, entries: [], groupRef: { roles: [] }, group: { name: 'The UnderWeb' } });
++const intel = reactive({ namesFor: async () => [], flushModLog: () => {}, settings: { groupId: GROUP }, remote: null, level: 0, perms: { audit: false }, entries: [], groupRef: { roles: [] }, group: { name: 'The UnderWeb' } });
+ vi.mock('../uwxIntel', () => ({ useUwxIntelStore: () => intel }));
+ vi.mock('../uwxMemberNotes', () => ({ useUwxMemberNotesStore: () => ({ load: vi.fn(), forUser: () => [] }) }));
+ 
+diff --git a/src/stores/uwxIntel.js b/src/stores/uwxIntel.js
+index 9e6622f..4ba973b 100644
+--- a/src/stores/uwxIntel.js
++++ b/src/stores/uwxIntel.js
+@@ -448,7 +448,10 @@ export const useUwxIntelStore = defineStore('UwxIntel', () => {
+             }
+             upload.lastAt = Date.now();
+             upload.lastInserted = inserted;
+-            if (inserted) remoteAt = 0; // pull the merged archive next time
++            if (inserted) {
++                remoteAt = 0; // pull the merged archive next time
++                flushModLog();
++            }
+             const state = await account.api(`uwx_group_sync_state?select=*&group_id=eq.${r.id}`);
+             syncState.value = Array.isArray(state) ? state[0] || null : syncState.value;
+             return inserted;
+@@ -601,6 +604,42 @@ export const useUwxIntelStore = defineStore('UwxIntel', () => {
+         if (!settings.background) schedule();
+     }
+ 
++    // ───────── Discord moderation log (server posts to the staff channel; any staff client nudges it) ─────────
++    const modLog = reactive({ configured: null, lastPostAt: '', lastError: '', backfilledAt: '' });
++    let modLogAt = 0;
++    let modLogPending = null;
++    /** Ask UnderWeb to post anything new to the staff Discord. Cheap, safe to call often (debounced). */
++    function flushModLog({ soon = false } = {}) {
++        if (!account.signedIn || !remote.value) return;
++        if (modLogPending) return;
++        const wait = Math.max(soon ? 3000 : 0, 20000 - (Date.now() - modLogAt));
++        modLogPending = setTimeout(async () => {
++            modLogPending = null;
++            modLogAt = Date.now();
++            try {
++                await account.callFunction('uwx-mod-discord', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
++            } catch {
++                // the next nudge retries
++            }
++        }, wait);
++    }
++    async function loadModLog() {
++        if (!account.signedIn || !remote.value) return;
++        const res = await account.callFunction('uwx-mod-discord', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: true }) });
++        const st = (res.json?.groups || []).find((g) => g.group_id === remote.value?.id) || {};
++        modLog.configured = res.status === 200 ? Boolean(res.json?.configured) : null;
++        modLog.lastPostAt = st.last_post_at || '';
++        modLog.lastError = st.last_error || (res.status >= 400 ? res.json?.error || `Error ${res.status}` : '');
++        modLog.backfilledAt = st.backfilled_at || '';
++    }
++    async function postModHistory() {
++        const res = await account.callFunction('uwx-mod-discord', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ backfill: true }) });
++        await loadModLog();
++        if (res.status !== 200) throw new Error(res.json?.error || `Error ${res.status}`);
++        const r = (res.json?.results || []).find((x) => x.group === remote.value?.name) || res.json?.results?.[0] || {};
++        return r;
++    }
++
+     /** Display names of UnderWeb accounts (profiles are private; the server shares names with this group's staff). */
+     async function namesFor(ids) {
+         const list = [...new Set((ids || []).filter(Boolean))];
+@@ -755,6 +794,10 @@ export const useUwxIntelStore = defineStore('UwxIntel', () => {
+         reviewClaim,
+         evidenceUrl,
+         namesFor,
++        modLog,
++        flushModLog,
++        loadModLog,
++        postModHistory,
+         updateGroupSettings
+     };
+ });
+diff --git a/src/stores/uwxModeration.js b/src/stores/uwxModeration.js
+index 59aacb6..39ccb6b 100644
+--- a/src/stores/uwxModeration.js
++++ b/src/stores/uwxModeration.js
+@@ -372,6 +372,7 @@ export const useUwxModerationStore = defineStore('UwxModeration', () => {
+         };
+         const rows = await account.api('uwx_cases?select=id', { method: 'POST', headers: { Prefer: 'return=representation' }, body: JSON.stringify(body) });
+         const created = Array.isArray(rows) ? rows[0] : rows;
++        intel.flushModLog({ soon: true });
+         await loadCases();
+         if (created?.id) await selectCase(created.id);
+         return created;
+@@ -398,6 +399,7 @@ export const useUwxModerationStore = defineStore('UwxModeration', () => {
+         if (!openCase.value) return false;
+         try {
+             await account.api(`uwx_cases?id=eq.${openCase.value.id}`, { method: 'PATCH', headers: { Prefer: 'return=minimal' }, body: JSON.stringify(patch) });
++            intel.flushModLog({ soon: true });
+             await selectCase(openCase.value.id);
+             await loadCases();
+             return true;
+@@ -415,6 +417,7 @@ export const useUwxModerationStore = defineStore('UwxModeration', () => {
+                 headers: { Prefer: 'return=minimal' },
+                 body: JSON.stringify({ case_id: openCase.value.id, created_by: account.userId, ...entry })
+             });
++            intel.flushModLog({ soon: true });
+             await selectCase(openCase.value.id);
+             void loadCases();
+             return true;
+diff --git a/src/stores/uwxStaffOps.js b/src/stores/uwxStaffOps.js
+index 15ee92b..d294eb8 100644
+--- a/src/stores/uwxStaffOps.js
++++ b/src/stores/uwxStaffOps.js
+@@ -84,6 +84,7 @@ export const useUwxStaffOpsStore = defineStore('UwxStaffOps', () => {
+     let started = false;
+     let flagsAt = 0;
+     let lastPollIso = '';
++    let pollCount = 0;
+     const seenHelp = new Set();
+     const notifiedFlags = new Set();
+     let flagLocation = '';
+@@ -340,6 +341,7 @@ export const useUwxStaffOpsStore = defineStore('UwxStaffOps', () => {
+         try {
+             await Promise.all([loadDuty(), loadHelp({ notify }), pollCases()]);
+             await loadFlagged();
++            if (++pollCount % 5 === 0) intel.flushModLog(); // backstop: anything synced by others gets posted
+             error.value = '';
+         } catch (e) {
+             error.value = /uwx_staff_shifts|uwx_help_requests|does not exist|schema cache/i.test(errorText(e)) ? 'The staff database step for this release isn’t applied yet.' : errorText(e);
+diff --git a/src/views/UnderWeb/UwxIntelAdmin.vue b/src/views/UnderWeb/UwxIntelAdmin.vue
+index deea0f0..a1226c4 100644
+--- a/src/views/UnderWeb/UwxIntelAdmin.vue
++++ b/src/views/UnderWeb/UwxIntelAdmin.vue
+@@ -23,6 +23,28 @@
+         </div>
+ 
+         <template v-else>
++            <div class="uwi-panel">
++                <div class="uwi-label">DISCORD MODERATION LOG</div>
++                <p class="uwi-note">
++                    UnderWeb posts bans, kicks, warnings and case updates to your private staff channel — even when nobody has UWX open, as soon as any staff member syncs. Never
++                    evidence, notes, locations or instance links. The webhook lives only on the UnderWeb server (secret <code>UWX_MOD_DISCORD_WEBHOOK</code>).
++                </p>
++                <p style="margin-top: 6px">
++                    <span class="uwi-pill" :class="modLog.configured ? 'resolved' : modLog.configured === false ? 'high' : ''">
++                        {{ modLog.configured ? 'Connected' : modLog.configured === false ? 'Webhook not set' : 'Checking…' }}
++                    </span>
++                    <span class="uwi-note"> Last post: {{ modLog.lastPostAt ? when(modLog.lastPostAt) : 'none yet' }}</span>
++                    <span v-if="modLog.backfilledAt" class="uwi-note"> · history summary posted {{ when(modLog.backfilledAt) }}</span>
++                </p>
++                <p v-if="modLog.lastError" class="uwi-error">{{ modLog.lastError }}</p>
++                <div class="uwi-bar" style="margin-top: 8px">
++                    <Button size="sm" variant="outline" @click="flushNow">Post anything new now</Button>
++                    <Button v-if="level >= 4" size="sm" variant="outline" :disabled="Boolean(modLog.backfilledAt) || backfilling" @click="backfill">
++                        {{ backfilling ? 'Posting…' : 'Post history summary (once)' }}
++                    </Button>
++                </div>
++            </div>
++
+             <div v-if="level < 4" class="uwi-panel">
+                 <div class="uwi-label">GROUP SETTINGS</div>
+                 <p class="uwi-note">Only this group's owners (level 4) change access, goals, retention and sharing. Your access: {{ LEVELS[level] }}.</p>
+@@ -164,7 +186,28 @@
+     const store = useUwxIntelStore();
+     const account = useUwxAccountStore();
+     const modal = useModalStore();
+-    const { settings, remote, level } = storeToRefs(store);
++    const { settings, remote, level, modLog } = storeToRefs(store);
++    const backfilling = ref(false);
++    async function backfill() {
++        const { ok } = await modal.confirm({
++            title: 'Post history summary',
++            description: 'Post one summary of the saved moderation history (totals, per month, the last 25 actions and open cases) to the staff Discord channel? This can only be done once.'
++        });
++        if (!ok) return;
++        backfilling.value = true;
++        try {
++            const r = await store.postModHistory();
++            toast.success(r.backfill === 'already done' ? 'Already posted earlier.' : 'Posted to Discord.');
++        } catch (e) {
++            toast.error(e.message);
++        }
++        backfilling.value = false;
++    }
++    async function flushNow() {
++        store.flushModLog();
++        toast.success('Asked UnderWeb to post anything new.');
++        setTimeout(() => void store.loadModLog(), 8000);
++    }
+ 
+     const LEVELS = ['No access', 'Viewer', 'Moderator', 'Manager', 'Group owner'];
+     const ACTION_LABELS = {
+@@ -230,7 +273,10 @@
+         }
+         if (level.value >= 3) await loadLog();
+     }
+-    onMounted(loadAll);
++    onMounted(() => {
++        void loadAll();
++        void store.loadModLog();
++    });
+ 
+     async function loadLog() {
+         try {

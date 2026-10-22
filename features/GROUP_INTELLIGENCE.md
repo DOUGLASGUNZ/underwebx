@@ -227,3 +227,17 @@ Database migration `supabase/migrations/20261022000000_uwx_group_intelligence.sq
   - Event attendance only counts people seen by the PC running Event Mode.
   - "On duty" is self-reported by check-in; VRChat doesn't expose presence for other users' instances.
   - Flagged alerts only cover your own instance.
+
+
+### 0.6.10-rc29: Discord moderation log
+- **Edge function** `uwx-mod-discord` (Underweb-Network repo):
+  - Posts to the private staff channel through the Supabase secret `UWX_MOD_DISCORD_WEBHOOK`.
+  - Covers new VRChat moderation events from the shared archive and case events.
+  - Each item posts exactly once: the posting position is claimed before anything is posted, so two staff syncing at once can't double-post.
+  - Events older than 24 h are folded into a single "+N older entries" line instead of being posted one by one.
+  - Owners can post a one-time history summary.
+- **What triggers it:**
+  - UWX after a sync that adds rows, and after case changes.
+  - The Staff Dashboard poll, as a backstop.
+  - Website case edits.
+- **Never posted:** evidence, notes, free text, locations, instance links.
