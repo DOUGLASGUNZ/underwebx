@@ -811,13 +811,31 @@ jobs:
           if (-not (Test-Path "src\views\UnderWeb\UwxApprovals.vue")) { throw "RC26: Approvals view missing." }
           Write-Host "RC26 applied: UWX $version"
 
+      - name: Apply RC27 group intelligence
+        shell: pwsh
+        working-directory: ${{ env.UWX_SOURCE }}
+        run: |
+          $patchFile = Join-Path $env:GITHUB_WORKSPACE "features\core\rc27-group-intelligence.patch"
+          if (-not (Test-Path $patchFile)) { throw "RC27 patch not found." }
+          $patchText = [System.IO.File]::ReadAllText($patchFile).Replace("`r`n", "`n")
+          [System.IO.File]::WriteAllText($patchFile, $patchText, [System.Text.UTF8Encoding]::new($false))
+          git apply --check --verbose $patchFile
+          if ($LASTEXITCODE -ne 0) { throw "RC27 patch check failed." }
+          git apply --whitespace=nowarn $patchFile
+          if ($LASTEXITCODE -ne 0) { throw "RC27 patch failed." }
+          $version = (Get-Content "UWX_VERSION" -Raw).Trim()
+          if ($version -ne "0.6.8-rc27") { throw "RC27 version mismatch: $version" }
+          if (-not (Test-Path "src\views\UnderWeb\UwxGroupIntel.vue")) { throw "RC27: Group Intelligence view missing." }
+          if (-not (Test-Path "src\views\UnderWeb\UwxModerationCenter.vue")) { throw "RC27: Moderation Center view missing." }
+          Write-Host "RC27 applied: UWX $version"
+
       - name: Install dependencies and run UWX unit tests
         shell: pwsh
         working-directory: ${{ env.UWX_SOURCE }}
         run: |
           npm ci
           if ($LASTEXITCODE -ne 0) { throw "npm ci failed." }
-          npx vitest run src/stores/__tests__/uwxInviter.test.js src/stores/__tests__/uwxGroupTools.test.js src/shared/utils/__tests__/uwxOsc.test.js src/shared/utils/__tests__/uwxAudit.test.js src/stores/__tests__/uwxGroupAudit.test.js src/shared/utils/__tests__/uwxRelease.test.js src/stores/__tests__/vrcxUpdater.test.js src/shared/utils/__tests__/uwxEvent.test.js src/stores/__tests__/uwxEventMode.test.js src/stores/__tests__/uwxLobbyGuard.test.js src/stores/__tests__/uwxAccountLabels.test.js src/shared/utils/__tests__/uwxStaffInsights.test.js src/stores/__tests__/uwxDiscordAlerts.test.js src/stores/__tests__/uwxInvitePresets.test.js src/shared/utils/__tests__/uwxLobby.test.js src/stores/__tests__/uwxAccess.test.js src/shared/utils/__tests__/uwxTheme.test.js src/shared/utils/__tests__/uwxCrew.test.js src/stores/__tests__/uwxCrew.test.js src/shared/utils/__tests__/uwxShare.test.js src/stores/__tests__/uwxShare.test.js src/shared/utils/__tests__/uwxInviteSafety.test.js src/shared/utils/__tests__/uwxRoot.test.js src/shared/utils/__tests__/uwxLikes.test.js src/stores/__tests__/uwxApprovals.test.js
+          npx vitest run src/stores/__tests__/uwxInviter.test.js src/stores/__tests__/uwxGroupTools.test.js src/shared/utils/__tests__/uwxOsc.test.js src/shared/utils/__tests__/uwxAudit.test.js src/stores/__tests__/uwxGroupAudit.test.js src/shared/utils/__tests__/uwxRelease.test.js src/stores/__tests__/vrcxUpdater.test.js src/shared/utils/__tests__/uwxEvent.test.js src/stores/__tests__/uwxEventMode.test.js src/stores/__tests__/uwxLobbyGuard.test.js src/stores/__tests__/uwxAccountLabels.test.js src/shared/utils/__tests__/uwxStaffInsights.test.js src/stores/__tests__/uwxDiscordAlerts.test.js src/stores/__tests__/uwxInvitePresets.test.js src/shared/utils/__tests__/uwxLobby.test.js src/stores/__tests__/uwxAccess.test.js src/shared/utils/__tests__/uwxTheme.test.js src/shared/utils/__tests__/uwxCrew.test.js src/stores/__tests__/uwxCrew.test.js src/shared/utils/__tests__/uwxShare.test.js src/stores/__tests__/uwxShare.test.js src/shared/utils/__tests__/uwxInviteSafety.test.js src/shared/utils/__tests__/uwxRoot.test.js src/shared/utils/__tests__/uwxLikes.test.js src/stores/__tests__/uwxApprovals.test.js src/shared/utils/__tests__/uwxIntel.test.js src/stores/__tests__/uwxIntel.test.js src/stores/__tests__/uwxModeration.test.js
           if ($LASTEXITCODE -ne 0) { throw "UWX unit tests failed." }
 
       - name: Build UnderWeb X
