@@ -1,0 +1,618 @@
+diff --git a/CHANGELOG_UWX.md b/CHANGELOG_UWX.md
+index ac9ae38..456d550 100644
+--- a/CHANGELOG_UWX.md
++++ b/CHANGELOG_UWX.md
+@@ -1,5 +1,17 @@
+ # UnderWeb X changelog
+ 
++## 0.6.11-rc30 — Hub check-ins & Silk
++
++- **Hub check-in:** spend 10 minutes in the UnderWeb hub with UWX open and you're checked in for the day. Only your own visit is sent — never who else is there or which instance.
++- **Silk in your account:**
++  - +25 a day for visiting the hub.
++  - +50 and an "I was there" badge during UnderWeb events.
++  - A weekly streak bonus.
++  - +10 per approved photo.
++  - +100 per friend staff verify you brought in.
++- The **Silk & hub check-ins** card on Command shows your balance, this week, your streak, badges, recent Silk and the weekly leaderboard. A switch turns visit counting off.
++- **Owners:** stand in the hub and click **Add this world** so visits count there.
++
+ ## 0.6.10-rc29 — Moderation log in Discord
+ 
+ - **Discord moderation log:** UnderWeb's server posts bans, unbans, removals, instance kicks and warnings, and case updates (opened, status changes, recorded actions, appeals) to your private staff channel. It works even when nobody has UWX open, and each item posts exactly once no matter how many staff are syncing. It never posts evidence, notes, locations or instance links.
+diff --git a/UWX_VERSION b/UWX_VERSION
+index cc57e41..e1f66fb 100644
+--- a/UWX_VERSION
++++ b/UWX_VERSION
+@@ -1 +1 @@
+-0.6.10-rc29
++0.6.11-rc30
+diff --git a/src/shared/constants/uwx.js b/src/shared/constants/uwx.js
+index 5009305..38c865e 100644
+--- a/src/shared/constants/uwx.js
++++ b/src/shared/constants/uwx.js
+@@ -1,2 +1,2 @@
+-export const UWX_VERSION = '0.6.10-rc29';
++export const UWX_VERSION = '0.6.11-rc30';
+ export const UWX_MANIFEST_URL = 'https://underweb.cloud/api/uwx/manifest';
+diff --git a/src/stores/__tests__/uwxSilk.test.js b/src/stores/__tests__/uwxSilk.test.js
+new file mode 100644
+index 0000000..a14d940
+--- /dev/null
++++ b/src/stores/__tests__/uwxSilk.test.js
+@@ -0,0 +1,83 @@
++import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
++import { createPinia, getActivePinia, setActivePinia } from 'pinia';
++import { nextTick, reactive } from 'vue';
++
++const config = { store: {}, getString: vi.fn(async (k, d) => config.store[k] ?? d), setString: vi.fn(async (k, v) => (config.store[k] = v)) };
++vi.mock('../../services/config', () => ({ default: config }));
++const toast = { success: vi.fn() };
++vi.mock('vue-sonner', () => ({ toast }));
++const HUB = 'wrld_11111111-2222-3333-4444-555555555555';
++const loc = reactive({ lastLocation: { location: '', name: '' } });
++vi.mock('../location', () => ({ useLocationStore: () => loc }));
++const account = reactive({ signedIn: true, topRole: { rank: 100 }, rpc: vi.fn() });
++vi.mock('../uwxAccount', () => ({ useUwxAccountStore: () => account }));
++
++const { awardText, useUwxSilkStore, worldIdOf } = await import('../uwxSilk');
++
++const flush = async () => {
++    for (let i = 0; i < 5; i++) await nextTick();
++    await vi.advanceTimersByTimeAsync(0);
++};
++
++describe('hub check-in', () => {
++    afterEach(() => getActivePinia()?._s.forEach((store) => store.$dispose()));
++    beforeEach(() => {
++        setActivePinia(createPinia());
++        vi.clearAllMocks();
++        vi.useFakeTimers();
++        loc.lastLocation = { location: '', name: '' };
++        account.rpc.mockImplementation(async (name, args) => {
++            if (name === 'uw_silk_summary') return { balance: 0, worlds: [{ world_id: HUB, name: 'UnderWeb Hub' }] };
++            if (name === 'uw_silk_leaderboard') return [];
++            if (name === 'uw_hub_checkin' && args.p_stage === 'start') return { status: 'started', confirm_after: new Date(Date.now() + 600000).toISOString() };
++            if (name === 'uw_hub_checkin') return { status: 'checked_in', awards: [{ amount: 25, why: 'Hub visit' }, { amount: 50, why: 'Event: Opening' }], streak: 1 };
++            return null;
++        });
++    });
++
++    test('parses world ids from VRChat locations', () => {
++        expect(worldIdOf(`${HUB}:48213~group(grp_x)~region(us)`)).toBe(HUB);
++        expect(worldIdOf('offline')).toBe('');
++        expect(awardText({ awards: [{ amount: 25, why: 'Hub visit' }, { amount: 50, why: 'Event: X' }] })).toBe('+75 Silk — Hub visit, Event: X');
++    });
++
++    test('checks in after 10 minutes in the hub, only with your own world id', async () => {
++        const s = useUwxSilkStore();
++        await s.start();
++        await flush();
++        loc.lastLocation = { location: `${HUB}:123~private(usr_me)`, name: 'UnderWeb Hub' };
++        await flush();
++        expect(s.state).toBe('here');
++        const starts = account.rpc.mock.calls.filter(([n]) => n === 'uw_hub_checkin');
++        expect(starts).toHaveLength(1);
++        expect(starts[0][1]).toEqual({ p_world_id: HUB, p_stage: 'start' });
++        await vi.advanceTimersByTimeAsync(10 * 60000 + 5000);
++        expect(account.rpc.mock.calls.filter(([n, a]) => n === 'uw_hub_checkin' && a.p_stage === 'confirm')).toHaveLength(1);
++        expect(s.state).toBe('checked-in');
++        expect(toast.success).toHaveBeenCalledWith('+75 Silk — Hub visit, Event: Opening', expect.anything());
++    });
++
++    test('leaving before 10 minutes means no check-in; other worlds never report', async () => {
++        const s = useUwxSilkStore();
++        await s.start();
++        await flush();
++        loc.lastLocation = { location: `${HUB}:1`, name: 'Hub' };
++        await flush();
++        loc.lastLocation = { location: 'wrld_99999999-2222-3333-4444-555555555555:7', name: 'Elsewhere' };
++        await flush();
++        await vi.advanceTimersByTimeAsync(11 * 60000);
++        expect(account.rpc.mock.calls.filter(([n, a]) => n === 'uw_hub_checkin' && a.p_stage === 'confirm')).toHaveLength(0);
++        expect(account.rpc.mock.calls.filter(([n, a]) => n === 'uw_hub_checkin' && a.p_world_id !== HUB)).toHaveLength(0);
++        expect(s.state).toBe('idle');
++    });
++
++    test('turning it off stops reporting', async () => {
++        const s = useUwxSilkStore();
++        await s.start();
++        await s.setEnabled(false);
++        loc.lastLocation = { location: `${HUB}:1`, name: 'Hub' };
++        await flush();
++        expect(account.rpc.mock.calls.filter(([n]) => n === 'uw_hub_checkin')).toHaveLength(0);
++        expect(config.store.UWX_hubCheckinEnabled).toBe('false');
++    });
++});
+diff --git a/src/stores/uwxSilk.js b/src/stores/uwxSilk.js
+new file mode 100644
+index 0000000..ca48382
+--- /dev/null
++++ b/src/stores/uwxSilk.js
+@@ -0,0 +1,186 @@
++import { computed, ref, watch } from 'vue';
++import { defineStore } from 'pinia';
++import { toast } from 'vue-sonner';
++
++import configRepository from '../services/config';
++import { useLocationStore } from './location';
++import { useUwxAccountStore } from './uwxAccount';
++
++// Hub check-ins + Silk.
++// When you're in an UnderWeb hub world (the list lives on UnderWeb), UWX tells UnderWeb you arrived,
++// and after 10 minutes there it confirms the visit. UnderWeb decides what that's worth:
++// +25 Silk a day for visiting, +50 and an "I was there" badge during an event, a weekly streak bonus.
++// Only your own visit is reported — never who else is in the instance, never the instance itself.
++
++const ENABLED_KEY = 'UWX_hubCheckinEnabled';
++const CONFIRM_AFTER_MS = 10 * 60 * 1000;
++const errorText = (e) => e?.error?.message || e?.message || 'Unknown error';
++
++/** World id from a VRChat location string ("wrld_…:12345~region(us)") or '' */
++export function worldIdOf(location) {
++    const m = String(location || '').match(/^(wrld_[0-9a-f-]{36})/i);
++    return m ? m[1].toLowerCase() : '';
++}
++
++/** Short toast text for awards returned by uw_hub_checkin. */
++export function awardText(res) {
++    const awards = Array.isArray(res?.awards) ? res.awards : [];
++    if (!awards.length) return 'Checked in at the hub.';
++    const total = awards.reduce((n, a) => n + Number(a.amount || 0), 0);
++    return `+${total} Silk — ${awards.map((a) => a.why).join(', ')}`;
++}
++
++export const useUwxSilkStore = defineStore('UwxSilk', () => {
++    const account = useUwxAccountStore();
++    const locationStore = useLocationStore();
++
++    const enabled = ref(true);
++    const summary = ref(null);
++    const board = ref([]);
++    const hubWorlds = ref([]);
++    const state = ref('idle'); // idle | here | checked-in | not-verified | off | error
++    const note = ref('');
++    const arrivedAt = ref(0);
++    const serverReady = ref(true);
++
++    let started = false;
++    let confirmTimer = null;
++    let currentWorld = '';
++
++    const inHub = computed(() => hubWorlds.value.some((w) => w.world_id === worldIdOf(locationStore.lastLocation?.location)));
++    const currentWorldId = computed(() => worldIdOf(locationStore.lastLocation?.location));
++    const currentWorldName = computed(() => locationStore.lastLocation?.name || '');
++    const canSetHub = computed(() => Number(account.topRole?.rank || 0) >= 90);
++
++    async function load() {
++        if (!account.signedIn) {
++            summary.value = null;
++            return;
++        }
++        try {
++            summary.value = await account.rpc('uw_silk_summary');
++            hubWorlds.value = summary.value?.worlds || [];
++            board.value = (await account.rpc('uw_silk_leaderboard', { p_days: 7 })) || [];
++            serverReady.value = true;
++        } catch (e) {
++            if (e?.status === 404 || /uw_silk_summary|does not exist|schema cache/i.test(errorText(e))) serverReady.value = false;
++        }
++    }
++
++    async function setEnabled(value) {
++        enabled.value = Boolean(value);
++        await configRepository.setString(ENABLED_KEY, enabled.value ? 'true' : 'false');
++        if (!enabled.value) {
++            clearTimeout(confirmTimer);
++            state.value = 'off';
++        } else void onLocation();
++    }
++
++    async function checkin(stage) {
++        try {
++            const res = await account.rpc('uw_hub_checkin', { p_world_id: currentWorld, p_stage: stage });
++            return res || {};
++        } catch (e) {
++            state.value = 'error';
++            note.value = errorText(e);
++            return null;
++        }
++    }
++
++    async function onLocation() {
++        const wid = currentWorldId.value;
++        if (wid === currentWorld && state.value !== 'idle') return;
++        clearTimeout(confirmTimer);
++        currentWorld = wid;
++        arrivedAt.value = 0;
++        if (!enabled.value) return void (state.value = 'off');
++        if (!account.signedIn || !wid || !inHub.value) return void (state.value = 'idle');
++        arrivedAt.value = Date.now();
++        state.value = 'here';
++        const res = await checkin('start');
++        if (!res) return;
++        if (res.status === 'unverified') {
++            state.value = 'not-verified';
++            note.value = 'Verify your VRChat on underweb.cloud to earn Silk for hub visits.';
++            return;
++        }
++        if (res.status === 'already') {
++            state.value = 'checked-in';
++            return;
++        }
++        const wait = Math.max(5000, (Date.parse(res.confirm_after) || Date.now() + CONFIRM_AFTER_MS) - Date.now() + 2000);
++        confirmTimer = setTimeout(() => void confirm(), wait);
++    }
++
++    async function confirm() {
++        if (!inHub.value || currentWorldId.value !== currentWorld) return; // left before 10 minutes
++        const res = await checkin('confirm');
++        if (!res) return;
++        if (res.status === 'too_soon') {
++            confirmTimer = setTimeout(() => void confirm(), Math.max(5000, Date.parse(res.confirm_after) - Date.now() + 2000));
++            return;
++        }
++        if (res.status === 'checked_in') {
++            state.value = 'checked-in';
++            toast.success(awardText(res), { description: res.streak >= 2 ? `${res.streak}-week streak` : undefined });
++            void load();
++        } else if (res.status === 'already') {
++            state.value = 'checked-in';
++        }
++    }
++
++    /** Owner / Director: mark the world you're standing in as an UnderWeb hub world. */
++    async function useCurrentWorldAsHub() {
++        const wid = currentWorldId.value;
++        if (!wid) throw new Error('Join the hub world in VRChat first.');
++        await account.rpc('uw_hub_world_set', { p_world_id: wid, p_name: currentWorldName.value || 'UnderWeb Hub', p_active: true });
++        await load();
++        currentWorld = '';
++        await onLocation();
++    }
++
++    async function removeHubWorld(w) {
++        await account.rpc('uw_hub_world_set', { p_world_id: w.world_id, p_name: w.name, p_active: false });
++        await load();
++    }
++
++    // Watchers live in the store's own scope (cleaned up with it) and only act once started.
++    watch(
++        () => account.signedIn,
++        async (signedIn) => {
++            if (!started) return;
++            await load();
++            if (signedIn) void onLocation();
++        }
++    );
++    watch(currentWorldId, () => started && void onLocation());
++    watch(hubWorlds, () => started && void onLocation());
++
++    async function start() {
++        if (started) return;
++        started = true;
++        enabled.value = (await configRepository.getString(ENABLED_KEY, 'true')) !== 'false';
++        await load();
++        if (account.signedIn) void onLocation();
++    }
++
++    return {
++        enabled,
++        summary,
++        board,
++        hubWorlds,
++        state,
++        note,
++        arrivedAt,
++        serverReady,
++        inHub,
++        currentWorldId,
++        currentWorldName,
++        canSetHub,
++        start,
++        load,
++        setEnabled,
++        useCurrentWorldAsHub,
++        removeHubWorld
++    };
++});
+diff --git a/src/views/UnderWeb/UnderWeb.vue b/src/views/UnderWeb/UnderWeb.vue
+index c3376ab..89174f3 100644
+--- a/src/views/UnderWeb/UnderWeb.vue
++++ b/src/views/UnderWeb/UnderWeb.vue
+@@ -195,6 +195,7 @@
+ 
+             <UwxLobbyBoard v-if="activePanel === 'command'" @report="prefillSafetyReport" />
+ 
++            <UwxSilkCard v-if="activePanel === 'command'" />
+             <UwxCrewCard v-if="activePanel === 'command'" />
+             <UwxShareCard v-if="activePanel === 'command'" />
+ 
+@@ -1095,6 +1096,8 @@
+     import UwxGroupIntel from './UwxGroupIntel.vue';
+     import UwxModerationCenter from './UwxModerationCenter.vue';
+     import UwxStaffDashboard from './UwxStaffDashboard.vue';
++    import UwxSilkCard from './UwxSilkCard.vue';
++    import { useUwxSilkStore } from '../../stores/uwxSilk';
+     import { useUwxStaffOpsStore } from '../../stores/uwxStaffOps';
+     import { useUwxModerationStore } from '../../stores/uwxModeration';
+     import UwxOscLab from './UwxOscLab.vue';
+@@ -1304,6 +1307,8 @@
+     });
+     // Staff alerts (help requests, flagged people in your instance, case updates) run whenever UWX is open.
+     void useUwxStaffOpsStore().start();
++    // Hub check-ins run whenever UWX is open (only your own visit is reported).
++    void useUwxSilkStore().start();
+     // "Look up" / "open case" from anywhere in UWX jumps to the Moderation tab.
+     watch(
+         () => useUwxModerationStore().focusTick,
+diff --git a/src/views/UnderWeb/UwxSilkCard.vue b/src/views/UnderWeb/UwxSilkCard.vue
+new file mode 100644
+index 0000000..a0d841f
+--- /dev/null
++++ b/src/views/UnderWeb/UwxSilkCard.vue
+@@ -0,0 +1,264 @@
++<template>
++    <Card class="uwx-card uwx-card-wide">
++        <CardHeader>
++            <div class="flex flex-wrap items-start justify-between gap-3">
++                <div>
++                    <CardTitle>Silk & hub check-ins</CardTitle>
++                    <CardDescription>Show up at the hub, earn Silk. UWX checks you in after 10 minutes there — only your own visit is sent, nothing about who else is there.</CardDescription>
++                </div>
++                <label class="flex items-center gap-2 text-sm">
++                    <Switch :model-value="enabled" @update:modelValue="silk.setEnabled" />
++                    Count my visits
++                </label>
++            </div>
++        </CardHeader>
++        <CardContent class="uwx-silk">
++            <p v-if="!account.signedIn" class="text-sm text-muted-foreground">Sign in to UnderWeb (System tab) to earn and keep Silk.</p>
++            <p v-else-if="!serverReady" class="text-sm text-muted-foreground">Silk isn't switched on at UnderWeb yet (one database step for the owner).</p>
++            <template v-else>
++                <div class="uwx-silk-status" :class="state">
++                    <i :class="statusIcon" />
++                    <span>{{ statusText }}</span>
++                </div>
++
++                <div class="uwx-silk-stats">
++                    <div><strong>{{ (summary?.balance ?? 0).toLocaleString() }}</strong><span>Silk</span></div>
++                    <div><strong>+{{ (summary?.week ?? 0).toLocaleString() }}</strong><span>this week</span></div>
++                    <div><strong>{{ summary?.streak ?? 0 }}</strong><span>week streak</span></div>
++                    <div><strong>{{ summary?.visits ?? 0 }}</strong><span>hub visits</span></div>
++                </div>
++
++                <div class="uwx-silk-cols">
++                    <section>
++                        <div class="uwx-silk-label">HOW TO EARN</div>
++                        <ul class="uwx-silk-ways">
++                            <li><b>+25</b> first 10 minutes at the hub each day</li>
++                            <li><b>+50</b> and an “I was there” badge during an UnderWeb event</li>
++                            <li><b>+10×</b> weeks in a row you visit (up to +50 a week)</li>
++                            <li><b>+10</b> for each approved photo or piece of work (3 a day)</li>
++                            <li><b>+100</b> for every friend staff verify you brought in (Road to 500)</li>
++                        </ul>
++                        <p class="text-xs text-muted-foreground">Spending account Silk in the hub casino is coming — the casino uses in-world Silk for now.</p>
++                    </section>
++                    <section>
++                        <div class="uwx-silk-label">THIS WEEK'S TOP EARNERS</div>
++                        <p v-if="!board.length" class="text-sm text-muted-foreground">Nobody yet — be first.</p>
++                        <div v-for="(r, i) in board.slice(0, 8)" :key="i" class="uwx-silk-row" :class="{ me: r.me }">
++                            <span class="rank">{{ i + 1 }}</span><span class="name">{{ r.display_name || r.username }}</span><strong>{{ r.earned }}</strong>
++                        </div>
++                    </section>
++                    <section>
++                        <div class="uwx-silk-label">RECENT</div>
++                        <p v-if="!summary?.recent?.length" class="text-sm text-muted-foreground">No Silk yet.</p>
++                        <div v-for="(r, i) in (summary?.recent || []).slice(0, 8)" :key="i" class="uwx-silk-row">
++                            <span class="name">{{ r.note || r.reason }}</span>
++                            <strong :class="r.amount < 0 ? 'neg' : ''">{{ r.amount > 0 ? '+' : '' }}{{ r.amount }}</strong>
++                        </div>
++                        <template v-if="summary?.badges?.length">
++                            <div class="uwx-silk-label" style="margin-top: 10px">I WAS THERE</div>
++                            <div class="flex flex-wrap gap-1">
++                                <Badge v-for="b in summary.badges" :key="b.event + b.at" variant="outline">{{ b.event }}</Badge>
++                            </div>
++                        </template>
++                    </section>
++                </div>
++
++                <div v-if="canSetHub" class="uwx-silk-admin">
++                    <div class="uwx-silk-label">HUB WORLDS (OWNER)</div>
++                    <p class="text-xs text-muted-foreground">Visits only count in these worlds. Stand in the hub in VRChat and add it.</p>
++                    <div class="flex flex-wrap items-center gap-2" style="margin-top: 6px">
++                        <Badge v-for="w in hubWorlds" :key="w.world_id" variant="outline">
++                            {{ w.name }}
++                            <button type="button" class="uwx-silk-x" title="Stop counting this world" @click="remove(w)">×</button>
++                        </Badge>
++                        <span v-if="!hubWorlds.length" class="text-sm" style="color: #fab219">No hub world set — check-ins are off until you add one.</span>
++                        <Button size="sm" variant="outline" :disabled="!currentWorldId || inHub" @click="addHere">
++                            {{ inHub ? 'This world is already a hub' : currentWorldId ? `Add “${currentWorldName || 'this world'}”` : 'Join the hub world first' }}
++                        </Button>
++                    </div>
++                </div>
++            </template>
++        </CardContent>
++    </Card>
++</template>
++
++<script setup>
++    import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
++    import { storeToRefs } from 'pinia';
++    import { toast } from 'vue-sonner';
++    import { Badge } from '@/components/ui/badge';
++    import { Button } from '@/components/ui/button';
++    import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
++    import { Switch } from '@/components/ui/switch';
++
++    import { useModalStore } from '../../stores/modal';
++    import { useUwxAccountStore } from '../../stores/uwxAccount';
++    import { useUwxSilkStore } from '../../stores/uwxSilk';
++
++    const silk = useUwxSilkStore();
++    const account = useUwxAccountStore();
++    const modal = useModalStore();
++    const { enabled, summary, board, hubWorlds, state, note, arrivedAt, serverReady, inHub, currentWorldId, currentWorldName, canSetHub } = storeToRefs(silk);
++
++    const now = ref(Date.now());
++    let tick = null;
++    onMounted(() => {
++        void silk.start();
++        void silk.load();
++        tick = setInterval(() => (now.value = Date.now()), 15000);
++    });
++    onBeforeUnmount(() => clearInterval(tick));
++
++    const statusText = computed(() => {
++        switch (state.value) {
++            case 'here': {
++                const left = Math.max(0, Math.ceil((arrivedAt.value + 10 * 60000 - now.value) / 60000));
++                return left ? `You're at the hub — checking you in in about ${left} min.` : 'You’re at the hub — checking you in…';
++            }
++            case 'checked-in':
++                return 'Checked in at the hub today.';
++            case 'not-verified':
++                return note.value;
++            case 'off':
++                return 'Visit counting is off on this PC.';
++            case 'error':
++                return `Check-in failed: ${note.value}`;
++            default:
++                return summary.value?.today?.confirmed_at ? 'Checked in at the hub today.' : 'Not at the hub right now.';
++        }
++    });
++    const statusIcon = computed(
++        () => ({ here: 'ri-time-line', 'checked-in': 'ri-checkbox-circle-line', 'not-verified': 'ri-error-warning-line', error: 'ri-error-warning-line', off: 'ri-pause-circle-line' })[state.value] || 'ri-map-pin-line'
++    );
++
++    async function addHere() {
++        const { ok } = await modal.confirm({ title: 'Make this a hub world?', description: `Visits to “${currentWorldName.value || currentWorldId.value}” will earn Silk for everyone.` });
++        if (!ok) return;
++        try {
++            await silk.useCurrentWorldAsHub();
++            toast.success('Hub world added.');
++        } catch (e) {
++            toast.error(e.message);
++        }
++    }
++    async function remove(w) {
++        const { ok } = await modal.confirm({ title: 'Stop counting this world?', description: `Visits to ${w.name} won't earn Silk anymore. Earned Silk stays.` });
++        if (ok) await silk.removeHubWorld(w);
++    }
++</script>
++
++<style scoped>
++    .uwx-silk {
++        display: flex;
++        flex-direction: column;
++        gap: 14px;
++    }
++    .uwx-silk-status {
++        display: flex;
++        align-items: center;
++        gap: 8px;
++        font-size: 13px;
++        padding: 8px 12px;
++        border-radius: 10px;
++        border: 1px solid var(--border);
++    }
++    .uwx-silk-status.here,
++    .uwx-silk-status.checked-in {
++        border-color: rgb(var(--uwx-accent-rgb) / 40%);
++        color: var(--uwx-accent);
++    }
++    .uwx-silk-status.not-verified,
++    .uwx-silk-status.error {
++        border-color: rgb(250 178 25 / 40%);
++        color: #fab219;
++    }
++    .uwx-silk-stats {
++        display: grid;
++        grid-template-columns: repeat(4, minmax(0, 1fr));
++        gap: 8px;
++    }
++    @media (max-width: 700px) {
++        .uwx-silk-stats {
++            grid-template-columns: repeat(2, minmax(0, 1fr));
++        }
++    }
++    .uwx-silk-stats div {
++        display: flex;
++        flex-direction: column;
++        padding: 10px 12px;
++        border-radius: 10px;
++        border: 1px solid var(--border);
++    }
++    .uwx-silk-stats strong {
++        font-size: 24px;
++        color: var(--uwx-accent);
++        font-variant-numeric: tabular-nums;
++    }
++    .uwx-silk-stats span {
++        font-size: 11px;
++        color: var(--muted-foreground);
++    }
++    .uwx-silk-cols {
++        display: grid;
++        grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
++        gap: 16px;
++    }
++    .uwx-silk-label {
++        color: var(--uwx-accent);
++        font-size: 10px;
++        font-weight: 900;
++        letter-spacing: 0.12em;
++        margin-bottom: 6px;
++    }
++    .uwx-silk-ways {
++        font-size: 12px;
++        line-height: 1.7;
++        margin: 0 0 6px;
++        padding: 0;
++        list-style: none;
++    }
++    .uwx-silk-ways b {
++        color: var(--uwx-accent);
++        display: inline-block;
++        min-width: 38px;
++    }
++    .uwx-silk-row {
++        display: flex;
++        gap: 8px;
++        align-items: baseline;
++        font-size: 13px;
++        padding: 3px 0;
++        border-top: 1px solid var(--border);
++    }
++    .uwx-silk-row.me {
++        color: var(--uwx-accent);
++    }
++    .uwx-silk-row .rank {
++        width: 18px;
++        color: var(--muted-foreground);
++    }
++    .uwx-silk-row .name {
++        flex: 1;
++        min-width: 0;
++        overflow: hidden;
++        text-overflow: ellipsis;
++        white-space: nowrap;
++    }
++    .uwx-silk-row strong {
++        font-variant-numeric: tabular-nums;
++    }
++    .uwx-silk-row strong.neg {
++        color: #e66767;
++    }
++    .uwx-silk-admin {
++        border-top: 1px solid var(--border);
++        padding-top: 10px;
++    }
++    .uwx-silk-x {
++        margin-left: 4px;
++        opacity: 0.6;
++    }
++    .uwx-silk-x:hover {
++        opacity: 1;
++    }
++</style>
