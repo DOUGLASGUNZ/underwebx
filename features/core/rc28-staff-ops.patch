@@ -1,0 +1,1098 @@
+diff --git a/CHANGELOG_UWX.md b/CHANGELOG_UWX.md
+index 5ba4e18..c12cf14 100644
+--- a/CHANGELOG_UWX.md
++++ b/CHANGELOG_UWX.md
+@@ -1,5 +1,18 @@
+ # UnderWeb X changelog
+ 
++## 0.6.9-rc28 — Staff Dashboard & alerts
++
++- **Staff tab:**
++  - Check in and out for duty and see who's on now. Shifts left open over 12 hours close themselves.
++  - "Need staff here" requests, optionally with your location. Everyone on staff gets a desktop alert and can claim it with "I'm on it".
++  - A staff overview showing time on duty, cases opened, assigned and closed, case updates, average first response, notes, recruits checked and help answered. It's deliberately not a ban leaderboard. Managers see the whole team; everyone else sees themselves.
++  - What's waiting: approvals, open help requests and unassigned cases.
++- **Flagged-user alerts:** if someone with an open case, or a high-severity case a partner group shares with you, is in your instance, UWX tells you (desktop + in-app). It's a reason to check, not to act.
++- **Case alerts:** you're notified when a case is escalated or critical, or when a case assigned to you changes.
++- **Event Mode recaps** are shared with all staff through UnderWeb, and Trends shows everyone's events.
++- **Direct access:** group owners can give specific people access by UnderWeb username, which is how partner groups add their own moderators.
++- **Fix:** staff names now show properly on cases, recruiting and the access log (account profiles are private).
++
+ ## 0.6.8-rc27 — Group Intelligence & Moderation Center
+ 
+ - **Group Intel tab** (group staff and UnderWeb staff): live member and online counts, pending requests, invites and bans from VRChat. Member growth over 24 h, 7 d, 30 d and all recorded, built from snapshots. Joins, leaves, kicks, bans, role changes and instances by period, compared with the period before. Live group instances (with a "full" alert), charts with date filters, an activity feed with search, sort, filters and CSV export, and Road to 500. Every number is labelled Current, Historical or Estimate, and anything VRChat won't give you says Unavailable and why.
+diff --git a/UWX_VERSION b/UWX_VERSION
+index baf3c52..be7760c 100644
+--- a/UWX_VERSION
++++ b/UWX_VERSION
+@@ -1 +1 @@
+-0.6.8-rc27
++0.6.9-rc28
+diff --git a/src/shared/constants/uwx.js b/src/shared/constants/uwx.js
+index bee014a..dfa90dd 100644
+--- a/src/shared/constants/uwx.js
++++ b/src/shared/constants/uwx.js
+@@ -1,2 +1,2 @@
+-export const UWX_VERSION = '0.6.8-rc27';
++export const UWX_VERSION = '0.6.9-rc28';
+ export const UWX_MANIFEST_URL = 'https://underweb.cloud/api/uwx/manifest';
+diff --git a/src/stores/__tests__/uwxModeration.test.js b/src/stores/__tests__/uwxModeration.test.js
+index 4b19ed6..ad155ed 100644
+--- a/src/stores/__tests__/uwxModeration.test.js
++++ b/src/stores/__tests__/uwxModeration.test.js
+@@ -18,7 +18,7 @@ const audit = reactive({ groupId: GROUP, entries: [], nudge: vi.fn() });
+ vi.mock('../uwxGroupAudit', () => ({ useUwxGroupAuditStore: () => audit }));
+ const tools = { moderate: vi.fn() };
+ vi.mock('../uwxGroupTools', () => ({ useUwxGroupToolsStore: () => tools }));
+-const intel = reactive({ settings: { groupId: GROUP }, remote: null, level: 0, perms: { audit: false }, entries: [], groupRef: { roles: [] }, group: { name: 'The UnderWeb' } });
++const intel = reactive({ namesFor: async () => [], settings: { groupId: GROUP }, remote: null, level: 0, perms: { audit: false }, entries: [], groupRef: { roles: [] }, group: { name: 'The UnderWeb' } });
+ vi.mock('../uwxIntel', () => ({ useUwxIntelStore: () => intel }));
+ vi.mock('../uwxMemberNotes', () => ({ useUwxMemberNotesStore: () => ({ load: vi.fn(), forUser: () => [] }) }));
+ 
+diff --git a/src/stores/__tests__/uwxStaffOps.test.js b/src/stores/__tests__/uwxStaffOps.test.js
+new file mode 100644
+index 0000000..5182c73
+--- /dev/null
++++ b/src/stores/__tests__/uwxStaffOps.test.js
+@@ -0,0 +1,34 @@
++import { describe, expect, test } from 'vitest';
++import { vi } from 'vitest';
++
++vi.mock('../../services/config', () => ({ default: { getString: async () => '', setString: async () => {} } }));
++vi.mock('vue-sonner', () => ({ toast: {} }));
++vi.mock('../location', () => ({ useLocationStore: () => ({}) }));
++vi.mock('../uwxAccount', () => ({ useUwxAccountStore: () => ({}) }));
++vi.mock('../uwxEventMode', () => ({ useUwxEventModeStore: () => ({}) }));
++vi.mock('../uwxGroupTools', () => ({ useUwxGroupToolsStore: () => ({}) }));
++vi.mock('../uwxIntel', () => ({ useUwxIntelStore: () => ({}) }));
++
++const { flagText, matchFlagged } = await import('../uwxStaffOps');
++
++describe('flagged people in your instance', () => {
++    const flagged = [
++        { subject_vrc_id: 'usr_a', case_number: 14, severity: 'high', source: 'own' },
++        { subject_vrc_id: 'usr_a', case_number: 3, severity: 'critical', source: 'Symbiotes' },
++        { subject_vrc_id: 'usr_b', case_number: 9, severity: 'medium', source: 'own' }
++    ];
++
++    test('matches only people who are actually here', () => {
++        const hits = matchFlagged([{ userId: 'usr_a', displayName: 'Crash' }, { userId: 'usr_c', displayName: 'Fine' }], flagged);
++        expect(hits.map((h) => h.userId)).toEqual(['usr_a']);
++        expect(hits[0].cases).toHaveLength(2);
++        expect(matchFlagged([], flagged)).toEqual([]);
++    });
++
++    test('alert text leads with the most severe case and says where it came from', () => {
++        const [hit] = matchFlagged([{ userId: 'usr_a', displayName: 'Crash' }], flagged);
++        expect(flagText(hit)).toBe('Crash is in your instance — reported by Symbiotes (critical, 2 cases)');
++        const [own] = matchFlagged([{ userId: 'usr_b', displayName: 'Bob' }], flagged);
++        expect(flagText(own)).toBe('Bob is in your instance — case #9 (medium)');
++    });
++});
+diff --git a/src/stores/uwxIntel.js b/src/stores/uwxIntel.js
+index 375635e..9e6622f 100644
+--- a/src/stores/uwxIntel.js
++++ b/src/stores/uwxIntel.js
+@@ -601,6 +601,18 @@ export const useUwxIntelStore = defineStore('UwxIntel', () => {
+         if (!settings.background) schedule();
+     }
+ 
++    /** Display names of UnderWeb accounts (profiles are private; the server shares names with this group's staff). */
++    async function namesFor(ids) {
++        const list = [...new Set((ids || []).filter(Boolean))];
++        if (!list.length || !remote.value) return [];
++        try {
++            const rows = (await account.rpc('uwx_names', { p_group: remote.value.id, p_ids: list })) || [];
++            return rows.map((r) => ({ id: r.user_id, display_name: r.display_name, username: r.username }));
++        } catch {
++            return [];
++        }
++    }
++
+     // ───────── Road to 500 (recruiting) ─────────
+     const leaderboard = ref([]);
+     const claims = ref([]);
+@@ -630,7 +642,7 @@ export const useUwxIntelStore = defineStore('UwxIntel', () => {
+                         `uwx_recruit_claims?select=id,recruiter_user_id,recruit_vrc_id,recruit_name,note,evidence_path,status,created_at&group_id=eq.${r.id}&status=eq.pending&order=created_at.asc&limit=200`
+                     )) || [];
+                 const ids = [...new Set(rows.map((c) => c.recruiter_user_id))];
+-                const names = ids.length ? (await account.api(`profiles?select=id,display_name,username&id=in.(${ids.join(',')})`)) || [] : [];
++                const names = await namesFor(ids);
+                 claims.value = rows.map((c) => ({
+                     ...c,
+                     recruiter: names.find((p) => p.id === c.recruiter_user_id) || null,
+@@ -742,6 +754,7 @@ export const useUwxIntelStore = defineStore('UwxIntel', () => {
+         withdrawClaim,
+         reviewClaim,
+         evidenceUrl,
++        namesFor,
+         updateGroupSettings
+     };
+ });
+diff --git a/src/stores/uwxModeration.js b/src/stores/uwxModeration.js
+index 77075d8..59aacb6 100644
+--- a/src/stores/uwxModeration.js
++++ b/src/stores/uwxModeration.js
+@@ -306,7 +306,7 @@ export const useUwxModerationStore = defineStore('UwxModeration', () => {
+         const missing = [...new Set(ids.filter((id) => id && !names.value[id]))];
+         if (!missing.length) return;
+         try {
+-            const rows = (await account.api(`profiles?select=id,display_name,username&id=in.(${missing.join(',')})`)) || [];
++            const rows = await intel.namesFor(missing);
+             const next = { ...names.value };
+             for (const r of rows) next[r.id] = r.display_name || r.username || 'Staff';
+             names.value = next;
+diff --git a/src/stores/uwxStaffOps.js b/src/stores/uwxStaffOps.js
+new file mode 100644
+index 0000000..15ee92b
+--- /dev/null
++++ b/src/stores/uwxStaffOps.js
+@@ -0,0 +1,426 @@
++import { computed, reactive, ref, watch } from 'vue';
++import { defineStore } from 'pinia';
++import { toast } from 'vue-sonner';
++
++import configRepository from '../services/config';
++import { useLocationStore } from './location';
++import { useUwxAccountStore } from './uwxAccount';
++import { useUwxEventModeStore } from './uwxEventMode';
++import { useUwxGroupToolsStore } from './uwxGroupTools';
++import { useUwxIntelStore } from './uwxIntel';
++
++// UWX staff operations, all through UnderWeb (RLS decides who sees what):
++//   - on duty: check in / check out (uwx_staff_shifts)
++//   - "need staff here" help requests with desktop alerts (uwx_help_requests)
++//   - staff summary per person (uwx_staff_stats) — workload and responsiveness, never a ban leaderboard
++//   - alerts when someone with an open case (or a high-severity case a partner group shares) is in your instance
++//   - alerts when a case becomes escalated / critical, or one assigned to you changes
++//   - Event Mode recaps shared with the rest of staff (uwx_event_recaps)
++
++const SETTINGS_KEY = 'UWX_staffOpsSettings';
++const UPLOADED_KEY = 'UWX_recapsUploaded';
++const POLL_MS = 60 * 1000;
++const FLAGS_EVERY_MS = 10 * 60 * 1000;
++const errorText = (e) => e?.error?.message || e?.message || 'Unknown error';
++
++function desktopNotify(title, body) {
++    try {
++        if (typeof WINDOWS !== 'undefined' && WINDOWS && typeof AppApi !== 'undefined') AppApi.DesktopNotification(title, body, '');
++        else window.electron?.desktopNotification?.(title, body, '');
++    } catch {
++        // best effort
++    }
++}
++
++/** Which people in the instance match flagged subjects (pure, for tests). */
++export function matchFlagged(occupants, flagged) {
++    const byId = new Map();
++    for (const f of flagged || []) {
++        const list = byId.get(f.subject_vrc_id) || [];
++        list.push(f);
++        byId.set(f.subject_vrc_id, list);
++    }
++    const out = [];
++    for (const p of occupants || []) {
++        const hits = byId.get(p.userId);
++        if (hits) out.push({ ...p, cases: hits });
++    }
++    return out;
++}
++
++/** Text for one flagged person, most severe first. */
++export function flagText(hit) {
++    const order = { critical: 0, high: 1, medium: 2, low: 3 };
++    const c = hit.cases.slice().sort((a, b) => (order[a.severity] ?? 9) - (order[b.severity] ?? 9))[0];
++    const where = c.source === 'own' ? `case #${c.case_number}` : `reported by ${c.source}`;
++    return `${hit.displayName} is in your instance — ${where} (${c.severity}${hit.cases.length > 1 ? `, ${hit.cases.length} cases` : ''})`;
++}
++
++export const useUwxStaffOpsStore = defineStore('UwxStaffOps', () => {
++    const account = useUwxAccountStore();
++    const intel = useUwxIntelStore();
++    const tools = useUwxGroupToolsStore();
++    const locationStore = useLocationStore();
++
++    const settings = reactive({ alertFlagged: true, alertHelp: true, alertCases: true });
++    const onDuty = ref([]);
++    const myShift = ref(null);
++    const help = ref([]);
++    const stats = ref([]);
++    const statsDays = ref(7);
++    const statsLoading = ref(false);
++    const recaps = ref([]);
++    const flagged = ref([]);
++    const flaggedHere = ref([]);
++    const names = ref({});
++    const error = ref('');
++    const busy = ref(false);
++
++    const remote = computed(() => intel.remote);
++    const level = computed(() => intel.level);
++    const ready = computed(() => Boolean(account.signedIn && remote.value && level.value >= 1));
++
++    let timer = null;
++    let started = false;
++    let flagsAt = 0;
++    let lastPollIso = '';
++    const seenHelp = new Set();
++    const notifiedFlags = new Set();
++    let flagLocation = '';
++
++    async function loadSettings() {
++        try {
++            const raw = JSON.parse((await configRepository.getString(SETTINGS_KEY, '')) || '{}');
++            for (const k of Object.keys(settings)) if (typeof raw[k] === 'boolean') settings[k] = raw[k];
++        } catch {
++            // defaults
++        }
++    }
++    async function setOption(key, value) {
++        if (!(key in settings)) return;
++        settings[key] = Boolean(value);
++        await configRepository.setString(SETTINGS_KEY, JSON.stringify({ ...settings }));
++    }
++
++    async function resolveNames(ids) {
++        const missing = [...new Set(ids.filter((id) => id && !names.value[id]))];
++        if (!missing.length || !remote.value) return;
++        try {
++            const rows = (await account.rpc('uwx_names', { p_group: remote.value.id, p_ids: missing })) || [];
++            const next = { ...names.value };
++            for (const r of rows) next[r.user_id] = r.display_name || r.username || 'Staff';
++            names.value = next;
++        } catch {
++            // cosmetic
++        }
++    }
++    const nameOf = (id) => (id === account.userId ? 'You' : names.value[id] || 'Staff');
++
++    // ───────── duty ─────────
++    async function loadDuty() {
++        const g = remote.value.id;
++        const rows = (await account.api(`uwx_staff_shifts?select=id,user_id,started_at,note&group_id=eq.${g}&ended_at=is.null&order=started_at.asc`)) || [];
++        onDuty.value = rows;
++        myShift.value = rows.find((r) => r.user_id === account.userId) || null;
++        await resolveNames(rows.map((r) => r.user_id));
++    }
++
++    async function checkIn(note = '') {
++        if (!ready.value) return false;
++        busy.value = true;
++        try {
++            await account.api('uwx_staff_shifts', {
++                method: 'POST',
++                headers: { Prefer: 'return=minimal' },
++                body: JSON.stringify({ group_id: remote.value.id, user_id: account.userId, note: String(note).slice(0, 200) })
++            });
++            await loadDuty();
++            toast.success('You’re on duty.');
++            return true;
++        } catch (e) {
++            toast.error(/duplicate|unique/i.test(errorText(e)) ? 'You’re already checked in.' : errorText(e));
++            return false;
++        } finally {
++            busy.value = false;
++        }
++    }
++
++    async function checkOut() {
++        if (!myShift.value) return false;
++        busy.value = true;
++        try {
++            await account.api(`uwx_staff_shifts?id=eq.${myShift.value.id}`, { method: 'PATCH', headers: { Prefer: 'return=minimal' }, body: JSON.stringify({ ended_at: new Date().toISOString() }) });
++            await loadDuty();
++            toast.success('Checked out. Thanks for covering!');
++            return true;
++        } catch (e) {
++            toast.error(errorText(e));
++            return false;
++        } finally {
++            busy.value = false;
++        }
++    }
++
++    // ───────── help requests ─────────
++    async function loadHelp({ notify = false } = {}) {
++        const g = remote.value.id;
++        const since = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
++        const rows =
++            (await account.api(
++                `uwx_help_requests?select=*&group_id=eq.${g}&or=${encodeURIComponent(`(status.neq.closed,created_at.gte."${since}")`)}&order=created_at.desc&limit=50`
++            )) || [];
++        await resolveNames(rows.flatMap((r) => [r.requested_by, r.claimed_by]));
++        for (const r of rows) {
++            if (seenHelp.has(r.id)) continue;
++            seenHelp.add(r.id);
++            if (notify && settings.alertHelp && r.status === 'open' && r.requested_by !== account.userId) {
++                const text = `${nameOf(r.requested_by)} needs staff${r.world_name ? ` in ${r.world_name}` : ''}${r.message ? `: ${r.message}` : ''}`;
++                if (r.urgency === 'urgent') toast.error(text);
++                else toast.warning(text);
++                desktopNotify(r.urgency === 'urgent' ? 'URGENT: staff needed' : 'Staff needed', text);
++            }
++        }
++        help.value = rows;
++    }
++
++    async function requestHelp({ message = '', urgency = 'normal', includeLocation = true } = {}) {
++        if (!ready.value) return false;
++        const loc = locationStore.lastLocation;
++        try {
++            await account.api('uwx_help_requests', {
++                method: 'POST',
++                headers: { Prefer: 'return=minimal' },
++                body: JSON.stringify({
++                    group_id: remote.value.id,
++                    requested_by: account.userId,
++                    world_name: includeLocation ? String(loc?.name || '').slice(0, 120) || null : null,
++                    location: includeLocation ? String(loc?.location || '').slice(0, 300) || null : null,
++                    message: String(message).slice(0, 500),
++                    urgency
++                })
++            });
++            await loadHelp();
++            toast.success('Staff have been alerted.');
++            return true;
++        } catch (e) {
++            toast.error(errorText(e));
++            return false;
++        }
++    }
++
++    async function updateHelp(id, action) {
++        try {
++            await account.rpc('uwx_help_update', { p_id: id, p_action: action });
++            await loadHelp();
++        } catch (e) {
++            toast.error(errorText(e));
++        }
++    }
++
++    // ───────── case alerts ─────────
++    async function pollCases() {
++        if (level.value < 2 || !settings.alertCases) return;
++        const g = remote.value.id;
++        const since = lastPollIso || new Date().toISOString();
++        lastPollIso = new Date().toISOString();
++        if (since === lastPollIso) return;
++        const rows =
++            (await account.api(
++                `uwx_cases?select=id,case_number,title,status,severity,assigned_to,updated_at&group_id=eq.${g}&updated_at=gt.${encodeURIComponent(since)}&order=updated_at.asc&limit=50`
++            )) || [];
++        for (const c of rows) {
++            const important = c.status === 'escalated' || c.severity === 'critical';
++            const mine = c.assigned_to === account.userId;
++            if (!important && !mine) continue;
++            const text = `Case #${c.case_number} ${important ? `(${c.status === 'escalated' ? 'escalated' : 'critical'})` : '(assigned to you)'} was updated: ${c.title}`;
++            toast.info(text);
++            desktopNotify('UnderWeb case updated', text);
++        }
++    }
++
++    // ───────── flagged people in your instance ─────────
++    async function loadFlagged(force = false) {
++        if (level.value < 2) {
++            flagged.value = [];
++            return;
++        }
++        if (!force && Date.now() - flagsAt < FLAGS_EVERY_MS) return;
++        try {
++            flagged.value = (await account.rpc('uwx_flagged_subjects', { p_group: remote.value.id })) || [];
++            flagsAt = Date.now();
++        } catch {
++            flagged.value = [];
++        }
++        checkInstance();
++    }
++
++    function checkInstance() {
++        const loc = String(locationStore.lastLocation?.location || '');
++        if (loc !== flagLocation) {
++            flagLocation = loc;
++            notifiedFlags.clear();
++        }
++        flaggedHere.value = matchFlagged(tools.instanceOccupants, flagged.value);
++        if (!settings.alertFlagged) return;
++        for (const hit of flaggedHere.value) {
++            if (notifiedFlags.has(hit.userId)) continue;
++            notifiedFlags.add(hit.userId);
++            const text = flagText(hit);
++            toast.warning(text, { duration: 15000 });
++            desktopNotify('Flagged user in your instance', `${text}. Check Moderation → User Intelligence before acting.`);
++        }
++    }
++
++    // ───────── stats ─────────
++    async function loadStats(days = statsDays.value) {
++        if (!ready.value) return;
++        statsDays.value = days;
++        statsLoading.value = true;
++        try {
++            stats.value = (await account.rpc('uwx_staff_stats', { p_group: remote.value.id, p_since: new Date(Date.now() - days * 86400000).toISOString() })) || [];
++            error.value = '';
++        } catch (e) {
++            error.value = /uwx_staff_stats|does not exist|schema cache/i.test(errorText(e)) ? 'The staff database step for this release isn’t applied yet.' : errorText(e);
++        } finally {
++            statsLoading.value = false;
++        }
++    }
++
++    // ───────── Event Mode recaps ─────────
++    async function syncRecaps() {
++        if (!ready.value) return;
++        const eventMode = useUwxEventModeStore();
++        let uploaded = [];
++        try {
++            uploaded = JSON.parse((await configRepository.getString(UPLOADED_KEY, '')) || '[]');
++        } catch {
++            uploaded = [];
++        }
++        const key = (r) => `${remote.value.id}:${r.id || r.startedAt}`;
++        const pending = (eventMode.history || []).filter((r) => r?.startedAt && !uploaded.includes(key(r)));
++        if (pending.length) {
++            const rows = pending.map((r) => ({
++                group_id: remote.value.id,
++                recorded_by: account.userId,
++                client_event_id: String(r.id || r.startedAt).slice(0, 80),
++                name: String(r.name || 'Event').slice(0, 120),
++                started_at: new Date(r.startedAt).toISOString(),
++                ended_at: r.endedAt ? new Date(r.endedAt).toISOString() : null,
++                peak: Math.max(0, Math.round(r.peak || 0)),
++                unique_count: Math.max(0, Math.round(r.unique || 0)),
++                stayed_five: Math.max(0, Math.round(r.stayedFiveMinutes || 0)),
++                group_invites: Math.max(0, Math.round(r.groupInvites || 0)),
++                instance_invites: Math.max(0, Math.round(r.instanceInvites || 0)),
++                staff_present: (r.staffPresent || []).map((s) => String(s).slice(0, 80)).slice(0, 50)
++            }));
++            try {
++                await account.api('uwx_event_recaps?on_conflict=group_id,recorded_by,client_event_id', {
++                    method: 'POST',
++                    headers: { Prefer: 'resolution=ignore-duplicates,return=minimal' },
++                    body: JSON.stringify(rows)
++                });
++                await configRepository.setString(UPLOADED_KEY, JSON.stringify([...uploaded, ...pending.map(key)].slice(-500)));
++            } catch {
++                // retry next poll
++            }
++        }
++        try {
++            recaps.value =
++                (await account.api(
++                    `uwx_event_recaps?select=id,name,started_at,ended_at,peak,unique_count,stayed_five,group_invites,instance_invites,staff_present,recorded_by&group_id=eq.${remote.value.id}&order=started_at.desc&limit=200`
++                )) || [];
++        } catch {
++            recaps.value = [];
++        }
++    }
++
++    // ───────── loop ─────────
++    async function poll({ notify = true } = {}) {
++        if (!ready.value) return;
++        try {
++            await Promise.all([loadDuty(), loadHelp({ notify }), pollCases()]);
++            await loadFlagged();
++            error.value = '';
++        } catch (e) {
++            error.value = /uwx_staff_shifts|uwx_help_requests|does not exist|schema cache/i.test(errorText(e)) ? 'The staff database step for this release isn’t applied yet.' : errorText(e);
++        }
++    }
++
++    async function start() {
++        if (started) return;
++        started = true;
++        await loadSettings();
++        // Staff ops need to know the registered group even if Group Intel was never opened.
++        await intel.load();
++        watch(
++            () => account.signedIn,
++            (signedIn) => {
++                if (signedIn) void intel.loadRegistered();
++            },
++            { immediate: true }
++        );
++        watch(
++            () => [ready.value, remote.value?.id],
++            async ([isReady]) => {
++                clearInterval(timer);
++                timer = null;
++                seenHelp.clear();
++                lastPollIso = '';
++                flagsAt = 0;
++                if (!isReady) {
++                    onDuty.value = [];
++                    help.value = [];
++                    flagged.value = [];
++                    return;
++                }
++                try {
++                    await account.rpc('uwx_close_stale_shifts', { p_group: remote.value.id });
++                } catch {
++                    // older database: fine
++                }
++                await poll({ notify: false });
++                void syncRecaps();
++                timer = setInterval(() => void poll(), POLL_MS);
++            },
++            { immediate: true }
++        );
++        // Re-check whenever the people in your instance change.
++        watch(
++            () => tools.instanceOccupants.map((p) => p.userId).join(','),
++            () => checkInstance()
++        );
++        watch(
++            () => useUwxEventModeStore().history?.length,
++            () => void syncRecaps()
++        );
++    }
++
++    return {
++        settings,
++        onDuty,
++        myShift,
++        help,
++        stats,
++        statsDays,
++        statsLoading,
++        recaps,
++        flagged,
++        flaggedHere,
++        error,
++        busy,
++        ready,
++        level,
++        remote,
++        nameOf,
++        setOption,
++        start,
++        poll,
++        checkIn,
++        checkOut,
++        requestHelp,
++        updateHelp,
++        loadStats,
++        loadFlagged,
++        syncRecaps
++    };
++});
+diff --git a/src/views/UnderWeb/UnderWeb.vue b/src/views/UnderWeb/UnderWeb.vue
+index f28d87c..c3376ab 100644
+--- a/src/views/UnderWeb/UnderWeb.vue
++++ b/src/views/UnderWeb/UnderWeb.vue
+@@ -93,6 +93,7 @@
+         <UwxGroupTools v-if="activePanel === 'groups'" />
+         <UwxGroupIntel v-if="activePanel === 'intel'" />
+         <UwxModerationCenter v-if="activePanel === 'moderation'" />
++        <UwxStaffDashboard v-if="activePanel === 'staff'" @goto="activePanel = $event" />
+         <UwxOscLab v-if="activePanel === 'osc'" />
+ 
+         <div class="uwx-grid">
+@@ -1093,6 +1094,8 @@
+     import UwxGroupTools from './UwxGroupTools.vue';
+     import UwxGroupIntel from './UwxGroupIntel.vue';
+     import UwxModerationCenter from './UwxModerationCenter.vue';
++    import UwxStaffDashboard from './UwxStaffDashboard.vue';
++    import { useUwxStaffOpsStore } from '../../stores/uwxStaffOps';
+     import { useUwxModerationStore } from '../../stores/uwxModeration';
+     import UwxOscLab from './UwxOscLab.vue';
+     import UwxEventMode from './UwxEventMode.vue';
+@@ -1275,6 +1278,7 @@
+         { id: 'groups', label: 'Groups', short: 'Moderate + activity', icon: 'ri-shield-user-line' },
+         { id: 'intel', label: 'Group Intel', short: 'Stats + Road to 500', icon: 'ri-line-chart-line' },
+         { id: 'moderation', label: 'Moderation', short: 'Lookup + cases', icon: 'ri-folder-shield-2-line' },
++        { id: 'staff', label: 'Staff', short: 'Duty + help + team', icon: 'ri-team-fill' },
+         { id: 'osc', label: 'OSC Lab', short: 'Chatbox', icon: 'ri-chat-3-line' },
+         { id: 'people', label: 'People', short: 'Friends + roles', icon: 'ri-team-line' },
+         { id: 'safety', label: 'Safety Intel', short: 'Shared warnings', icon: 'ri-shield-check-line' },
+@@ -1286,6 +1290,7 @@
+             .filter((t) => t.id !== 'groups' || showGroupsTab.value)
+             .filter((t) => t.id !== 'approvals' || underwebStaff.value)
+             .filter((t) => !['intel', 'moderation'].includes(t.id) || showGroupsTab.value || underwebStaff.value)
++            .filter((t) => t.id !== 'staff' || underwebStaff.value)
+             .map((t) => (t.id === 'invites' && !showGroupInvites.value ? { ...t, short: 'Friends + messages' } : t))
+     );
+     watch(showGroupsTab, (show) => {
+@@ -1295,8 +1300,10 @@
+         if (!staff && activePanel.value === 'approvals') activePanel.value = 'command';
+     });
+     watch(visibleTabs, (tabs) => {
+-        if (['intel', 'moderation'].includes(activePanel.value) && !tabs.some((t) => t.id === activePanel.value)) activePanel.value = 'command';
++        if (['intel', 'moderation', 'staff'].includes(activePanel.value) && !tabs.some((t) => t.id === activePanel.value)) activePanel.value = 'command';
+     });
++    // Staff alerts (help requests, flagged people in your instance, case updates) run whenever UWX is open.
++    void useUwxStaffOpsStore().start();
+     // "Look up" / "open case" from anywhere in UWX jumps to the Moderation tab.
+     watch(
+         () => useUwxModerationStore().focusTick,
+@@ -1320,6 +1327,11 @@
+             title: 'User Intelligence & Cases',
+             description: 'Look anyone up by VRChat id, see known recorded history, keep staff notes and work incident cases.'
+         },
++        staff: {
++            eyebrow: 'STAFF DASHBOARD',
++            title: 'Staff Dashboard',
++            description: 'Check in for duty, call for backup, see who is on and how the team is doing — and get alerted when a flagged person joins your instance.'
++        },
+         safety: { eyebrow: 'COMMUNITY AWARENESS', title: 'Safety Intel', description: 'Reviewed shared warnings for crashing, doxxing threats, harassment, malicious behavior, and other community risks.' },
+         approvals: { eyebrow: 'STAFF', title: 'Approvals', description: 'Photos, hub cards, role applications, VRChat checks and events waiting for a decision — same as Staff on underweb.cloud.' },
+         system: { eyebrow: 'LOCAL CONTROL', title: 'System & Safety', description: 'Notifications, releases, local data boundaries, and the global disarm control.' }
+diff --git a/src/views/UnderWeb/UwxGroupIntel.vue b/src/views/UnderWeb/UwxGroupIntel.vue
+index 52d841c..1a51e6d 100644
+--- a/src/views/UnderWeb/UwxGroupIntel.vue
++++ b/src/views/UnderWeb/UwxGroupIntel.vue
+@@ -245,7 +245,7 @@
+                     </div>
+                     <div class="uwi-panel">
+                         <div class="uwi-label">EVENT PARTICIPATION</div>
+-                        <p class="uwi-src"><b>Historical</b> Event Mode on this PC (people seen in your instance)</p>
++                        <p class="uwi-src"><b>Historical</b> {{ eventsShared ? 'Event Mode recaps from all staff PCs (UnderWeb)' : 'Event Mode on this PC' }} · people seen in the host's instance</p>
+                         <table v-if="eventRows.length" class="uwi-table">
+                             <thead><tr><th>Event</th><th>Date</th><th>Peak</th><th>Unique</th><th>Group invites</th></tr></thead>
+                             <tbody>
+@@ -280,6 +280,7 @@
+     import { recruitingStats } from '../../shared/utils/uwxStaffInsights';
+     import { INTERVAL_CHOICES, useUwxIntelStore } from '../../stores/uwxIntel';
+     import { useUwxEventModeStore } from '../../stores/uwxEventMode';
++    import { useUwxStaffOpsStore } from '../../stores/uwxStaffOps';
+     import UwxIntelChart from './UwxIntelChart.vue';
+     import UwxIntelFeed from './UwxIntelFeed.vue';
+     import UwxIntelRecruiting from './UwxIntelRecruiting.vue';
+@@ -420,7 +421,15 @@
+             trendWindow.value
+         )
+     );
+-    const eventRows = computed(() => (eventHistory.value || []).filter((e) => e.startedAt >= trendSince.value && e.startedAt <= trendUntil.value));
++    // Shared recaps (every staff PC, via UnderWeb) when available, otherwise this PC's Event Mode history.
++    const ops = useUwxStaffOpsStore();
++    const eventsShared = computed(() => ops.recaps.length > 0 && Boolean(store.remote));
++    const eventRows = computed(() => {
++        const list = eventsShared.value
++            ? ops.recaps.map((r) => ({ id: r.id, name: r.name, startedAt: Date.parse(r.started_at), peak: r.peak, unique: r.unique_count, groupInvites: r.group_invites }))
++            : eventHistory.value || [];
++        return list.filter((e) => e.startedAt >= trendSince.value && e.startedAt <= trendUntil.value);
++    });
+ 
+     // Validated palette (dark surface): joins aqua, leaves yellow, removals blue, bans magenta, instance actions orange.
+     const COLORS = { joins: '#199e70', leaves: '#c98500', removals: '#3987e5', bans: '#d55181', instance: '#d95926' };
+diff --git a/src/views/UnderWeb/UwxIntelAdmin.vue b/src/views/UnderWeb/UwxIntelAdmin.vue
+index ce56bfe..deea0f0 100644
+--- a/src/views/UnderWeb/UwxIntelAdmin.vue
++++ b/src/views/UnderWeb/UwxIntelAdmin.vue
+@@ -70,6 +70,27 @@
+                     </table>
+                 </div>
+ 
++                <div class="uwi-panel">
++                    <div class="uwi-label">PEOPLE WITH DIRECT ACCESS</div>
++                    <p class="uwi-note" style="margin-bottom: 8px">For people without a matching UnderWeb role — e.g. a partner group's own moderators. They need an UnderWeb account.</p>
++                    <form class="uwi-bar" @submit.prevent="grantPerson">
++                        <input v-model.trim="personName" class="uwi-input grow" placeholder="UnderWeb @username" />
++                        <select v-model.number="personLevel" class="uwi-select" style="width: auto">
++                            <option v-for="i in [1, 2, 3, 4]" :key="i" :value="i">{{ LEVELS[i] }}</option>
++                        </select>
++                        <Button size="sm" type="submit" :disabled="!personName">Give access</Button>
++                    </form>
++                    <table v-if="direct.length" class="uwi-table" style="margin-top: 8px">
++                        <tbody>
++                            <tr v-for="d in direct" :key="d.user_id">
++                                <td>{{ d.display_name || d.username }} <span class="uwi-note">@{{ d.username }}</span></td>
++                                <td>{{ LEVELS[d.level] }}</td>
++                                <td style="text-align: right"><Button size="sm" variant="ghost" @click="removePerson(d)">Remove</Button></td>
++                            </tr>
++                        </tbody>
++                    </table>
++                </div>
++
+                 <div class="uwi-panel">
+                     <div class="uwi-label">UWX MODERATION NETWORK</div>
+                     <p class="uwi-note">
+@@ -154,6 +175,8 @@
+         'group.register': 'Registered the group',
+         'group.update': 'Changed group settings',
+         'access.role': 'Changed role access',
++        'access.person': 'Changed a person’s access',
++        'network.flag_list': 'Refreshed flagged-user alerts',
+         'share.grant': 'Started sharing with a group',
+         'share.revoke': 'Stopped sharing with a group',
+         'case.purge': 'Permanently deleted a case',
+@@ -175,6 +198,9 @@
+     const otherGroups = ref([]);
+     const agreements = ref([]);
+     const log = ref([]);
++    const direct = ref([]);
++    const personName = ref('');
++    const personLevel = ref(2);
+     const names = ref({});
+ 
+     const roleRows = computed(() =>
+@@ -197,6 +223,7 @@
+                 roleAccess.value = access || [];
+                 otherGroups.value = groups || [];
+                 agreements.value = agr || [];
++                direct.value = (await account.rpc('uwx_direct_access', { p_group: remote.value.id }).catch(() => [])) || [];
+             } catch (e) {
+                 accessError.value = e.message;
+             }
+@@ -207,10 +234,10 @@
+ 
+     async function loadLog() {
+         try {
+-            log.value = (await account.api(`uwx_access_log?select=id,actor,action,subject_vrc_id,detail,at&group_id=eq.${remote.value.id}&order=at.desc&limit=150`)) || [];
++            log.value = (await account.api(`uwx_access_log?select=id,actor,action,subject_vrc_id,detail,at&group_id=eq.${remote.value.id}&action=neq.network.flag_list&order=at.desc&limit=150`)) || [];
+             const ids = [...new Set(log.value.map((r) => r.actor).filter(Boolean))].filter((id) => !names.value[id]);
+             if (ids.length) {
+-                const rows = (await account.api(`profiles?select=id,display_name,username&id=in.(${ids.join(',')})`)) || [];
++                const rows = await store.namesFor(ids);
+                 names.value = { ...names.value, ...Object.fromEntries(rows.map((p) => [p.id, p.display_name || p.username])) };
+             }
+         } catch {
+@@ -243,6 +270,27 @@
+         }
+     }
+ 
++    async function grantPerson() {
++        try {
++            await account.rpc('uwx_grant_access', { p_group: remote.value.id, p_username: personName.value, p_level: personLevel.value });
++            toast.success(`${personName.value} now has ${LEVELS[personLevel.value]} access.`);
++            personName.value = '';
++            await loadAll();
++        } catch (e) {
++            toast.error(e.message);
++        }
++    }
++    async function removePerson(d) {
++        const { ok } = await modal.confirm({ title: 'Remove access', description: `Remove ${d.display_name || d.username}'s direct access to ${remote.value.name}?` });
++        if (!ok) return;
++        try {
++            await account.rpc('uwx_grant_access', { p_group: remote.value.id, p_username: d.username, p_level: 0 });
++            await loadAll();
++        } catch (e) {
++            toast.error(e.message);
++        }
++    }
++
+     async function setRole(r, lvl) {
+         try {
+             await account.rpc('uwx_set_role_access', { p_group: remote.value.id, p_role_slug: r.slug, p_level: lvl });
+diff --git a/src/views/UnderWeb/UwxStaffDashboard.vue b/src/views/UnderWeb/UwxStaffDashboard.vue
+new file mode 100644
+index 0000000..890800f
+--- /dev/null
++++ b/src/views/UnderWeb/UwxStaffDashboard.vue
+@@ -0,0 +1,317 @@
++<template>
++    <div class="uwi" :class="{ compact }">
++        <div v-if="!account.signedIn" class="uwi-empty"><i class="ri-login-circle-line" />Sign in to UnderWeb (System tab) to use the Staff Dashboard.</div>
++        <div v-else-if="!remote" class="uwi-empty">
++            <i class="ri-links-line" />
++            The Staff Dashboard works per registered group. Register {{ groupName || 'your group' }} in Group Intel → Overview, or pick a registered group there.
++        </div>
++        <div v-else-if="level < 1" class="uwi-empty uwi-denied"><i class="ri-lock-line" />Your UnderWeb role has no staff access to {{ groupName }}.</div>
++
++        <template v-else>
++            <p v-if="error" class="uwi-warn-box">{{ error }}</p>
++
++            <div v-if="flaggedHere.length" class="uwi-panel uwi-flag">
++                <div class="uwi-label" style="color: #e66767">FLAGGED IN YOUR INSTANCE</div>
++                <div v-for="hit in flaggedHere" :key="hit.userId" class="uwi-bar">
++                    <i class="ri-alarm-warning-line" style="color: #e66767" />
++                    <span class="grow">{{ flagText(hit) }}</span>
++                    <Button size="sm" variant="outline" @click="moderation.focusUser(hit.userId)">Look up</Button>
++                </div>
++                <p class="uwi-note">A flag is a reason to watch and check the record — not a reason to act on its own.</p>
++            </div>
++
++            <div class="uwi-grid2">
++                <div class="uwi-panel">
++                    <div class="uwi-label">MY DUTY · {{ groupName.toUpperCase() }}</div>
++                    <template v-if="myShift">
++                        <p><strong style="font-size: 20px; color: var(--uwx-accent)">On duty</strong> <span class="uwi-note">since {{ time(myShift.started_at) }} ({{ elapsed(myShift.started_at) }})</span></p>
++                        <Button size="sm" variant="outline" style="margin-top: 8px" :disabled="busy" @click="ops.checkOut()">Check out</Button>
++                    </template>
++                    <form v-else class="uwi-bar" @submit.prevent="checkIn">
++                        <input v-model.trim="dutyNote" class="uwi-input grow" maxlength="200" placeholder="What are you covering? (optional, e.g. MVN door)" />
++                        <Button size="sm" type="submit" :disabled="busy">Check in</Button>
++                    </form>
++                    <p class="uwi-note" style="margin-top: 6px">Shifts left open over 12 hours close themselves.</p>
++
++                    <div class="uwi-label" style="margin-top: 14px">ON DUTY NOW ({{ onDuty.length }})</div>
++                    <p v-if="!onDuty.length" class="uwi-note">Nobody is checked in.</p>
++                    <div v-for="s in onDuty" :key="s.id" class="uwi-tl" style="grid-template-columns: 22px 1fr auto">
++                        <i class="ri-shield-user-line" style="color: var(--uwx-accent)" />
++                        <div>
++                            <div>{{ ops.nameOf(s.user_id) }}</div>
++                            <div v-if="s.note" class="meta">{{ s.note }}</div>
++                        </div>
++                        <time>{{ elapsed(s.started_at) }}</time>
++                    </div>
++                </div>
++
++                <div class="uwi-panel">
++                    <div class="uwi-label">NEED STAFF HERE</div>
++                    <form class="uwi-form" @submit.prevent="askHelp">
++                        <input v-model.trim="helpMsg" class="uwi-input" maxlength="500" placeholder="What's going on? (e.g. crasher by the stage)" />
++                        <div class="uwi-bar">
++                            <select v-model="helpUrgency" class="uwi-select" style="width: auto">
++                                <option value="normal">Normal</option>
++                                <option value="urgent">Urgent</option>
++                            </select>
++                            <label class="uwi-check"><input v-model="helpLocation" type="checkbox" /> Share where I am ({{ worldName }})</label>
++                            <div class="grow" />
++                            <Button size="sm" type="submit" :variant="helpUrgency === 'urgent' ? 'destructive' : 'default'">Alert staff</Button>
++                        </div>
++                    </form>
++                    <p class="uwi-note">Everyone with staff access to {{ groupName }} gets a desktop notification. Your location goes only to staff.</p>
++
++                    <div class="uwi-label" style="margin-top: 14px">REQUESTS (LAST 24 H)</div>
++                    <p v-if="!help.length" class="uwi-note">No requests.</p>
++                    <div v-for="r in help" :key="r.id" class="uwi-tl" style="grid-template-columns: 22px 1fr auto">
++                        <i :class="r.urgency === 'urgent' ? 'ri-alarm-warning-fill' : 'ri-hand'" :style="{ color: r.urgency === 'urgent' ? '#e66767' : '#fab219' }" />
++                        <div class="min-w-0">
++                            <div>
++                                <strong>{{ ops.nameOf(r.requested_by) }}</strong>
++                                <span v-if="r.world_name" class="uwi-note"> in {{ r.world_name }}</span>
++                                <span class="uwi-pill" :class="r.status === 'open' ? 'escalated' : r.status === 'claimed' ? 'under_review' : 'resolved'" style="margin-left: 6px">{{ r.status }}</span>
++                            </div>
++                            <div v-if="r.message" class="meta">{{ r.message }}</div>
++                            <div class="meta">
++                                {{ time(r.created_at) }}<template v-if="r.claimed_by"> · {{ r.claimed_by === account.userId ? 'You’re' : `${ops.nameOf(r.claimed_by)} is` }} on it</template>
++                            </div>
++                        </div>
++                        <div class="uwi-bar">
++                            <Button v-if="r.location" size="sm" variant="ghost" title="Copy instance link" @click="copy(r.location)"><i class="ri-map-pin-line" /></Button>
++                            <Button v-if="r.status === 'open'" size="sm" @click="ops.updateHelp(r.id, 'claim')">I'm on it</Button>
++                            <Button v-if="r.status !== 'closed'" size="sm" variant="ghost" @click="ops.updateHelp(r.id, 'close')">Done</Button>
++                        </div>
++                    </div>
++                </div>
++            </div>
++
++            <div class="uwi-panel">
++                <div class="uwi-bar" style="margin-bottom: 8px">
++                    <div class="uwi-label" style="margin: 0">STAFF OVERVIEW</div>
++                    <span class="uwi-note">{{ level >= 3 ? 'Everyone with staff access' : 'Just you — managers see the whole team' }}</span>
++                    <div class="grow" />
++                    <select class="uwi-select" style="width: auto" :value="statsDays" @change="ops.loadStats(Number(val($event)))">
++                        <option :value="7">Last 7 days</option>
++                        <option :value="30">Last 30 days</option>
++                        <option :value="90">Last 90 days</option>
++                    </select>
++                </div>
++                <p class="uwi-note" style="margin-bottom: 8px">
++                    Time on duty, cases worked, how fast someone picks up a new case, recruits checked and help answered. Ban counts aren't a score — good moderation often means fewer bans.
++                </p>
++                <div v-if="statsLoading && !stats.length" class="uwi-note">Loading…</div>
++                <div v-else-if="!stats.length" class="uwi-empty">No staff found for this group yet.</div>
++                <div v-else style="overflow-x: auto">
++                    <table class="uwi-table">
++                        <thead>
++                            <tr>
++                                <th class="sortable" @click="sortBy('display_name')">Staff</th>
++                                <th class="sortable" @click="sortBy('shift_minutes')">On duty</th>
++                                <th class="sortable" @click="sortBy('cases_opened')">Cases opened</th>
++                                <th class="sortable" @click="sortBy('cases_open_assigned')">Open & assigned</th>
++                                <th class="sortable" @click="sortBy('cases_closed')">Closed</th>
++                                <th class="sortable" @click="sortBy('case_entries')">Case updates</th>
++                                <th class="sortable" @click="sortBy('avg_first_response_min')">First response</th>
++                                <th class="sortable" @click="sortBy('notes')">Notes</th>
++                                <th class="sortable" @click="sortBy('recruits_reviewed')">Recruits checked</th>
++                                <th class="sortable" @click="sortBy('help_claimed')">Help answered</th>
++                            </tr>
++                        </thead>
++                        <tbody>
++                            <tr v-for="s in sortedStats" :key="s.user_id">
++                                <td>
++                                    <span v-if="s.on_duty" class="uwi-dot ok" style="display: inline-block; margin-right: 6px" title="On duty" />
++                                    {{ s.display_name || 'Staff' }} <span class="uwi-note">{{ LEVELS[s.level] }}</span>
++                                </td>
++                                <td>{{ hours(s.shift_minutes) }}</td>
++                                <td>{{ s.cases_opened }}</td>
++                                <td>{{ s.cases_open_assigned }}</td>
++                                <td>{{ s.cases_closed }}</td>
++                                <td>{{ s.case_entries }}</td>
++                                <td>{{ s.avg_first_response_min === null ? '—' : `${mins(s.avg_first_response_min)} (${s.first_responses})` }}</td>
++                                <td>{{ s.notes }}</td>
++                                <td>{{ s.recruits_reviewed }}</td>
++                                <td>{{ s.help_claimed }}</td>
++                            </tr>
++                        </tbody>
++                    </table>
++                </div>
++            </div>
++
++            <div class="uwi-grid2">
++                <div class="uwi-panel">
++                    <div class="uwi-label">WAITING ON STAFF</div>
++                    <div class="uwi-tiles">
++                        <div class="uwi-tile"><span>Approvals (website)</span><strong>{{ approvals.total }}</strong><small>photos, hub cards, roles, events</small></div>
++                        <div class="uwi-tile"><span>Open help requests</span><strong>{{ help.filter((r) => r.status === 'open').length }}</strong></div>
++                        <div class="uwi-tile"><span>Unassigned open cases</span><strong>{{ unassigned }}</strong><small v-if="level < 2">needs moderator access</small></div>
++                    </div>
++                    <div class="uwi-bar" style="margin-top: 8px">
++                        <Button size="sm" variant="outline" @click="emit('goto', 'approvals')">Open Approvals</Button>
++                        <Button v-if="level >= 2" size="sm" variant="outline" @click="openCases">Open cases</Button>
++                    </div>
++                </div>
++                <div class="uwi-panel">
++                    <div class="uwi-label">VRCHAT MODERATION (GROUP AUDIT LOG, {{ statsDays }} DAYS)</div>
++                    <p class="uwi-src" style="margin-bottom: 6px"><b>Historical</b> by VRChat display name — context, not a score</p>
++                    <table v-if="vrcActivity.length" class="uwi-table">
++                        <thead><tr><th>Staff</th><th>Actions</th><th>Bans & removals</th><th>Roles</th><th>Instances</th></tr></thead>
++                        <tbody>
++                            <tr v-for="row in vrcActivity.slice(0, 12)" :key="row.actorId">
++                                <td>{{ row.name }}</td>
++                                <td>{{ row.total }}</td>
++                                <td>{{ row.byCategory.moderation || 0 }}</td>
++                                <td>{{ row.byCategory.roles || 0 }}</td>
++                                <td>{{ row.byCategory.instances || 0 }}</td>
++                            </tr>
++                        </tbody>
++                    </table>
++                    <p v-else class="uwi-note">No audit activity in this period (needs the audit-log permission or the shared archive).</p>
++                </div>
++            </div>
++
++            <div class="uwi-panel">
++                <div class="uwi-label">ALERTS ON THIS PC</div>
++                <div class="uwi-opts">
++                    <label><Switch :model-value="settings.alertFlagged" @update:modelValue="(v) => ops.setOption('alertFlagged', v)" /> Someone with an open case (or a high-severity partner report) joins my instance</label>
++                    <label><Switch :model-value="settings.alertHelp" @update:modelValue="(v) => ops.setOption('alertHelp', v)" /> A staff member asks for help</label>
++                    <label><Switch :model-value="settings.alertCases" @update:modelValue="(v) => ops.setOption('alertCases', v)" /> A case is escalated, critical, or assigned to me and updated</label>
++                </div>
++                <p class="uwi-note" style="margin-top: 6px">{{ flagged.length }} flagged VRChat ids loaded · checks every minute while UWX is open.</p>
++            </div>
++        </template>
++    </div>
++</template>
++
++<script setup>
++    import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
++    import { storeToRefs } from 'pinia';
++    import { toast } from 'vue-sonner';
++    import { Button } from '@/components/ui/button';
++    import { Switch } from '@/components/ui/switch';
++
++    import './uwxIntel.css';
++    import { staffActivity } from '../../shared/utils/uwxStaffInsights';
++    import { useLocationStore } from '../../stores/location';
++    import { useUwxAccountStore } from '../../stores/uwxAccount';
++    import { useUwxApprovalsStore } from '../../stores/uwxApprovals';
++    import { useUwxIntelStore } from '../../stores/uwxIntel';
++    import { useUwxModerationStore } from '../../stores/uwxModeration';
++    import { flagText, useUwxStaffOpsStore } from '../../stores/uwxStaffOps';
++
++    /** @param {Event} e */
++    const val = (e) => /** @type {HTMLInputElement} */ (e.target).value;
++
++    const emit = defineEmits(['goto']);
++    const ops = useUwxStaffOpsStore();
++    const intel = useUwxIntelStore();
++    const account = useUwxAccountStore();
++    const moderation = useUwxModerationStore();
++    const approvals = useUwxApprovalsStore();
++    const locationStore = useLocationStore();
++    const { settings, onDuty, myShift, help, stats, statsDays, statsLoading, flagged, flaggedHere, error, busy, remote, level } = storeToRefs(ops);
++    const compact = computed(() => intel.settings.compact);
++    const groupName = computed(() => intel.group?.name || remote.value?.name || '');
++    const worldName = computed(() => locationStore.lastLocation?.name || 'not in a world');
++    const LEVELS = ['', 'Viewer', 'Moderator', 'Manager', 'Owner'];
++
++    const now = ref(Date.now());
++    let tick = null;
++    onMounted(async () => {
++        await ops.start();
++        void intel.start();
++        void ops.poll({ notify: false });
++        void ops.loadStats();
++        if (account.signedIn && account.isStaff) void approvals.load().catch(() => {});
++        if (level.value >= 2) void moderation.loadCases();
++        tick = setInterval(() => (now.value = Date.now()), 30000);
++    });
++    onBeforeUnmount(() => {
++        clearInterval(tick);
++        intel.stop();
++    });
++
++    const unassigned = computed(() => moderation.cases.filter((c) => !c.assigned_to && ['open', 'under_review', 'escalated', 'appealed'].includes(c.status)).length);
++    const vrcActivity = computed(() => staffActivity(intel.entries, now.value - statsDays.value * 86400000));
++
++    const sortKey = ref('shift_minutes');
++    const sortDir = ref(-1);
++    function sortBy(k) {
++        if (sortKey.value === k) sortDir.value = -sortDir.value;
++        else {
++            sortKey.value = k;
++            sortDir.value = k === 'display_name' ? 1 : -1;
++        }
++    }
++    const sortedStats = computed(() =>
++        stats.value.slice().sort((a, b) => {
++            const av = a[sortKey.value] ?? (sortDir.value === 1 ? Infinity : -Infinity);
++            const bv = b[sortKey.value] ?? (sortDir.value === 1 ? Infinity : -Infinity);
++            return (av < bv ? -1 : av > bv ? 1 : 0) * sortDir.value;
++        })
++    );
++
++    function openCases() {
++        moderation.focusView = 'cases';
++        moderation.focusTick += 1;
++    }
++
++    const dutyNote = ref('');
++    async function checkIn() {
++        if (await ops.checkIn(dutyNote.value)) dutyNote.value = '';
++    }
++    const helpMsg = ref('');
++    const helpUrgency = ref('normal');
++    const helpLocation = ref(true);
++    async function askHelp() {
++        if (await ops.requestHelp({ message: helpMsg.value, urgency: helpUrgency.value, includeLocation: helpLocation.value })) {
++            helpMsg.value = '';
++            helpUrgency.value = 'normal';
++        }
++    }
++    async function copy(v) {
++        try {
++            await navigator.clipboard.writeText(v);
++            toast.success('Instance link copied.');
++        } catch {
++            toast.error('Couldn’t copy.');
++        }
++    }
++    const hours = (m) => (m ? (m >= 60 ? `${(m / 60).toFixed(1)} h` : `${m} min`) : '—');
++    const mins = (m) => (m >= 60 ? `${(m / 60).toFixed(1)} h` : `${Math.round(m)} min`);
++    const time = (v) => new Date(v).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
++    function elapsed(v) {
++        const m = Math.max(0, Math.round((now.value - Date.parse(v)) / 60000));
++        return m >= 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m} min`;
++    }
++</script>
++
++<style scoped>
++    .uwi-form {
++        display: flex;
++        flex-direction: column;
++        gap: 8px;
++    }
++    .uwi-check {
++        display: inline-flex;
++        align-items: center;
++        gap: 6px;
++        font-size: 12px;
++        color: var(--muted-foreground);
++    }
++    .uwi-opts {
++        display: flex;
++        flex-direction: column;
++        gap: 8px;
++        font-size: 13px;
++    }
++    .uwi-opts label {
++        display: flex;
++        align-items: center;
++        gap: 10px;
++    }
++    .uwi-flag {
++        border-color: rgb(230 103 103 / 45%);
++        background: rgb(230 103 103 / 6%);
++    }
++</style>

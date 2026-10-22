@@ -209,3 +209,21 @@ Database migration `supabase/migrations/20261022000000_uwx_group_intelligence.sq
 - A website partner-group onboarding flow.
 - Desktop alerts for flagged users joining (wire Lobby Guard to case subjects).
 - Optional full member scan for cohort retention.
+
+
+### 0.6.9-rc28 — Phase 5: staff intelligence, alerts and website sync
+- **UWX**:
+  - Staff tab: duty check-in and out, help requests with desktop alerts, a staff overview through `uwx_staff_stats`, and a "waiting on staff" summary.
+  - Alerts when a flagged user joins your instance (`uwx_flagged_subjects`, matched against your own instance's player list), and alerts for escalated, critical or assigned cases.
+  - Event Mode recaps are shared to `uwx_event_recaps`.
+  - Owners can grant direct access per person.
+  - Staff names now resolve through `uwx_names`.
+- **Website (underweb.cloud)**:
+  - Staff → Cases, Recruits, and Partner groups (leadership).
+  - A Road to 500 card on My UnderWeb with "I brought someone in".
+  - `/partners` application page.
+- **Database:** `supabase/migrations/20261023000000_uwx_staff_ops.sql` adds shifts, help requests, event recaps, partner applications and their RPCs. It was tested locally, including partner isolation: UnderWeb roles get no access to partner groups.
+- **Still limited:**
+  - Event attendance only counts people seen by the PC running Event Mode.
+  - "On duty" is self-reported by check-in; VRChat doesn't expose presence for other users' instances.
+  - Flagged alerts only cover your own instance.
