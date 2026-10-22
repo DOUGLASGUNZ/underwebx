@@ -1,0 +1,349 @@
+diff --git a/CHANGELOG_UWX.md b/CHANGELOG_UWX.md
+index 456d550..d096c52 100644
+--- a/CHANGELOG_UWX.md
++++ b/CHANGELOG_UWX.md
+@@ -1,5 +1,19 @@
+ # UnderWeb X changelog
+ 
++## 0.6.12-rc31 — One app: UWX sections in the sidebar
++
++- Everything UnderWeb X does now has its own spot in the left sidebar, alongside the VRCX features, instead of being tucked into tabs inside one page:
++  - Overview, Invites, People & Activity
++  - Group Tools, Group Intelligence, Moderation Center
++  - Staff Dashboard, Approvals
++  - Safety Intel, Chatbox (OSC), UWX Settings
++- The VRCX features are grouped underneath:
++  - **Social:** Feed, Friends Locations, Friends List, Friend Log, VRChat moderation
++  - **Instances:** Player List, Game Log, Instance Activity
++  - **Favorites** and **Charts**, plus Search, Notifications, My Avatars and Tools
++- Staff-only sections only appear for people whose VRChat group role or UnderWeb role allows them.
++- The sidebar is reset to this layout once on update. You can still rearrange it in the sidebar's edit mode afterwards.
++
+ ## 0.6.11-rc30 — Hub check-ins & Silk
+ 
+ - **Hub check-in:** spend 10 minutes in the UnderWeb hub with UWX open and you're checked in for the day. Only your own visit is sent — never who else is there or which instance.
+diff --git a/UWX_VERSION b/UWX_VERSION
+index e1f66fb..6fc7977 100644
+--- a/UWX_VERSION
++++ b/UWX_VERSION
+@@ -1 +1 @@
+-0.6.11-rc30
++0.6.12-rc31
+diff --git a/src/components/nav-menu/composables/useNavLayout.js b/src/components/nav-menu/composables/useNavLayout.js
+index b90f855..26f7f4f 100644
+--- a/src/components/nav-menu/composables/useNavLayout.js
++++ b/src/components/nav-menu/composables/useNavLayout.js
+@@ -17,6 +17,12 @@ import {
+ import { normalizeHiddenKeys, sanitizeLayout } from '../navMenuUtils';
+ 
+ import { useNotificationsSettingsStore } from '../../../stores/settings/notifications';
++import { useUwxAccessStore } from '../../../stores/uwxAccess';
++import { uwxPanelAllowed } from '../../../shared/constants/uwxNav';
++
++// Bump when the UWX default sidebar changes in a way existing installs should pick up once.
++const UWX_NAV_LAYOUT_VERSION = 2;
++const UWX_NAV_VERSION_KEY = 'UWX_navLayoutVersion';
+ 
+ export function useNavLayout({ t, locale, router, dashboardStore, dashboards, directAccessPaste, triggerTool }) {
+     const navLayout = ref([]);
+@@ -39,8 +45,23 @@ export function useNavLayout({ t, locale, router, dashboardStore, dashboards, di
+ 
+     const createDefaultNavLayout = () => createBaseDefaultNavLayout(t);
+ 
++    // UWX staff sections only show for people whose VRChat group role / UnderWeb role allows them.
++    const uwxAccess = useUwxAccessStore();
++    const uwxHidden = computed(() => {
++        const flags = { groupStaff: Boolean(uwxAccess.showGroupsTab), underwebStaff: Boolean(uwxAccess.underwebStaff) };
++        const hidden = new Set();
++        for (const def of navDefinitionMap.value.values()) {
++            if (def.uwxAccess && !uwxPanelAllowed({ access: def.uwxAccess }, flags)) hidden.add(def.key);
++        }
++        return hidden;
++    });
++
+     const menuItems = computed(() => {
+-        const items = buildMenuItems(navLayout.value, navDefinitionMap.value, t);
++        const hiddenUwx = uwxHidden.value;
++        const visibleLayout = navLayout.value
++            .map((entry) => (entry.type === 'folder' ? { ...entry, items: (entry.items || []).filter((k) => !hiddenUwx.has(k)) } : entry))
++            .filter((entry) => (entry.type === 'item' ? !hiddenUwx.has(entry.key) : true));
++        const items = buildMenuItems(visibleLayout, navDefinitionMap.value, t);
+         if (notificationsSettingsStore.notificationLayout === 'notification-center') {
+             return items.filter((item) => {
+                 if (item.children) {
+@@ -187,6 +208,14 @@ export function useNavLayout({ t, locale, router, dashboardStore, dashboards, di
+             });
+             layoutData = loaded.layout;
+             hiddenKeysData = loaded.hiddenKeys;
++            // One-time move to the UWX sidebar (UnderWeb sections as real entries instead of one page).
++            const uwxVersion = Number(await configRepository.getString(UWX_NAV_VERSION_KEY, '0')) || 0;
++            if (uwxVersion < UWX_NAV_LAYOUT_VERSION) {
++                layoutData = createDefaultNavLayout();
++                hiddenKeysData = [];
++                await configRepository.setString(UWX_NAV_VERSION_KEY, String(UWX_NAV_LAYOUT_VERSION));
++                await configRepository.setString(NAV_CONFIG_KEY, JSON.stringify({ layout: layoutData, hiddenKeys: [] }));
++            }
+         } catch (error) {
+             console.error('Failed to load custom nav', error);
+         } finally {
+diff --git a/src/components/nav-menu/navLayoutDefaults.js b/src/components/nav-menu/navLayoutDefaults.js
+index 49cc4bc..85f8127 100644
+--- a/src/components/nav-menu/navLayoutDefaults.js
++++ b/src/components/nav-menu/navLayoutDefaults.js
+@@ -1,13 +1,33 @@
+ import { DASHBOARD_NAV_KEY_PREFIX } from '../../shared/constants';
+ 
+ export function createBaseDefaultNavLayout(t) {
++    // UWX layout: UnderWeb sections up top as real entries, VRCX's tools grouped underneath.
+     return [
+         { type: 'item', key: 'underweb' },
+-        { type: 'item', key: 'feed' },
+-        { type: 'item', key: 'friends-locations' },
+-        { type: 'item', key: 'game-log' },
+-        { type: 'item', key: 'player-list' },
+-        { type: 'item', key: 'search' },
++        { type: 'item', key: 'uwx-invites' },
++        {
++            type: 'folder',
++            id: 'default-folder-social',
++            nameKey: 'nav_tooltip.social',
++            name: t('nav_tooltip.social'),
++            icon: 'ri-group-line',
++            items: ['feed', 'friends-locations', 'friend-list', 'friend-log', 'uwx-people', 'moderation']
++        },
++        {
++            type: 'folder',
++            id: 'uwx-folder-instances',
++            nameKey: null,
++            name: 'Instances',
++            icon: 'ri-map-pin-user-line',
++            items: ['player-list', 'game-log', 'charts-instance']
++        },
++        { type: 'item', key: 'uwx-groups' },
++        { type: 'item', key: 'uwx-intel' },
++        { type: 'item', key: 'uwx-moderation' },
++        { type: 'item', key: 'uwx-staff' },
++        { type: 'item', key: 'uwx-approvals' },
++        { type: 'item', key: 'uwx-safety' },
++        { type: 'item', key: 'uwx-osc' },
+         {
+             type: 'folder',
+             id: 'default-folder-favorites',
+@@ -16,14 +36,7 @@ export function createBaseDefaultNavLayout(t) {
+             icon: 'ri-star-line',
+             items: ['favorite-friends', 'favorite-worlds', 'favorite-avatars']
+         },
+-        {
+-            type: 'folder',
+-            id: 'default-folder-social',
+-            nameKey: 'nav_tooltip.social',
+-            name: t('nav_tooltip.social'),
+-            icon: 'ri-group-line',
+-            items: ['friend-log', 'friend-list', 'moderation']
+-        },
++        { type: 'item', key: 'search' },
+         { type: 'item', key: 'notification' },
+         { type: 'item', key: 'my-avatars' },
+         {
+@@ -32,9 +45,10 @@ export function createBaseDefaultNavLayout(t) {
+             nameKey: 'nav_tooltip.charts',
+             name: t('nav_tooltip.charts'),
+             icon: 'ri-pie-chart-line',
+-            items: ['charts-instance', 'charts-mutual', 'charts-hot-worlds']
++            items: ['charts-mutual', 'charts-hot-worlds']
+         },
+         { type: 'item', key: 'tools' },
++        { type: 'item', key: 'uwx-system' },
+         { type: 'item', key: 'direct-access' }
+     ];
+ }
+diff --git a/src/plugins/router.js b/src/plugins/router.js
+index c4fc557..18a3a9e 100644
+--- a/src/plugins/router.js
++++ b/src/plugins/router.js
+@@ -23,6 +23,7 @@ import Search from './../views/Search/Search.vue';
+ import Settings from './../views/Settings/Settings.vue';
+ import Tools from './../views/Tools/Tools.vue';
+ import UnderWeb from './../views/UnderWeb/UnderWeb.vue';
++import { UWX_PANELS } from './../shared/constants/uwxNav';
+ 
+ const routes = [
+     {
+@@ -37,7 +38,8 @@ const routes = [
+         meta: { requiresAuth: true },
+         children: [
+             { path: '', redirect: { name: 'underweb' } },
+-            { path: 'underweb', name: 'underweb', component: UnderWeb },
++            // Every UWX section is its own route (same page component, so state carries over between them).
++            ...UWX_PANELS.map((panel) => ({ path: panel.path, name: panel.route, component: UnderWeb, meta: { uwxPanel: panel.id } })),
+             { path: 'feed', name: 'feed', component: Feed },
+             {
+                 path: 'friends-locations',
+diff --git a/src/shared/constants/__tests__/uwxNav.test.js b/src/shared/constants/__tests__/uwxNav.test.js
+new file mode 100644
+index 0000000..1c68359
+--- /dev/null
++++ b/src/shared/constants/__tests__/uwxNav.test.js
+@@ -0,0 +1,30 @@
++import { describe, expect, test } from 'vitest';
++
++import { createBaseDefaultNavLayout } from '../../../components/nav-menu/navLayoutDefaults';
++import { collectLayoutKeys } from '../../../components/nav-menu/navLayoutHelpers';
++import { navDefinitions } from '../ui';
++import { UWX_PANELS, uwxPanelAllowed, uwxPanelById, uwxPanelByRoute } from '../uwxNav';
++
++describe('UWX sections in the sidebar', () => {
++    test('every UWX section has a nav entry and is in the default sidebar', () => {
++        const keys = collectLayoutKeys(createBaseDefaultNavLayout((k) => k));
++        const defs = new Map(navDefinitions.map((d) => [d.key, d]));
++        for (const panel of UWX_PANELS) {
++            expect(defs.get(panel.key)?.routeName).toBe(panel.route);
++            expect(keys.has(panel.key)).toBe(true);
++        }
++        for (const k of ['feed', 'friends-locations', 'game-log', 'player-list', 'search', 'favorite-friends', 'friend-log', 'friend-list', 'moderation', 'notification', 'my-avatars', 'tools', 'direct-access']) {
++            expect(keys.has(k)).toBe(true);
++        }
++        expect(uwxPanelByRoute('underweb').id).toBe('command');
++        expect(uwxPanelById('intel').route).toBe('uwx-intel');
++    });
++
++    test('staff sections follow real access', () => {
++        expect(uwxPanelAllowed(uwxPanelById('staff'), {})).toBe(false);
++        expect(uwxPanelAllowed(uwxPanelById('staff'), { underwebStaff: true })).toBe(true);
++        expect(uwxPanelAllowed(uwxPanelById('intel'), { groupStaff: true })).toBe(true);
++        expect(uwxPanelAllowed(uwxPanelById('groups'), { underwebStaff: true })).toBe(false);
++        expect(uwxPanelAllowed(uwxPanelById('osc'), {})).toBe(true);
++    });
++});
+diff --git a/src/shared/constants/ui.js b/src/shared/constants/ui.js
+index b95db6c..8e08c31 100644
+--- a/src/shared/constants/ui.js
++++ b/src/shared/constants/ui.js
+@@ -1,14 +1,16 @@
+ import { toolNavDefinitions } from './tools';
++import { UWX_PANELS } from './uwxNav';
+ 
+ const navDefinitions = [
+-    {
+-        key: 'underweb',
+-        icon: 'ri-radar-line',
+-        tooltip: 'UnderWeb X',
+-        labelKey: 'UnderWeb X',
+-        routeName: 'underweb',
+-        isDashboard: true
+-    },
++    // UWX sections first (see uwxNav.js); the first one keeps the original 'underweb' key/route.
++    ...UWX_PANELS.map((panel) => ({
++        key: panel.key,
++        icon: panel.icon,
++        tooltip: panel.label,
++        labelKey: panel.label,
++        routeName: panel.route,
++        uwxAccess: panel.access
++    })),
+     {
+         key: 'feed',
+         icon: 'ri-rss-line',
+diff --git a/src/shared/constants/uwx.js b/src/shared/constants/uwx.js
+index 38c865e..cf708d1 100644
+--- a/src/shared/constants/uwx.js
++++ b/src/shared/constants/uwx.js
+@@ -1,2 +1,2 @@
+-export const UWX_VERSION = '0.6.11-rc30';
++export const UWX_VERSION = '0.6.12-rc31';
+ export const UWX_MANIFEST_URL = 'https://underweb.cloud/api/uwx/manifest';
+diff --git a/src/shared/constants/uwxNav.js b/src/shared/constants/uwxNav.js
+new file mode 100644
+index 0000000..6b5629d
+--- /dev/null
++++ b/src/shared/constants/uwxNav.js
+@@ -0,0 +1,27 @@
++// UWX sections as first-class sidebar entries (one route each, all rendered by views/UnderWeb/UnderWeb.vue).
++// access: who sees the entry. 'all' | 'groupStaff' (VRChat group role can moderate) | 'staffOrGroup' | 'underwebStaff'.
++export const UWX_PANELS = Object.freeze([
++    { id: 'command', key: 'underweb', route: 'underweb', path: 'underweb', label: 'Overview', icon: 'ri-radar-line', access: 'all' },
++    { id: 'invites', key: 'uwx-invites', route: 'uwx-invites', path: 'uwx/invites', label: 'Invites', icon: 'ri-mail-send-line', access: 'all' },
++    { id: 'people', key: 'uwx-people', route: 'uwx-people', path: 'uwx/people', label: 'People & Activity', icon: 'ri-team-line', access: 'all' },
++    { id: 'groups', key: 'uwx-groups', route: 'uwx-groups', path: 'uwx/groups', label: 'Group Tools', icon: 'ri-shield-user-line', access: 'groupStaff' },
++    { id: 'intel', key: 'uwx-intel', route: 'uwx-intel', path: 'uwx/intel', label: 'Group Intelligence', icon: 'ri-line-chart-line', access: 'staffOrGroup' },
++    { id: 'moderation', key: 'uwx-moderation', route: 'uwx-moderation', path: 'uwx/moderation', label: 'Moderation Center', icon: 'ri-folder-shield-2-line', access: 'staffOrGroup' },
++    { id: 'staff', key: 'uwx-staff', route: 'uwx-staff', path: 'uwx/staff', label: 'Staff Dashboard', icon: 'ri-team-fill', access: 'underwebStaff' },
++    { id: 'approvals', key: 'uwx-approvals', route: 'uwx-approvals', path: 'uwx/approvals', label: 'Approvals', icon: 'ri-checkbox-multiple-line', access: 'underwebStaff' },
++    { id: 'safety', key: 'uwx-safety', route: 'uwx-safety', path: 'uwx/safety', label: 'Safety Intel', icon: 'ri-shield-check-line', access: 'all' },
++    { id: 'osc', key: 'uwx-osc', route: 'uwx-osc', path: 'uwx/osc', label: 'Chatbox (OSC)', icon: 'ri-chat-3-line', access: 'all' },
++    { id: 'system', key: 'uwx-system', route: 'uwx-system', path: 'uwx/system', label: 'UWX Settings', icon: 'ri-settings-3-line', access: 'all' }
++]);
++
++export const uwxPanelByRoute = (name) => UWX_PANELS.find((p) => p.route === name) || null;
++export const uwxPanelById = (id) => UWX_PANELS.find((p) => p.id === id) || null;
++
++/** Is this panel visible for the given access flags? */
++export function uwxPanelAllowed(panel, { groupStaff = false, underwebStaff = false } = {}) {
++    if (!panel) return false;
++    if (panel.access === 'groupStaff') return groupStaff;
++    if (panel.access === 'staffOrGroup') return groupStaff || underwebStaff;
++    if (panel.access === 'underwebStaff') return underwebStaff;
++    return true;
++}
+diff --git a/src/views/UnderWeb/UnderWeb.vue b/src/views/UnderWeb/UnderWeb.vue
+index 89174f3..c8025eb 100644
+--- a/src/views/UnderWeb/UnderWeb.vue
++++ b/src/views/UnderWeb/UnderWeb.vue
+@@ -1,6 +1,6 @@
+ <template>
+     <div class="x-container uwx-page">
+-        <div class="uwx-hero">
++        <div v-if="activePanel === 'command'" class="uwx-hero">
+             <div>
+                 <div class="uwx-kicker">UNDERWEB // COMMAND CENTER</div>
+                 <div class="flex flex-wrap items-end gap-3">
+@@ -24,7 +24,7 @@
+             </div>
+         </div>
+ 
+-        <div class="uwx-overview">
++        <div v-if="activePanel === 'command'" class="uwx-overview">
+             <div class="uwx-overview-tile">
+                 <span>WORLD</span>
+                 <strong>{{ currentWorldName }}</strong>
+@@ -67,7 +67,7 @@
+             </div>
+         </div>
+ 
+-        <div class="uwx-panel-tabs" role="tablist" aria-label="UnderWeb X sections">
++        <div v-if="false" class="uwx-panel-tabs" role="tablist" aria-label="UnderWeb X sections">
+             <button
+                 v-for="panel in visibleTabs"
+                 :key="panel.id"
+@@ -1084,7 +1084,8 @@
+ <script setup>
+     import { computed, ref, onBeforeUnmount, onMounted, watch } from 'vue';
+     import { storeToRefs } from 'pinia';
+-    import { useRouter } from 'vue-router';
++    import { useRoute, useRouter } from 'vue-router';
++    import { uwxPanelById, uwxPanelByRoute } from '../../shared/constants/uwxNav';
+     import { toast } from 'vue-sonner';
+     import { Badge } from '@/components/ui/badge';
+     import { Button } from '@/components/ui/button';
+@@ -1257,7 +1258,20 @@
+ 
+     const { rolesForUser, setNotificationRule, refreshNetwork } = networkStore;
+ 
+-    const activePanel = ref('command');
++    // Each UWX section is its own sidebar entry/route; the page follows the route and vice versa.
++    const route = useRoute();
++    const activePanel = ref(String(route.meta?.uwxPanel || 'command'));
++    watch(
++        () => route.name,
++        (name) => {
++            const panel = uwxPanelByRoute(String(name || ''));
++            if (panel && panel.id !== activePanel.value) activePanel.value = panel.id;
++        }
++    );
++    watch(activePanel, (id) => {
++        const panel = uwxPanelById(id);
++        if (panel && route.name !== panel.route) void router.push({ name: panel.route });
++    });
+     // "Post…" on a new-photo toast brings you to the share card.
+     watch(
+         () => useUwxShareStore().focusTick,
