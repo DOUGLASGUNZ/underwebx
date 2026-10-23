@@ -1,0 +1,539 @@
+diff --git a/CHANGELOG_UWX.md b/CHANGELOG_UWX.md
+index d096c52..c0bec1d 100644
+--- a/CHANGELOG_UWX.md
++++ b/CHANGELOG_UWX.md
+@@ -1,5 +1,14 @@
+ # UnderWeb X changelog
+ 
++## 0.6.13-rc32 — Professional polish
++
++- UWX opens in the dark theme by default. You can still pick light or system in Appearance.
++- The sidebar has an UnderWeb X header with the version. New Dashboard is now a small + next to it.
++- App text says UWX instead of VRCX. The welcome screen is now "Welcome to UnderWeb X".
++- Fixed: Group Intelligence, the Moderation Center and the Staff Dashboard could open blank when no group was picked. They now pick your group (an UnderWeb-registered one first) and say "Pick a group" if they can't.
++- The Overview no longer shows a second "Command Center" header under the big one. The status pill now says "RECRUITING NOT APPROVED HERE" instead of "GROUP NOT ALLOWED".
++- Group Intelligence stat boxes fit in one row.
++
+ ## 0.6.12-rc31 — One app: UWX sections in the sidebar
+ 
+ - Everything UnderWeb X does now has its own spot in the left sidebar, alongside the VRCX features, instead of being tucked into tabs inside one page:
+diff --git a/UWX_VERSION b/UWX_VERSION
+index 6fc7977..2e4166c 100644
+--- a/UWX_VERSION
++++ b/UWX_VERSION
+@@ -1 +1 @@
+-0.6.12-rc31
++0.6.13-rc32
+diff --git a/src/components/nav-menu/NavMenu.vue b/src/components/nav-menu/NavMenu.vue
+index 80e49c2..977b0fa 100644
+--- a/src/components/nav-menu/NavMenu.vue
++++ b/src/components/nav-menu/NavMenu.vue
+@@ -1,19 +1,22 @@
+ <template>
+     <Sidebar side="left" variant="sidebar" collapsible="icon">
+-        <SidebarHeader v-if="showNewDashboardButton" class="px-2 py-2">
+-            <SidebarMenu>
+-                <SidebarMenuItem>
+-                    <SidebarMenuButton
+-                        :tooltip="t('dashboard.new_dashboard')"
+-                        class="border border-dashed border-primary/40 text-primary hover:bg-primary/10"
+-                        @click="handleQuickCreateDashboard">
+-                        <div class="flex items-center gap-3 pl-1 group-data-[collapsible=icon]:pl-0">
+-                            <Plus class="size-4" />
+-                            <span v-show="!isCollapsed">{{ t('dashboard.new_dashboard') }}</span>
+-                        </div>
+-                    </SidebarMenuButton>
+-                </SidebarMenuItem>
+-            </SidebarMenu>
++        <SidebarHeader class="px-2 pt-3 pb-1">
++            <div class="uwx-brand" :class="{ collapsed: isCollapsed }" :title="`UnderWeb X ${uwxVersion}`">
++                <span class="uwx-brand-mark">UW<b>X</b></span>
++                <span v-show="!isCollapsed" class="uwx-brand-text">
++                    <strong>UnderWeb X</strong>
++                    <small>v{{ uwxVersion }}</small>
++                </span>
++                <button
++                    v-if="showNewDashboardButton"
++                    type="button"
++                    class="uwx-brand-add"
++                    :title="t('dashboard.new_dashboard')"
++                    :aria-label="t('dashboard.new_dashboard')"
++                    @click="handleQuickCreateDashboard">
++                    <Plus class="size-4" />
++                </button>
++            </div>
+         </SidebarHeader>
+ 
+         <ContextMenu>
+@@ -200,6 +203,7 @@
+     } from '../../stores';
+     import { isEntryNotified as checkEntryNotified } from './navMenuUtils';
+     import { DASHBOARD_NAV_KEY_PREFIX, links } from '../../shared/constants';
++    import { UWX_VERSION as uwxVersion } from '../../shared/constants/uwx';
+     import { openExternalLink } from '../../shared/utils';
+ 
+     import NavMenuFolderItem from './NavMenuFolderItem.vue';
+@@ -452,6 +456,72 @@
+ </script>
+ 
+ <style scoped>
++    .uwx-brand {
++        display: flex;
++        align-items: center;
++        gap: 10px;
++        padding: 2px 6px 10px;
++        margin-bottom: 4px;
++        border-bottom: 1px solid var(--sidebar-border, var(--border));
++        user-select: none;
++    }
++    .uwx-brand-mark {
++        flex: none;
++        display: flex;
++        align-items: center;
++        justify-content: center;
++        width: 34px;
++        height: 32px;
++        white-space: nowrap;
++        border-radius: 8px;
++        background: #0b0f0c;
++        border: 1px solid rgb(61 245 20 / 45%);
++        box-shadow: 0 0 14px rgb(61 245 20 / 18%);
++        color: #e8ffe0;
++        font-size: 10px;
++        font-weight: 900;
++        letter-spacing: -0.02em;
++    }
++    .uwx-brand-add {
++        margin-left: auto;
++        display: grid;
++        place-items: center;
++        width: 28px;
++        height: 28px;
++        border-radius: 7px;
++        color: var(--muted-foreground);
++    }
++    .uwx-brand.collapsed {
++        flex-direction: column;
++        gap: 6px;
++        padding-inline: 0;
++    }
++    .uwx-brand.collapsed .uwx-brand-add {
++        margin-left: 0;
++    }
++    .uwx-brand-add:hover {
++        color: #3df514;
++        background: rgb(61 245 20 / 10%);
++    }
++    .uwx-brand-mark b {
++        color: #3df514;
++    }
++    .uwx-brand-text {
++        display: flex;
++        flex-direction: column;
++        min-width: 0;
++        line-height: 1.15;
++    }
++    .uwx-brand-text strong {
++        font-size: 14px;
++        font-weight: 800;
++        letter-spacing: -0.01em;
++    }
++    .uwx-brand-text small {
++        font-size: 10px;
++        color: var(--muted-foreground);
++        font-variant-numeric: tabular-nums;
++    }
+     .notify-dot-not-collapsed {
+         position: absolute;
+         top: 4px;
+diff --git a/src/localization/en.json b/src/localization/en.json
+index 01d5e86..a153111 100644
+--- a/src/localization/en.json
++++ b/src/localization/en.json
+@@ -313,7 +313,7 @@
+                 "search_placeholder": "Search",
+                 "filter_placeholder": "Filter",
+                 "chatbox_blacklist": "Chatbox Blacklist",
+-                "status_tooltip": "VRCX Companion Status"
++                "status_tooltip": "UWX Companion Status"
+             }
+         },
+         "my_avatars": {
+@@ -538,7 +538,7 @@
+                 "next_day": "Next Day",
+                 "refresh": "Refresh",
+                 "tips": {
+-                    "online_time": "Online time refers to the game time recorded by VRCX for the current day.",
++                    "online_time": "Online time refers to the game time recorded by UWX for the current day.",
+                     "click_Y_axis": "Click Y-axis label to navigate to the instance details or open User dialog.",
+                     "click_instance_name": "Click instance name to open Previous Instance Info dialog."
+                 },
+@@ -672,7 +672,7 @@
+             "export": {
+                 "header": "Export",
+                 "export_notes": "Export User Memos",
+-                "export_notes_description": "Export VRCX user memos to VRChat notes",
++                "export_notes_description": "Export UWX user memos to VRChat notes",
+                 "discord_names": "Discord Names",
+                 "export_friend_list": "Export Friends List",
+                 "export_own_avatars": "Export Own Avatars"
+@@ -810,7 +810,7 @@
+                     "support": "Support"
+                 },
+                 "vrcx_updater": {
+-                    "header": "VRCX Updater",
++                    "header": "UWX Updater",
+                     "change_build": "Change Build",
+                     "update_action": "Update Action",
+                     "auto_update_off": "Off",
+@@ -825,7 +825,7 @@
+                     "minimized": "Start Minimized at System Startup",
+                     "tray": "Minimize to Tray When Closing",
+                     "disable_gpu_acceleration": "Disable GPU Acceleration",
+-                    "disable_gpu_acceleration_tooltip": "Only change this option if you know what you're doing, may fix issues with UI, requires restarting VRCX",
++                    "disable_gpu_acceleration_tooltip": "Only change this option if you know what you're doing, may fix issues with UI, requires restarting UWX",
+                     "disable_vr_overlay_gpu_acceleration": "Disable VR Overlay GPU Acceleration",
+                     "proxy": "Proxy Settings",
+                     "startup_linux": "Add \"--startup\" arg to startup VRCX.desktop file to start VRCX minimized at system startup"
+@@ -991,8 +991,8 @@
+                     "header": "User Dialog",
+                     "vrchat_notes": "VRChat Notes",
+                     "vrchat_notes_description": "Shows notes stored in VRChat",
+-                    "vrcx_memos": "VRCX Memos",
+-                    "vrcx_memos_description": "Shows notes saved locally in VRCX",
++                    "vrcx_memos": "UWX Memos",
++                    "vrcx_memos_description": "Shows notes saved locally in UWX",
+                     "recent_action_cooldown": "Recent Action Icon",
+                     "recent_action_cooldown_description": "Show a clock icon on recent invite and request actions.",
+                     "recent_action_cooldown_minutes": "Cooldown (Minutes)"
+@@ -1126,7 +1126,7 @@
+                         "header": "VRChat"
+                     },
+                     "vrcx_settings": {
+-                        "header": "VRCX"
++                        "header": "UWX"
+                     },
+                     "primary_password": {
+                         "header": "Primary Password",
+@@ -1150,11 +1150,11 @@
+                     },
+                     "anonymous_error_reporting": {
+                         "header": "Anonymous Error Reporting (Nightly Only)",
+-                        "description": "Help improve VRCX by sending anonymous crash and error reports. No personal or VRChat data is collected.",
++                        "description": "Help improve UWX by sending anonymous crash and error reports. No personal or VRChat data is collected.",
+                         "consent_title": "Anonymous Error Reporting",
+-                        "consent_description": "Allow anonymous error reporting to help improve VRCX?\n\n• Crash and error data only\n• No personal or VRChat data\n• Nightly builds only\n• Can be disabled in Advanced Settings",
+-                        "enabled_restart_description": "Error reporting enabled. Restart VRCX to apply changes?",
+-                        "disabled_restart_description": "Error reporting disabled. Restart VRCX to apply changes?"
++                        "consent_description": "Allow anonymous error reporting to help improve UWX?\n\n• Crash and error data only\n• No personal or VRChat data\n• Nightly builds only\n• Can be disabled in Advanced Settings",
++                        "enabled_restart_description": "Error reporting enabled. Restart UWX to apply changes?",
++                        "disabled_restart_description": "Error reporting disabled. Restart UWX to apply changes?"
+                     },
+                     "save_instance_prints_to_file": {
+                         "header": "Save Instance Prints to File",
+@@ -1175,7 +1175,7 @@
+                     },
+                     "delete_all_screenshot_metadata": {
+                         "button": "Remove Screenshot Metadata",
+-                        "ask": "Are you sure you want to delete all VRC & VRCX screenshot metadata from your VRChat Pictures folder?",
++                        "ask": "Are you sure you want to delete all VRC & UWX screenshot metadata from your VRChat Pictures folder?",
+                         "confirm": "Deleting all screenshot metadata is a very destructive action and cannot be undone! This includes all prints, sub folders and other unrelated images in your VRChat Pictures folder, if these photos are precious to you, please make a backup before proceeding.",
+                         "confirm_yes": "Yes",
+                         "confirm_no": "No"
+@@ -1208,7 +1208,7 @@
+                         "header": "Launch Commands (Deep Links)",
+                         "docs": "Launch Command Docs",
+                         "show_confirmation_on_switch_avatar_enable": "Confirm Before Switching Avatars",
+-                        "show_confirmation_on_switch_avatar_tooltip": "When disabled, VRCX will not ask for confirmation before switching avatars.",
++                        "show_confirmation_on_switch_avatar_tooltip": "When disabled, UWX will not ask for confirmation before switching avatars.",
+                         "website_userscript": "VRC Website Userscript"
+                     },
+                     "screenshot_helper": {
+@@ -1228,7 +1228,7 @@
+                         "run_process_once": "Open Single Instance of App"
+                     },
+                     "cache_debug": {
+-                        "header": "VRCX Instance Cache/Debug",
++                        "header": "UWX Instance Cache/Debug",
+                         "udon_exception_logging": "Udon Exception Logging",
+                         "disable_gamelog": "Disable GameLog",
+                         "disable_gamelog_notice": "(will likely break things)",
+@@ -1278,7 +1278,7 @@
+                         "purge_confirm_title": "Purge Avatar Feed Data",
+                         "purge_confirm_description_1": "This will permanently delete avatar change records from the database and reclaim disk space.",
+                         "purge_confirm_description_2": "This action cannot be undone!",
+-                        "purge_confirm_description_3": "VRCX will restart after the operation completes.",
++                        "purge_confirm_description_3": "UWX will restart after the operation completes.",
+                         "purge_confirm_alert": "It is strongly recommended to back up your database file before proceeding!",
+                         "purge_confirm_button": "Purge & Restart",
+                         "purge_in_progress": "Purging avatar data...",
+@@ -1396,8 +1396,8 @@
+             },
+             "info": {
+                 "header": "Info",
+-                "vrcx_info": "VRCX Info",
+-                "vrcx_info_tooltip": "VRCX info may be inaccurate",
++                "vrcx_info": "UWX Info",
++                "vrcx_info_tooltip": "UWX info may be inaccurate",
+                 "launch_invite_tooltip": "Launch/Invite",
+                 "self_invite_tooltip": "Invite Yourself",
+                 "open_in_vrchat_tooltip": "Open in VRChat",
+@@ -2250,14 +2250,14 @@
+         },
+         "note_export": {
+             "header": "Note Export",
+-            "description1": "This process will export all of your VRCX memos and import them into VRChat notes.",
++            "description1": "This process will export all of your UWX memos and import them into VRChat notes.",
+             "description2": "Be warned of the following limitations:",
+             "description3": "- API endpoint has a rate limit that requires a large delay between requests.",
+             "description4": "- Character limit of 256 per note.",
+             "description5": "- Swear words filter (no fun allowed).",
+             "description6": "- No new lines (they will replaced with a space).",
+             "description7": "- This will overwrite any existing VRChat notes for these users.",
+-            "description8": "- Any edits made here wont affect VRCX memos but will affect VRChat notes once exported.",
++            "description8": "- Any edits made here wont affect UWX memos but will affect VRChat notes once exported.",
+             "refresh": "Refresh",
+             "export": "Export",
+             "cancel": "Cancel",
+@@ -2584,9 +2584,9 @@
+             "add_item": "Add Item"
+         },
+         "vrcx_updater": {
+-            "header": "VRCX Updater",
+-            "latest_version": "VRCX is up to date.",
+-            "ready_for_update": "Ready for install, restart VRCX to apply.",
++            "header": "UWX Updater",
++            "latest_version": "UWX is up to date.",
++            "ready_for_update": "Ready for install, restart UWX to apply.",
+             "branch_stable": "Stable",
+             "branch_nightly": "Nightly",
+             "nightly_title": "Nightly builds",
+@@ -2598,14 +2598,14 @@
+         },
+         "change_log": {
+             "header": "Change Log",
+-            "description": "Consider donating to support future development of VRCX",
++            "description": "Consider donating to support future development of UWX",
+             "close": "Close",
+             "donate": "Donate",
+             "github": "GitHub"
+         },
+         "open_source": {
+             "header": "Open Source Software Notice",
+-            "description": "VRCX is based on open source software. It was possible because of their contribution.",
++            "description": "UWX is based on open source software. It was possible because of their contribution.",
+             "loading": "Loading generated third-party notices...",
+             "unavailable": "No generated third-party notice manifest is available in this build. Run a production build to regenerate it.",
+             "search_placeholder": "Search packages, versions, or licenses",
+@@ -2637,7 +2637,7 @@
+             "action": "Action",
+             "auto_backup": "Auto backup every 3 days (deletes after 2 weeks)",
+             "ask_to_restore": "Ask to restore when no VRC registry settings are present",
+-            "restore_prompt": "VRCX has noticed auto backup of VRChat registry settings is enabled but this computer doesn't have any, if you'd like to restore from backup you can do so from here."
++            "restore_prompt": "UWX has noticed auto backup of VRChat registry settings is enabled but this computer doesn't have any, if you'd like to restore from backup you can do so from here."
+         },
+         "avatar_database_provider": {
+             "header": "Avatar Database Provider",
+@@ -2828,7 +2828,7 @@
+             "input_error": "Valid number is required"
+         },
+         "auto_clear_cache": {
+-            "header": "Clear VRCX Cache Timer",
++            "header": "Clear UWX Cache Timer",
+             "description": "Enter amount of hours, larger values may impact RAM usage and performance (default: 24, disabled: 0)",
+             "cancel": "Cancel",
+             "ok": "OK",
+@@ -2874,7 +2874,7 @@
+         },
+         "table_entries_settings": {
+             "header": "Table Entries Settings",
+-            "description": "Limit the number of entries the VRCX logs from the database to the UI. A large number may impact RAM usage and performance",
++            "description": "Limit the number of entries the UWX logs from the database to the UI. A large number may impact RAM usage and performance",
+             "table_max_entries": "Table Max Entries",
+             "table_max_entries_error": "Enter a number between {min} and {max}.",
+             "table_max_entries_hint": "Valid range: {min} – {max}.",
+@@ -2942,8 +2942,8 @@
+         "database": {
+             "upgrade_complete": "Database upgrade complete",
+             "upgrade_in_progress_title": "Database upgrade in progress",
+-            "upgrade_in_progress_description": "Updating database from version {from} to {to}. Please do not close VRCX.",
+-            "upgrade_in_progress_initializing": "Initializing database upgrade. Please do not close VRCX.",
++            "upgrade_in_progress_description": "Updating database from version {from} to {to}. Please do not close UWX.",
++            "upgrade_in_progress_initializing": "Initializing database upgrade. Please do not close UWX.",
+             "upgrade_in_progress_wait": "User actions are temporarily blocked until the upgrade finishes.",
+             "upgrade_failed_title": "Database upgrade failed",
+             "upgrade_failed_description": "Database upgrade failed. Check the console for details.",
+@@ -3020,7 +3020,7 @@
+             "delete_failed": "Failed to delete screenshot metadata"
+         },
+         "crash": {
+-            "vrcx_reload": "VRCX was reloaded for stability"
++            "vrcx_reload": "UWX was reloaded for stability"
+         },
+         "image": {
+             "downloading": "Downloading image...",
+@@ -3306,8 +3306,8 @@
+     },
+     "onboarding": {
+         "welcome": {
+-            "title": "Welcome to VRCX",
+-            "subtitle": "Here are a few things you might not discover on your own.",
++            "title": "Welcome to UnderWeb X",
++            "subtitle": "Your VRChat companion for The UnderWeb. A few things worth knowing:",
+             "features": {
+                 "user_profiles": {
+                     "title": "User Profiles",
+@@ -3329,13 +3329,13 @@
+             "cta": "Get Started"
+         },
+         "whatsnew": {
+-            "title": "What's New in VRCX",
++            "title": "What's New in UWX",
+             "subtitle": "Here's what changed in this update.",
+             "cta": "Got It",
+             "common": {
+                 "got_it": "Got It",
+                 "view_changelog": "View All Changes",
+-                "support": "Support VRCX"
++                "support": "Support UWX"
+             },
+             "releases": {
+                 "2026_05_03": {
+diff --git a/src/shared/constants/uwx.js b/src/shared/constants/uwx.js
+index cf708d1..8e0f986 100644
+--- a/src/shared/constants/uwx.js
++++ b/src/shared/constants/uwx.js
+@@ -1,2 +1,2 @@
+-export const UWX_VERSION = '0.6.12-rc31';
++export const UWX_VERSION = '0.6.13-rc32';
+ export const UWX_MANIFEST_URL = 'https://underweb.cloud/api/uwx/manifest';
+diff --git a/src/shared/utils/base/ui.js b/src/shared/utils/base/ui.js
+index 4ccf124..cdef753 100644
+--- a/src/shared/utils/base/ui.js
++++ b/src/shared/utils/base/ui.js
+@@ -461,7 +461,8 @@ function changeHtmlLangAttribute(language) {
+ }
+ 
+ async function getThemeMode(configRepository) {
+-    const initThemeMode = await configRepository.getString('VRCX_ThemeMode', 'system');
++    // UWX is a dark app by default (UnderWeb brand); people can still pick light or system in Appearance.
++    const initThemeMode = await configRepository.getString('VRCX_ThemeMode', 'dark');
+ 
+     let isDarkMode;
+     if (initThemeMode === 'light') {
+diff --git a/src/stores/uwxIntel.js b/src/stores/uwxIntel.js
+index 4ba973b..b2a8e4b 100644
+--- a/src/stores/uwxIntel.js
++++ b/src/stores/uwxIntel.js
+@@ -203,7 +203,8 @@ export const useUwxIntelStore = defineStore('UwxIntel', () => {
+         if (home && tools.myGroups.some((g) => g.id === home)) return home;
+         const uw = tools.myGroups.find((g) => /underweb/i.test(g.name));
+         if (uw) return uw.id;
+-        return tools.moderatableGroups[0]?.id || tools.myGroups[0]?.id || '';
++        const reg = groups.value.find((g) => g.registered);
++        return reg?.id || tools.moderatableGroups[0]?.id || tools.myGroups[0]?.id || groups.value[0]?.id || '';
+     }
+ 
+     async function saveSettings() {
+@@ -581,15 +582,19 @@ export const useUwxIntelStore = defineStore('UwxIntel', () => {
+                     else registered.value = [];
+                 }
+             );
++            // Pick a group once the list arrives (VRChat groups or UnderWeb-registered ones), and again if the saved one
++            // is no longer in the list (left the group, access removed) — never leave the page blank.
+             watch(
+-                () => tools.myGroups.length,
++                () => groups.value.map((g) => g.id).join(','),
+                 () => {
+-                    if (!settings.groupId) {
+-                        settings.groupId = defaultGroupId();
+-                        if (settings.groupId) void openGroupData().then(() => refresh({ manual: true }));
+-                    }
++                    if (group.value) return;
++                    const next = defaultGroupId();
++                    if (!next) return;
++                    settings.groupId = next;
++                    void openGroupData().then(() => refresh({ manual: true }));
+                 }
+             );
++            if (!group.value) settings.groupId = defaultGroupId() || settings.groupId;
+             await openGroupData();
+             await refresh({ manual: true });
+         } else if (Date.now() - lastSyncAt.value > 60 * 1000) {
+diff --git a/src/views/UnderWeb/UnderWeb.vue b/src/views/UnderWeb/UnderWeb.vue
+index c8025eb..eb48a76 100644
+--- a/src/views/UnderWeb/UnderWeb.vue
++++ b/src/views/UnderWeb/UnderWeb.vue
+@@ -82,7 +82,7 @@
+             </button>
+         </div>
+ 
+-        <div class="uwx-panel-context">
++        <div v-if="activePanel !== 'command'" class="uwx-panel-context">
+             <div>
+                 <span class="uwx-section-label">{{ activePanelMeta.eyebrow }}</span>
+                 <strong>{{ activePanelMeta.title }}</strong>
+@@ -1755,7 +1755,7 @@
+ 
+     const statusText = computed(() => {
+         if (!isGroupInstance.value) return 'NOT IN GROUP INSTANCE';
+-        if (!isCurrentGroupAllowed.value) return 'GROUP NOT ALLOWED';
++        if (!isCurrentGroupAllowed.value) return 'RECRUITING NOT APPROVED HERE';
+         if (groupRecruitEnabled.value) return 'GROUP RECRUITER ARMED';
+         if (autoInviteEnabled.value) return 'INSTANCE INVITER ARMED';
+         return 'READY / DISARMED';
+diff --git a/src/views/UnderWeb/UwxGroupIntel.vue b/src/views/UnderWeb/UwxGroupIntel.vue
+index 1a51e6d..ac1f532 100644
+--- a/src/views/UnderWeb/UwxGroupIntel.vue
++++ b/src/views/UnderWeb/UwxGroupIntel.vue
+@@ -6,6 +6,7 @@
+                 <span>Group</span>
+                 <select class="uwi-select" :value="settings.groupId" :disabled="!groups.length" @change="setGroup(val($event))">
+                     <option v-if="!groups.length" value="">No groups yet</option>
++                    <option v-else-if="!group" value="" disabled>Pick a group…</option>
+                     <option v-for="g in groups" :key="g.id" :value="g.id">{{ g.name }}{{ g.registered ? ' · UnderWeb' : '' }}</option>
+                 </select>
+             </label>
+@@ -33,7 +34,7 @@
+             Your VRChat groups haven't loaded yet. Log in to VRChat in UWX, then come back here.
+         </div>
+ 
+-        <template v-else-if="settings.groupId">
++        <template v-else-if="group">
+             <p v-if="lastError" class="uwi-warn-box">{{ lastError }}</p>
+ 
+             <div class="uwi-subtabs" role="tablist">
+@@ -267,6 +268,11 @@
+ 
+             <UwxIntelAdmin v-else-if="tab === 'settings'" />
+         </template>
++
++        <div v-else class="uwi-empty">
++            <i class="ri-cursor-line" />
++            Pick a group above to see its members, activity and Road to 500.
++        </div>
+     </div>
+ </template>
+ 
+@@ -291,7 +297,7 @@
+     const val = (e) => /** @type {HTMLInputElement} */ (e.target).value;
+ 
+     const store = useUwxIntelStore();
+-    const { settings, groups, live, instances, instancesNote, snapshots, entries, activitySource, activityAvailable, status, lastSyncAt, lastError, nextRunAt, goal, progress } =
++    const { settings, groups, group, live, instances, instancesNote, snapshots, entries, activitySource, activityAvailable, status, lastSyncAt, lastError, nextRunAt, goal, progress } =
+         storeToRefs(store);
+     const { history: eventHistory } = storeToRefs(useUwxEventModeStore());
+ 
+diff --git a/src/views/UnderWeb/uwxIntel.css b/src/views/UnderWeb/uwxIntel.css
+index 0b9a7af..e2b7e1b 100644
+--- a/src/views/UnderWeb/uwxIntel.css
++++ b/src/views/UnderWeb/uwxIntel.css
+@@ -47,7 +47,7 @@
+ }
+ .uwi-tiles {
+     display: grid;
+-    grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
++    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+     gap: var(--uwi-gap);
+ }
+ .uwi-tile {
