@@ -5,9 +5,9 @@
 ## User experience
 The existing UnderWeb X **Overview / Command Center** gets a compact **Customize home** control above its existing four live overview tiles. Selecting it reveals an accessible edit panel. Each current tile remains connected to the exact same UWX data sources:
 - Current World (as already shown by UWX)
-- Current Instance (original instance/player/friends-present information)
+- Instance (original in-instance/player/friends-present information)
 - Network Online (staff and creators as provided by existing UnderWeb network state)
-- UWX Session (group/instance invitations and approved-group count)
+- Invites Sent (original UWX session group/instance invitation totals)
 
 The user can:
 1. Drag the three cards in the editor to reorder them, or use arrow controls for keyboard-friendly ordering.
