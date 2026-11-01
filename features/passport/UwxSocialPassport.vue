@@ -170,7 +170,7 @@
     async function saveMemo() {
         if (memoSaving.value || memoLoading.value || !memoChanged.value) return;
         const id = props.userId;
-        const value = memoDraft.value.slice(0, 1500);
+        const value = memoDraft.value; // Never silently truncate an existing longer VRCX memo.
         memoSaving.value = true;
         memoError.value = '';
         try {
