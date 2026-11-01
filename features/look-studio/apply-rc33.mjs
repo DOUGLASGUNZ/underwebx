@@ -88,14 +88,14 @@ replaceUnique(
     '# UnderWeb X changelog\n\n',
     `# UnderWeb X changelog
 
-## 0.6.14-rc33 — Look Studio
+## 0.6.14-rc33 — Layout & Appearance Studio
 
-- Preserved the existing VRCX-based client, login, friends, groups, history and all existing UnderWeb tools.
-- Introduced six instant theme combinations for the whole UWX interface: UnderWeb, Void, Cyberline, Blood Moon, Minimal and Angel Engine.
-- Added compact/comfortable density, three corner treatments, glass/solid panels and reduced decorative motion.
-- Changes save locally and update immediately, with one-click reset. Nothing touches account data, group actions or OSC state.
-- Existing Appearance accent-color and tint controls remain available; looks are optional starting points.
-- Validation covers presets, unsafe input and independent setting updates. No production release until QA passes.
+- Preserved the existing VRCX-based client, login, friends, groups, social history, and UnderWeb modules.
+- Extended the existing RC19 color themes rather than duplicating them: no new accent engine, color presets or palette.
+- Added comfortable/compact spacing, adjustable text size, panel shapes, solid/glass surfaces and reduced motion.
+- Added neutral ambient/grid backgrounds and an optional local PNG/JPEG/WebP image (max 1.5 MB) with a dark text-readability overlay.
+- Layout changes are saved only on this PC, can be reset, and don't alter VRChat/OSC settings or network accounts.
+- Included input validation tests. Windows interaction and performance testing required before release.
 
 `
 );
