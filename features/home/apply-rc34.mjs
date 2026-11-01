@@ -60,7 +60,7 @@ const notes = `# UnderWeb X changelog
 
 ## 0.6.15-rc34 — Customizable Home Overview
 
-- Personalize all four live Overview cards: Current World, Current Instance, Network Online, and UWX Session.
+- Personalize all four live Overview cards: World, Instance, Network Online, and Invites Sent.
 - Drag-and-drop arrangement in the Home editor, with keyboard-usable move-up/down buttons and automatic local persistence.
 - Preserved the exact existing card content and data bindings; no new VRChat API polling, fabricated online numbers, or backend changes.
 - One-click reset; hiding every card leaves the editor and recovery action available.
@@ -80,15 +80,7 @@ let overview = view.slice(start, end);
 const tileOpen = '<div class="uwx-overview-tile">';
 const matches = [...overview.matchAll(/<div class="uwx-overview-tile">/g)];
 if (matches.length !== 4) throw new Error(`RC34: expected exactly 4 existing Overview cards, got ${matches.length}`);
-const ids = { WORLD: 'world', 'NETWORK ONLINE': 'network', 'UWX SESSION': 'session' };
-// In the pinned source there is also a fourth, in-instance overview tile.
-// Preserve the exact existing markup and live bindings; only assign it a local layout key.
-const sourceLabels = matches.map((m) => overview.slice(m.index + tileOpen.length, m.index + tileOpen.length + 270).match(/^\s*<span>\s*([^<]+?)\s*<\/span>/)?.[1]);
-const unknownLabels = sourceLabels.filter((label) => label && !Object.hasOwn(ids, label));
-if (unknownLabels.length !== 1 || !/^[A-Z0-9 /-]{3,40}$/.test(unknownLabels[0])) {
-    throw new Error('RC34: expected one additional current-instance tile; found ' + sourceLabels.join(', '));
-}
-ids[unknownLabels[0]] = 'instance';
+const ids = { WORLD: 'world', INSTANCE: 'instance', 'NETWORK ONLINE': 'network', 'INVITES SENT': 'session' };
 const seen = new Set();
 for (const m of [...matches].reverse()) {
     const segment = overview.slice(m.index + tileOpen.length, m.index + tileOpen.length + 270);
