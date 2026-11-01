@@ -4,7 +4,7 @@ export const HOME_TILES = Object.freeze([
     { id: 'world', label: 'Current World', description: 'The world you are currently visiting' },
     { id: 'instance', label: 'Current Instance', description: 'The existing in-instance and friends-present card' },
     { id: 'network', label: 'Network Online', description: 'UnderWeb member, staff and creator presence' },
-    { id: 'session', label: 'UWX Session', description: 'Session invites and approved group count' }
+    { id: 'session', label: 'Invites Sent', description: 'Existing group/instance invite counts for this session' }
 ]);
 export const DEFAULT_HOME = Object.freeze({
     order: HOME_TILES.map((tile) => tile.id),
