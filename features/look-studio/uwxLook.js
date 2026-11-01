@@ -1,55 +1,60 @@
-// UWX Look Studio: original, local-only presentation presets.
-// Independent from VRChat authentication, user data, and the existing accent-color engine.
-export const LOOK_PRESETS = Object.freeze([
-    { id: 'underweb', label: 'UnderWeb', subtitle: 'Our signature look', accent: '#3df514', color: 'underweb', tint: 'subtle', density: 'comfortable', corners: 'soft', surface: 'solid', motion: 'system' },
-    { id: 'void', label: 'The Void', subtitle: 'Low light, violet glow', accent: '#a855f7', color: 'violet', tint: 'none', density: 'comfortable', corners: 'soft', surface: 'glass', motion: 'system' },
-    { id: 'cyber', label: 'Cyberline', subtitle: 'Compact blue precision', accent: '#38bdf8', color: 'ice', tint: 'subtle', density: 'compact', corners: 'sharp', surface: 'solid', motion: 'system' },
-    { id: 'ember', label: 'Blood Moon', subtitle: 'Warm and cinematic', accent: '#ff3b3b', color: 'blood', tint: 'subtle', density: 'comfortable', corners: 'soft', surface: 'glass', motion: 'system' },
-    { id: 'minimal', label: 'Minimal', subtitle: 'Nothing but the essentials', accent: '#d4d4d8', color: 'mono', tint: 'none', density: 'compact', corners: 'sharp', surface: 'solid', motion: 'reduce' },
-    { id: 'angel', label: 'Angel Engine', subtitle: 'Soft light, hard edges', accent: '#fbbf24', color: 'gold', tint: 'none', density: 'comfortable', corners: 'rounded', surface: 'glass', motion: 'system' }
-]);
-
-export const DEFAULT_LOOK = Object.freeze({
-    preset: 'underweb',
+// UWX Layout & Appearance Studio — additive display settings only.
+// The existing UWX theme engine exclusively owns accent colors and tints.
+export const DEFAULT_LAYOUT = Object.freeze({
     density: 'comfortable',
     corners: 'soft',
     surface: 'solid',
-    motion: 'system'
+    motion: 'system',
+    type: 'default',
+    backdrop: 'none',
+    imageData: ''
 });
 
-const options = Object.freeze({
+export const LAYOUT_OPTIONS = Object.freeze({
     density: ['comfortable', 'compact'],
-    corners: ['soft', 'sharp', 'rounded'],
+    corners: ['sharp', 'soft', 'rounded'],
     surface: ['solid', 'glass'],
-    motion: ['system', 'reduce']
+    motion: ['system', 'reduce'],
+    type: ['small', 'default', 'large'],
+    backdrop: ['none', 'ambient', 'grid', 'image']
 });
 
-export function normalizeLook(raw) {
-    const value = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
-    const out = { ...DEFAULT_LOOK };
-    out.preset = LOOK_PRESETS.some((preset) => preset.id === value.preset) ? value.preset : 'custom';
-    if (!raw) out.preset = DEFAULT_LOOK.preset;
-    for (const key of Object.keys(options)) {
-        out[key] = options[key].includes(value[key]) ? value[key] : DEFAULT_LOOK[key];
-    }
-    return out;
+// Prevent remote tracking URLs, CSS injection, and oversized imported images.
+// Max 1.5 MB source file -> roughly 2 MB data URL.
+export const MAX_IMAGE_BYTES = 1_500_000;
+export const MAX_IMAGE_DATA_LENGTH = 2_100_000;
+const IMAGE_DATA_URL = /^data:image\/(?:png|jpeg|webp);base64,[a-zA-Z0-9+/]+={0,2}$/;
+
+export function isSafeImageData(data) {
+    return typeof data === 'string' &&
+        data.length <= MAX_IMAGE_DATA_LENGTH &&
+        IMAGE_DATA_URL.test(data);
 }
 
-export function lookFromPreset(id) {
-    const preset = LOOK_PRESETS.find((p) => p.id === id);
-    if (!preset) throw new Error('Unknown look preset');
-    return {
-        preset: preset.id,
-        density: preset.density,
-        corners: preset.corners,
-        surface: preset.surface,
-        motion: preset.motion
-    };
+export function normalizeLayout(raw) {
+    const input = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+    const layout = { ...DEFAULT_LAYOUT };
+    for (const key of Object.keys(LAYOUT_OPTIONS)) {
+        if (LAYOUT_OPTIONS[key].includes(input[key])) layout[key] = input[key];
+    }
+    if (isSafeImageData(input.imageData)) layout.imageData = input.imageData;
+    if (layout.backdrop === 'image' && !layout.imageData) layout.backdrop = 'none';
+    return layout;
 }
 
-export function withLookOption(look, key, value) {
-    if (!Object.hasOwn(options, key) || !options[key].includes(value)) {
-        throw new Error('Invalid look option');
+export function changeLayoutOption(original, key, value) {
+    if (!Object.hasOwn(LAYOUT_OPTIONS, key) || !LAYOUT_OPTIONS[key].includes(value)) {
+        throw new Error('Invalid layout option');
     }
-    return normalizeLook({ ...look, preset: 'custom', [key]: value });
+    const next = { ...normalizeLayout(original), [key]: value };
+    return normalizeLayout(next);
+}
+
+export function withLocalImage(original, imageData) {
+    if (!isSafeImageData(imageData)) throw new Error('Choose a PNG, JPEG, or WebP image below 1.5 MB.');
+    return normalizeLayout({ ...normalizeLayout(original), imageData, backdrop: 'image' });
+}
+
+export function withoutLocalImage(original) {
+    return normalizeLayout({ ...normalizeLayout(original), imageData: '', backdrop: 'none' });
 }
