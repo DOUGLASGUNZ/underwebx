@@ -60,7 +60,7 @@ const notes = `# UnderWeb X changelog
 
 ## 0.6.15-rc34 — Customizable Home Overview
 
-- Personalize the existing Overview: show/hide and reorder live Current World, Network Online, and UWX Session cards.
+- Personalize all four live Overview cards: Current World, Current Instance, Network Online, and UWX Session.
 - Drag-and-drop arrangement in the Home editor, with keyboard-usable move-up/down buttons and automatic local persistence.
 - Preserved the exact existing card content and data bindings; no new VRChat API polling, fabricated online numbers, or backend changes.
 - One-click reset; hiding every card leaves the editor and recovery action available.
@@ -79,8 +79,16 @@ const end = findMatchingDiv(view, start);
 let overview = view.slice(start, end);
 const tileOpen = '<div class="uwx-overview-tile">';
 const matches = [...overview.matchAll(/<div class="uwx-overview-tile">/g)];
-if (matches.length !== 3) throw new Error(`RC34: expected exactly 3 existing Overview cards, got ${matches.length}`);
+if (matches.length !== 4) throw new Error(`RC34: expected exactly 4 existing Overview cards, got ${matches.length}`);
 const ids = { WORLD: 'world', 'NETWORK ONLINE': 'network', 'UWX SESSION': 'session' };
+// In the pinned source there is also a fourth, in-instance overview tile.
+// Preserve the exact existing markup and live bindings; only assign it a local layout key.
+const sourceLabels = matches.map((m) => overview.slice(m.index + tileOpen.length, m.index + tileOpen.length + 270).match(/^\s*<span>\s*([^<]+?)\s*<\/span>/)?.[1]);
+const unknownLabels = sourceLabels.filter((label) => label && !Object.hasOwn(ids, label));
+if (unknownLabels.length !== 1 || !/^[A-Z0-9 /-]{3,40}$/.test(unknownLabels[0])) {
+    throw new Error('RC34: expected one additional current-instance tile; found ' + sourceLabels.join(', '));
+}
+ids[unknownLabels[0]] = 'instance';
 const seen = new Set();
 for (const m of [...matches].reverse()) {
     const segment = overview.slice(m.index + tileOpen.length, m.index + tileOpen.length + 270);
@@ -91,7 +99,7 @@ for (const m of [...matches].reverse()) {
     const enhanced = `<div class="uwx-overview-tile" v-show="uwxHome.isVisible('${id}')" :style="{ order: uwxHome.rank('${id}') }">`;
     overview = overview.slice(0, m.index) + enhanced + overview.slice(m.index + tileOpen.length);
 }
-if (seen.size !== 3) throw new Error('RC34: not all expected Overview tiles present');
+if (seen.size !== 4) throw new Error('RC34: not all expected Overview tiles present');
 const editedOverview = '<UwxHomeEditor v-if="activePanel === \'command\'" />\n\n        ' + overview;
 
 const nextView = replaceOnce(
@@ -112,4 +120,4 @@ write(viewPath, nextView);
 write('src/shared/constants/uwx.js', nextVersion);
 write('UWX_VERSION', '0.6.15-rc34\n');
 write('CHANGELOG_UWX.md', nextChangelog);
-console.log('UWX RC34: kept original three live Home cards and installed personalization controls.');
+console.log('UWX RC34: kept all four original live Home cards and installed personalization controls.');
