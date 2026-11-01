@@ -84,6 +84,12 @@ html[data-uwx-backdrop='image'] .x-container {
     background-size:cover;
     background-position:center center;
 }
+/* Light mode uses a pale readability veil rather than dark-on-dark text. */
+html:not(.dark)[data-uwx-backdrop='image'] .x-container {
+    background:linear-gradient(rgba(246,247,249,.89),rgba(249,249,251,.92)),var(--uwx-backdrop-image),var(--background);
+    background-size:cover;
+    background-position:center center;
+}
 html[data-uwx-motion='reduce'] *,
 html[data-uwx-motion='reduce'] *::before,
 html[data-uwx-motion='reduce'] *::after {
