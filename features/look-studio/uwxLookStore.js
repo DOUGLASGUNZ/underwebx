@@ -2,80 +2,68 @@ import { reactive } from 'vue';
 import { defineStore } from 'pinia';
 
 import configRepository from '../services/config';
-import { DEFAULT_LOOK, LOOK_PRESETS, lookFromPreset, normalizeLook, withLookOption } from '../shared/utils/uwxLook';
-import { useUwxThemeStore } from './uwxTheme';
+import { DEFAULT_LAYOUT, normalizeLayout, changeLayoutOption, withLocalImage, withoutLocalImage } from '../shared/utils/uwxLook';
 
-const STORAGE_KEY = 'UWX_lookStudio_v1';
+const STORAGE_KEY = 'UWX_layoutStudio_v1';
 
-function cachedLook() {
+function readCache() {
     try {
-        return normalizeLook(JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null'));
+        return normalizeLayout(JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null'));
     } catch {
-        return { ...DEFAULT_LOOK };
+        return { ...DEFAULT_LAYOUT };
     }
 }
 
-function applyLook(look) {
+export function applyLayout(layout) {
     if (typeof document === 'undefined') return;
-    const html = document.documentElement;
-    html.dataset.uwxDensity = look.density;
-    html.dataset.uwxCorners = look.corners;
-    html.dataset.uwxSurface = look.surface;
-    html.dataset.uwxMotion = look.motion;
+    const root = document.documentElement;
+    root.dataset.uwxDensity = layout.density;
+    root.dataset.uwxCorners = layout.corners;
+    root.dataset.uwxSurface = layout.surface;
+    root.dataset.uwxMotion = layout.motion;
+    root.dataset.uwxType = layout.type;
+    root.dataset.uwxBackdrop = layout.backdrop;
+    // Data URL was validated at the data-model boundary. No remote URLs.
+    if (layout.backdrop === 'image' && layout.imageData) {
+        root.style.setProperty('--uwx-backdrop-image', `url("${layout.imageData}")`);
+    } else {
+        root.style.removeProperty('--uwx-backdrop-image');
+    }
 }
 
-export const useUwxLookStore = defineStore('UwxLookStudio', () => {
-    const look = reactive(cachedLook());
-    let changedSinceLoad = false;
+export const useUwxLookStore = defineStore('UwxLayoutStudio', () => {
+    const layout = reactive(readCache());
+    let userEdited = false;
 
     function save(next) {
-        changedSinceLoad = true;
-        Object.assign(look, normalizeLook(next));
-        applyLook(look);
-        try {
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(look));
-        } catch {
-            // Continue using the live value if storage is disabled.
-        }
-        void configRepository.setString(STORAGE_KEY, JSON.stringify(look)).catch(() => {});
+        userEdited = true;
+        Object.assign(layout, normalizeLayout(next));
+        applyLayout(layout);
+        const payload = JSON.stringify(layout);
+        try { localStorage.setItem(STORAGE_KEY, payload); } catch {}
+        void configRepository.setString(STORAGE_KEY, payload).catch((err) => {
+            console.warn('UWX layout preferences could not be saved to app settings.', err);
+        });
     }
 
     async function init() {
-        applyLook(look); // Paint cached values immediately.
+        applyLayout(layout);
         try {
             const saved = JSON.parse((await configRepository.getString(STORAGE_KEY, '')) || 'null');
-            // Never let an async read undo a change the user just made.
-            if (!changedSinceLoad && saved) {
-                Object.assign(look, normalizeLook(saved));
-                applyLook(look);
-                try { localStorage.setItem(STORAGE_KEY, JSON.stringify(look)); } catch {}
+            if (!userEdited && saved) {
+                Object.assign(layout, normalizeLayout(saved));
+                applyLayout(layout);
+                try { localStorage.setItem(STORAGE_KEY, JSON.stringify(layout)); } catch {}
             }
         } catch {
-            // The cache/default remains the source when DB is unavailable.
+            // Keep the last cached preferences.
         }
     }
 
-    function selectPreset(id) {
-        const preset = LOOK_PRESETS.find((p) => p.id === id);
-        if (!preset) return;
-        save(lookFromPreset(id));
-        const theme = useUwxThemeStore();
-        theme.setEnabled(true);
-        theme.setPreset(preset.color);
-        theme.setTint(preset.tint);
-    }
+    function setOption(key, value) { save(changeLayoutOption(layout, key, value)); }
+    function setImage(data) { save(withLocalImage(layout, data)); }
+    function clearImage() { save(withoutLocalImage(layout)); }
+    function resetLayout() { save(DEFAULT_LAYOUT); }
 
-    function setOption(key, value) {
-        try {
-            save(withLookOption(look, key, value));
-        } catch {
-            // UI limits selection; reject unknown values.
-        }
-    }
-
-    function resetLook() {
-        selectPreset(DEFAULT_LOOK.preset);
-    }
-
-    return { look, init, selectPreset, setOption, resetLook };
+    return { layout, init, setOption, setImage, clearImage, resetLayout };
 });
