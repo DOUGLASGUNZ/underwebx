@@ -1,20 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_HOME, HOME_TILES, dragHomeBefore, homeIsVisible, homeRank, moveHomeWidget, normalizeHome, setHomeVisible } from '../uwxHome';
 describe('UWX customizable Home widgets', () => {
-    it('starts with the three existing overview cards in normal order', () => {
+    it('starts with the four existing overview cards in normal order', () => {
         expect(normalizeHome(null)).toEqual(DEFAULT_HOME);
         expect(HOME_TILES.map(t => t.id)).toEqual(DEFAULT_HOME.order);
     });
     it('restores missing items and ignores unknown IDs and duplicate items from saved settings', () => {
         expect(normalizeHome({ order: ['session', 'session', 'fake'], hidden: ['network', 'network', 'fake'] })).toEqual({
-            order: ['session', 'world', 'network'], hidden: ['network']
+            order: ['session', 'world', 'instance', 'network'], hidden: ['network']
         });
     });
     it('reorders tiles while retaining original live content and IDs', () => {
         const next = moveHomeWidget(DEFAULT_HOME, 'session', -1);
-        expect(next.order).toEqual(['world', 'session', 'network']);
+        expect(next.order).toEqual(['world', 'instance', 'session', 'network']);
         const dragged = dragHomeBefore(DEFAULT_HOME, 'session', 'world');
-        expect(dragged.order).toEqual(['session', 'world', 'network']);
+        expect(dragged.order).toEqual(['session', 'world', 'instance', 'network']);
         expect(homeRank(dragged, 'session')).toBe(0);
         expect(moveHomeWidget(DEFAULT_HOME, 'world', -1)).toEqual(DEFAULT_HOME);
     });
