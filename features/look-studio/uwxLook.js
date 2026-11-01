@@ -2,7 +2,7 @@
 // The existing UWX theme engine exclusively owns accent colors and tints.
 export const DEFAULT_LAYOUT = Object.freeze({
     density: 'comfortable',
-    corners: 'soft',
+    corners: 'original',
     surface: 'solid',
     motion: 'system',
     type: 'default',
@@ -12,7 +12,7 @@ export const DEFAULT_LAYOUT = Object.freeze({
 
 export const LAYOUT_OPTIONS = Object.freeze({
     density: ['comfortable', 'compact'],
-    corners: ['sharp', 'soft', 'rounded'],
+    corners: ['original', 'sharp', 'soft', 'rounded'],
     surface: ['solid', 'glass'],
     motion: ['system', 'reduce'],
     type: ['small', 'default', 'large'],
