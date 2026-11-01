@@ -56,7 +56,7 @@ const nextApp = replaceOnce(app, cssAnchor, cssAnchor + "\n    import '@/styles/
 let nextView = replaceOnce(view, importAnchor, importAnchor + "\n    import UwxSocialPassport from './UwxSocialPassport.vue';", 'component import');
 nextView = replaceOnce(nextView, peopleAnchor, profileComponent + peopleAnchor, 'People view grid');
 if (!nextView.includes(profileAnchor)) throw new Error('RC35: original People friend selection missing');
-for (const needle of ['    const selectedNetworkMember = computed(', '    const selectedProfileRoles = computed(', 'profileUserId = friend.id']) {
+for (const needle of ['    const selectedNetworkMember = computed(', '    const selectedProfileRoles = computed(', 'const profileUserId = ref(']) {
     if (!nextView.includes(needle)) throw new Error('RC35: missing friend or UnderWeb mapping: ' + needle);
 }
 const nextVersion = replaceOnce(vers, "export const UWX_VERSION = '0.6.15-rc34';", "export const UWX_VERSION = '0.6.16-rc35';", 'version');
