@@ -40,10 +40,18 @@
 html[data-uwx-corners='sharp'] { --radius:5px; }
 html[data-uwx-corners='soft'] { --radius:12px; }
 html[data-uwx-corners='rounded'] { --radius:19px; }
-html[data-uwx-corners] [data-slot='card'],
-html[data-uwx-corners] [data-slot='dialog-content'],
-html[data-uwx-corners] [data-slot='popover-content'],
-html[data-uwx-corners] .uwx-card { border-radius:var(--radius); }
+html[data-uwx-corners='sharp'] [data-slot='card'],
+html[data-uwx-corners='soft'] [data-slot='card'],
+html[data-uwx-corners='rounded'] [data-slot='card'],
+html[data-uwx-corners='sharp'] [data-slot='dialog-content'],
+html[data-uwx-corners='soft'] [data-slot='dialog-content'],
+html[data-uwx-corners='rounded'] [data-slot='dialog-content'],
+html[data-uwx-corners='sharp'] [data-slot='popover-content'],
+html[data-uwx-corners='soft'] [data-slot='popover-content'],
+html[data-uwx-corners='rounded'] [data-slot='popover-content'],
+html[data-uwx-corners='sharp'] .uwx-card,
+html[data-uwx-corners='soft'] .uwx-card,
+html[data-uwx-corners='rounded'] .uwx-card { border-radius:var(--radius); }
 
 html[data-uwx-density='compact'] [data-slot='card'].uwx-premium-card { gap:12px; padding-top:14px; padding-bottom:14px; }
 html[data-uwx-density='compact'] [data-slot='card-header'] { padding-left:15px; padding-right:15px; gap:4px; }
@@ -55,7 +63,6 @@ html[data-uwx-density='compact'] [data-sidebar='menu-button'] { min-height:29px;
 html[data-uwx-density='compact'] .uwx-layout-preview { min-height:92px; }
 html[data-uwx-type='small'] { font-size:14px; }
 html[data-uwx-type='large'] { font-size:17px; }
-html[data-uwx-type='default'] { font-size:16px; }
 
 html[data-uwx-surface='glass'] .uwx-premium-card,
 html[data-uwx-surface='glass'] .uwx-card {
@@ -63,8 +70,6 @@ html[data-uwx-surface='glass'] .uwx-card {
     backdrop-filter:blur(10px);
     -webkit-backdrop-filter:blur(10px);
 }
-html[data-uwx-surface='solid'] .uwx-premium-card,
-html[data-uwx-surface='solid'] .uwx-card { backdrop-filter:none; -webkit-backdrop-filter:none; }
 
 /* Wallpaper affects main content only, not other windows, toast portals or log-in data.
    A dark overlay guarantees sufficient readability for any chosen local image. */
