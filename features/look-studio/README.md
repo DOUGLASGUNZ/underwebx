@@ -1,32 +1,57 @@
-# Look Studio — UWX 0.6.14-rc33 (development only)
+# UWX RC33 — Layout & Appearance Studio (existing UWX app)
 
-An additive visual upgrade for the **existing UWX/VRCX-derived app**. No dependency on the discarded standalone prototype. Does not change login, VRChat API traffic, user history, group moderation, OSC output, or production site.
+**Status:** Development candidate. No public release authorized.
 
-## What it adds
-- Six coordinated **starting looks**: UnderWeb, The Void, Cyberline, Blood Moon, Minimal, Angel Engine.
-- Comfortable / compact spacing.
-- Sharp / soft / rounded corners.
-- Solid / optional translucent glass panels.
-- System motion or reduced motion, with OS reduced-motion preference respected.
-- Instant live changes, local persistence and reset.
-- Keeps the existing **Appearance** component's accent/tint controls; selecting a look uses the existing `useUwxThemeStore` to avoid two conflicting accent engines.
+## Why this exists
 
-## How to reach it
-The existing app sidebar has **UWX Settings** (System), which already holds `UwxAppearanceCard`. The new `UwxLookStudio` is inserted **directly beneath** that component. No new menu items or route changes.
+RC19 already shipped **seven color themes**, a custom accent picker, and background tints in the current UWX development pipeline. The original RC33 draft accidentally duplicated that capability with another set of color presets. This revision **removes all duplicated color/theme presets**.
 
-## Integration and verification
-Windows CI extracts the pinned v0.2.0 archive and applies the existing ordered patches through `0.6.13-rc32`. The guarded `apply-rc33.mjs` then copies the new original source files and inserts bounded imports and a component. The installer script **fails rather than guessing** if any existing anchor changes.
+The layout studio adds only customization that the existing Appearance panel doesn't provide. It lives directly below `UwxAppearanceCard` in the UWX Settings page, reusing the existing VRCX-based application.
 
-The existing UWX regression test command gains `uwxLook.test.js` for validation and preset round-trips; CI also builds the desktop installer for this branch as an artifact.
+## Added controls
 
-**No public release is authorized.** A passing CI build alone doesn't establish that the user has installed RC33. Test a private installer on Windows and check (1) existing VRChat login/presence, (2) navigation and layout, (3) group UI, (4) settings persistence after restart, (5) accent control still works, (6) reduced motion, (7) rollback to the known good release.
+- Comfortable or compact content spacing.
+- Small, normal or large UI type scale.
+- Sharp, soft or rounded corners.
+- Solid or optional blurred-glass panels (can affect GPU usage).
+- System motion preference or reduced motion.
+- Content backdrops: none, a subtle accent-colored ambient glow, a grid pattern, or a local image.
+- Private local PNG/JPEG/WebP background import, up to 1.5 MB; no remote image URLs, uploads, CSS injection, or SVG.
+- Restore layout defaults in one click.
+- Existing accent/tint, chatbox themes, sidebar editor, friends, groups, auth, OSC, and account data remain untouched.
 
-## Accessibility, privacy and scope
-- No custom fonts, remote images, tracking, scripts from outside the bundle, or arbitrary CSS injection.
-- New options are string-enumerated/validated. Look rendering only sets limited DOM data attributes; CSS handles presentation.
-- Glass adds modest blur for aesthetic effect and should be kept opt-in for lower-end PCs.
-- No avatar/world asset changes.
-- Data storage is **this PC**, using a namespaced local cache and the existing app configuration repository.
+**Not implemented here:** draggable home dashboard widgets, named profiles that save *entire* sidebar/widget configurations, wallpaper cropping/repositioning, or support for arbitrary fonts. Those are separate larger follow-on features; don't imply this patch already adds them.
 
-## Rollback
-Disable/uninstall the RC33 preview and use your existing UWX installation. Its data and authentication remain outside the Look Studio changes. For precise on-disk rollback and migration guarantees, validate installation/update behavior in a real Windows test first.
+## Technical design
+
+`features/look-studio/apply-rc33.mjs` injects only:
+- new `src/shared/utils/uwxLook.js` (validation, pure model);
+- new `src/stores/uwxLook.js` (local cached settings + existing config DB);
+- new `src/views/UnderWeb/UwxLookStudio.vue`;
+- new `src/styles/uwx-look.css`;
+- new `src/shared/utils/__tests__/uwxLook.test.js`;
+- import and component anchors in existing `src/App.vue` and `src/views/UnderWeb/UnderWeb.vue`;
+- development version `0.6.14-rc33` and changelog.
+
+It runs **after** the verified RC32 patch in the existing workflow and errors if existing import/component/version anchors aren't exactly as expected.
+
+The new store sets enumerated `data-uwx-*` attributes on `document.documentElement`; the CSS supplies actual styling. **No extra theme engine or color settings are created.** Backgrounds are inline local data images only. The app never sends them to underweb.cloud, VRChat, or Discord. Image data is saved locally (browser cache + existing UWX config), not to a remote service; browser quota failures can still prevent persistence.
+
+## Test and release gates
+
+CI should:
+1. Reconstruct the current VRCX-derived UWX base and all RC patches through 0.6.13-rc32.
+2. Apply RC33 without anchor conflicts.
+3. Run existing UWX regression suite + new layout validation tests.
+4. Package the Windows installer artifact without making a public release.
+
+On Windows, independently check:
+- Actual appearance and background rendering in both dark and light modes, including readability.
+- Existing color picker and color presets still work.
+- Changes persist after restarting the app; user-imported image persists and clears.
+- Friends presence, history, group views, login, and general navigation unchanged.
+- Compact/large text doesn't clip high-density views.
+- No unexpected performance impact from glass or background images.
+- Old builds unaffected; rollback to known good release.
+
+No production site, Supabase, live VRChat account, or published release has been changed.
