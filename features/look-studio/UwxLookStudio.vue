@@ -94,7 +94,7 @@
     const settings = [
         { key: 'density', title: 'Information density', description: 'Choose how much fits on screen.', options: [{ id: 'comfortable', label: 'Comfortable' }, { id: 'compact', label: 'Compact' }] },
         { key: 'type', title: 'Text size', description: 'Adjust overall interface scale.', options: [{ id: 'small', label: 'Small' }, { id: 'default', label: 'Normal' }, { id: 'large', label: 'Large' }] },
-        { key: 'corners', title: 'Panel shape', description: 'Subtle, sharp, or rounded edges.', options: [{ id: 'sharp', label: 'Sharp' }, { id: 'soft', label: 'Soft' }, { id: 'rounded', label: 'Rounded' }] },
+        { key: 'corners', title: 'Panel shape', description: 'Keep the current UWX look or pick new corners.', options: [{ id: 'original', label: 'Original' }, { id: 'sharp', label: 'Sharp' }, { id: 'soft', label: 'Soft' }, { id: 'rounded', label: 'Rounded' }] },
         { key: 'surface', title: 'Panel finish', description: 'Glass may use more GPU resources.', options: [{ id: 'solid', label: 'Solid' }, { id: 'glass', label: 'Glass' }] },
         { key: 'motion', title: 'Motion', description: 'Control decorative transitions.', options: [{ id: 'system', label: 'Use system preference' }, { id: 'reduce', label: 'Reduce' }] }
     ];
