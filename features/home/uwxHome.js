@@ -1,7 +1,8 @@
 // UWX Home: local-only ordering and visibility of existing, live Overview tiles.
 // No calls to VRChat, Supabase, or the UnderWeb website.
 export const HOME_TILES = Object.freeze([
-    { id: 'world', label: 'Current World', description: 'World and friends in the current instance' },
+    { id: 'world', label: 'Current World', description: 'The world you are currently visiting' },
+    { id: 'instance', label: 'Current Instance', description: 'The existing in-instance and friends-present card' },
     { id: 'network', label: 'Network Online', description: 'UnderWeb member, staff and creator presence' },
     { id: 'session', label: 'UWX Session', description: 'Session invites and approved group count' }
 ]);
