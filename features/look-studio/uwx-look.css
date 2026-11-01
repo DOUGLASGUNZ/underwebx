@@ -1,0 +1,109 @@
+/* UWX RC33 Layout & Appearance Studio.
+   The existing UWX theme engine owns accent colors and tints; no duplicate palette. */
+.uwx-layout-studio { --uwx-layout-border: var(--border); }
+.uwx-layout-studio .uwx-layout-head { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; flex-wrap:wrap; }
+.uwx-layout-studio .uwx-layout-eyebrow { color:var(--uwx-accent); font-size:10px; font-weight:850; letter-spacing:.14em; margin-bottom:8px; }
+.uwx-layout-studio .uwx-layout-topline { display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:8px; margin:4px 0 13px; }
+.uwx-layout-studio .uwx-layout-topline strong { font-size:13px; font-weight:750; }
+.uwx-layout-studio .uwx-layout-topline span { font-size:11px; color:var(--muted-foreground); }
+.uwx-layout-studio .uwx-layout-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:13px; }
+.uwx-layout-studio .uwx-layout-option { min-width:0; border:1px solid var(--uwx-layout-border); border-radius:var(--radius); padding:12px 14px 15px; margin:0; }
+.uwx-layout-studio .uwx-layout-option legend { padding:0 5px; font-size:12px; font-weight:750; }
+.uwx-layout-studio .uwx-layout-option p { margin:1px 0 12px; font-size:11px; color:var(--muted-foreground); }
+.uwx-layout-studio .uwx-layout-choices { display:flex; align-items:center; flex-wrap:wrap; gap:7px; }
+.uwx-layout-studio .uwx-layout-choices button { border:1px solid var(--border); border-radius:8px; padding:8px 11px; font-size:11px; font-weight:650; background:transparent; color:var(--muted-foreground); line-height:1.25; transition:border-color 130ms ease,background 130ms ease,color 130ms ease; }
+.uwx-layout-studio .uwx-layout-choices button:hover:not(:disabled) { background:rgb(var(--uwx-accent-rgb) / 8%); color:var(--foreground); }
+.uwx-layout-studio .uwx-layout-choices button.selected { border-color:rgb(var(--uwx-accent-rgb) / 53%); background:rgb(var(--uwx-accent-rgb) / 12%); color:var(--foreground); }
+.uwx-layout-studio .uwx-layout-choices button:disabled { opacity:.45; cursor:not-allowed; }
+.uwx-layout-studio button:focus-visible { outline:2px solid var(--ring); outline-offset:2px; }
+.uwx-layout-studio .uwx-layout-section { border-top:1px solid var(--border); margin-top:22px; padding-top:17px; }
+.uwx-layout-studio .uwx-layout-wallpaper-controls { display:flex; align-items:center; flex-wrap:wrap; gap:9px; margin-top:14px; }
+.uwx-layout-studio .uwx-layout-wallpaper-controls span { font-size:10px; color:var(--muted-foreground); }
+.uwx-layout-studio .uwx-layout-file { display:none; }
+.uwx-layout-studio .uwx-layout-helper { font-size:11px; line-height:1.55; margin:12px 0 0; color:var(--muted-foreground); }
+.uwx-layout-studio .uwx-layout-error { color:var(--destructive); font-size:12px; margin-top:10px; }
+.uwx-layout-studio .uwx-layout-footnote { border-top:1px solid var(--border); color:var(--muted-foreground); padding-top:15px; margin-top:19px; font-size:11px; line-height:1.6; }
+.uwx-layout-studio .uwx-layout-footnote strong,.uwx-layout-studio .uwx-layout-footnote b { color:var(--foreground); }
+.uwx-layout-studio .uwx-layout-preview { border:1px solid var(--border); margin-top:18px; border-radius:var(--radius); display:flex; overflow:hidden; background:linear-gradient(130deg,rgb(var(--uwx-accent-rgb) / 4%),transparent 65%),var(--background); min-height:123px; }
+.uwx-layout-studio .uwx-layout-preview-sidebar { flex:0 0 23%; display:flex; flex-direction:column; align-items:flex-start; gap:10px; padding:15px; border-right:1px solid var(--border); background:var(--sidebar); }
+.uwx-layout-studio .uwx-layout-preview-sidebar span { font-size:11px; color:var(--uwx-accent); font-weight:850; letter-spacing:.06em; }
+.uwx-layout-studio .uwx-layout-preview-sidebar i { width:82%; height:7px; border-radius:3px; background:var(--muted); }
+.uwx-layout-studio .uwx-layout-preview-content { flex:1; display:flex; flex-direction:column; gap:12px; padding:17px; }
+.uwx-layout-studio .uwx-layout-preview-content strong { font-size:10px; letter-spacing:.15em; }
+.uwx-layout-studio .uwx-layout-preview-tiles { display:flex; gap:9px; }
+.uwx-layout-studio .uwx-layout-preview-tiles span { flex:1; height:24px; background:rgb(var(--uwx-accent-rgb) / 12%); border:1px solid rgb(var(--uwx-accent-rgb) / 24%); border-radius:var(--radius); }
+.uwx-layout-studio .uwx-layout-preview-lines { display:flex; flex-direction:column; gap:6px; }
+.uwx-layout-studio .uwx-layout-preview-lines i { height:5px; background:var(--muted); border-radius:3px; }
+.uwx-layout-studio .uwx-layout-preview-lines i:nth-child(2) { width:85%; }
+.uwx-layout-studio .uwx-layout-preview-lines i:nth-child(3) { width:60%; }
+
+html[data-uwx-corners='sharp'] { --radius:5px; }
+html[data-uwx-corners='soft'] { --radius:12px; }
+html[data-uwx-corners='rounded'] { --radius:19px; }
+html[data-uwx-corners='sharp'] [data-slot='card'],
+html[data-uwx-corners='soft'] [data-slot='card'],
+html[data-uwx-corners='rounded'] [data-slot='card'],
+html[data-uwx-corners='sharp'] [data-slot='dialog-content'],
+html[data-uwx-corners='soft'] [data-slot='dialog-content'],
+html[data-uwx-corners='rounded'] [data-slot='dialog-content'],
+html[data-uwx-corners='sharp'] [data-slot='popover-content'],
+html[data-uwx-corners='soft'] [data-slot='popover-content'],
+html[data-uwx-corners='rounded'] [data-slot='popover-content'],
+html[data-uwx-corners='sharp'] .uwx-card,
+html[data-uwx-corners='soft'] .uwx-card,
+html[data-uwx-corners='rounded'] .uwx-card { border-radius:var(--radius); }
+
+html[data-uwx-density='compact'] [data-slot='card'].uwx-premium-card { gap:12px; padding-top:14px; padding-bottom:14px; }
+html[data-uwx-density='compact'] [data-slot='card-header'] { padding-left:15px; padding-right:15px; gap:4px; }
+html[data-uwx-density='compact'] [data-slot='card-content'] { padding-left:15px; padding-right:15px; }
+html[data-uwx-density='compact'] .uwx-panel-context,
+html[data-uwx-density='compact'] .uwx-control-block,
+html[data-uwx-density='compact'] .uwx-stat { padding:9px 10px; }
+html[data-uwx-density='compact'] [data-sidebar='menu-button'] { min-height:29px; }
+html[data-uwx-density='compact'] .uwx-layout-preview { min-height:92px; }
+html[data-uwx-type='small'] { font-size:14px; }
+html[data-uwx-type='large'] { font-size:17px; }
+
+html[data-uwx-surface='glass'] .uwx-premium-card,
+html[data-uwx-surface='glass'] .uwx-card {
+    background:radial-gradient(circle at 95% 0%,rgb(var(--uwx-accent-rgb) / 9%),transparent 45%),color-mix(in srgb,var(--card) 83%,transparent);
+    backdrop-filter:blur(10px);
+    -webkit-backdrop-filter:blur(10px);
+}
+
+/* Wallpaper affects main content only, not other windows, toast portals or log-in data.
+   A dark overlay guarantees sufficient readability for any chosen local image. */
+html[data-uwx-backdrop='ambient'] .x-container {
+    background:radial-gradient(ellipse at 79% 13%,rgb(var(--uwx-accent-rgb) / 9%),transparent 48%),
+        radial-gradient(ellipse at 16% 85%,rgb(var(--uwx-accent-rgb) / 5%),transparent 50%),
+        var(--background);
+}
+html[data-uwx-backdrop='grid'] .x-container {
+    background:linear-gradient(rgb(var(--uwx-accent-rgb) / 5%) 1px,transparent 1px),
+        linear-gradient(90deg,rgb(var(--uwx-accent-rgb) / 5%) 1px,transparent 1px),
+        var(--background);
+    background-size:38px 38px;
+}
+html[data-uwx-backdrop='image'] .x-container {
+    background:linear-gradient(rgba(8,12,14,.89),rgba(8,12,14,.92)),var(--uwx-backdrop-image),var(--background);
+    background-size:cover;
+    background-position:center center;
+}
+/* Light mode uses a pale readability veil rather than dark-on-dark text. */
+html:not(.dark)[data-uwx-backdrop='image'] .x-container {
+    background:linear-gradient(rgba(246,247,249,.89),rgba(249,249,251,.92)),var(--uwx-backdrop-image),var(--background);
+    background-size:cover;
+    background-position:center center;
+}
+html[data-uwx-motion='reduce'] *,
+html[data-uwx-motion='reduce'] *::before,
+html[data-uwx-motion='reduce'] *::after {
+    animation-duration:.01ms !important;
+    animation-iteration-count:1 !important;
+    transition-duration:.01ms !important;
+    scroll-behavior:auto !important;
+}
+@media (prefers-reduced-motion:reduce) {
+    .uwx-layout-studio *, .uwx-layout-studio *::before,.uwx-layout-studio *::after { animation:none !important; transition:none !important; }
+}
+@media (max-width:690px) { .uwx-layout-studio .uwx-layout-grid { grid-template-columns:1fr; } }
