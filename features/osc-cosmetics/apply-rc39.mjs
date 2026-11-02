@@ -33,22 +33,22 @@ const versionPath='src/shared/constants/uwx.js';
 const osc=read(oscPath),store=read(storePath),view=read(viewPath),app=read(appPath);
 const version=read(versionPath),changelog=read('CHANGELOG_UWX.md');
 
-// Cosmetics use EXACTLY the five existing OSC modules and existing 144/9 fitChatbox.
+// Cosmetics use EXACTLY the six existing OSC modules and existing 144/9 fitChatbox.
 const newPresets=[
     '    {',
     "        id: 'void-os', name: 'VOID.OS',",
     "        frame: { header: '┌ VOID.OS / TERMINAL ┐', footer: '└ SIGNAL READY ┘' },",
-    "        templates: { music: '> AUDIO: {title} {bar}', weather: '> WX: {temp} {condition}', status: '> STATUS: {status}', heart: '> PULSE: {bpm} BPM', world: '> WORLD: {world}' }",
+    "        templates: { music: '> AUDIO: {title} {bar}', video: '> VIDEO: {title} {time}', weather: '> WX: {temp} {condition}', status: '> STATUS: {status}', heart: '> PULSE: {bpm} BPM', world: '> WORLD: {world}' }",
     '    },',
     '    {',
     "        id: 'cassette-club', name: 'Cassette Club',",
     "        frame: { header: '╭─ TAPE 07 / SIDE A ─╮', footer: '╰─ NOW PLAYING ─╯' },",
-    "        templates: { music: '▶ {title} {bar}', weather: '♪ WEATHER: {temp}', status: '♪ {status}', heart: '♥ {bpm} BPM', world: '⌖ {world}' }",
+    "        templates: { music: '▶ {title} {bar}', video: '▶ VIDEO: {title} {bar}', weather: '♪ WEATHER: {temp}', status: '♪ {status}', heart: '♥ {bpm} BPM', world: '⌖ {world}' }",
     '    },',
     '    {',
     "        id: 'midnight-fm', name: 'Midnight FM',",
     "        frame: { header: '◉ MIDNIGHT FM / ON AIR', footer: '── SIGNAL GOOD ──' },",
-    "        templates: { music: '♫ {artist} — {title}', weather: 'WX: {temp}', status: 'ON AIR: {status}', heart: 'PULSE: {bpm} BPM', world: 'FROM: {world}' }",
+    "        templates: { music: '♫ {artist} — {title}', video: 'NOW SHOWING: {title}', weather: 'WX: {temp}', status: 'ON AIR: {status}', heart: 'PULSE: {bpm} BPM', world: 'FROM: {world}' }",
     '    },',
     ''
 ].join('\n');
