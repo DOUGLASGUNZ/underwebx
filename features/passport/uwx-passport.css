@@ -1,0 +1,47 @@
+/* Social Passport, a companion to the existing People & Activity panel. */
+.uwx-passport { margin-bottom:14px; }
+.uwx-passport .uwx-passport-header { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap; }
+.uwx-passport .uwx-passport-kicker { display:block; color:var(--uwx-accent); letter-spacing:.14em; font-size:10px; font-weight:750; margin:0 0 8px; }
+.uwx-passport .uwx-passport-actions { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+.uwx-passport .uwx-passport-source { color:var(--muted-foreground); font-size:11px; }
+.uwx-passport .uwx-passport-identity { display:flex; align-items:center; gap:13px; border:1px solid var(--border); background:linear-gradient(110deg,rgb(var(--uwx-accent-rgb) / 5%),transparent 70%),var(--card); border-radius:var(--radius); padding:14px; min-width:0; }
+.uwx-passport .uwx-passport-avatar { display:grid; place-items:center; flex:0 0 51px; width:51px; height:51px; border:1px solid rgb(var(--uwx-accent-rgb) / 28%); border-radius:12px; background:rgb(var(--uwx-accent-rgb) / 8%); color:var(--uwx-accent); font-size:24px; }
+.uwx-passport .uwx-passport-identity-text { min-width:0; display:flex; flex-direction:column; gap:3px; }
+.uwx-passport .uwx-passport-identity-text > strong { font-size:17px; font-weight:750; line-height:1.25; overflow:hidden; text-overflow:ellipsis; }
+.uwx-passport .uwx-passport-identity-text > span { color:var(--muted-foreground); font-size:10px; word-break:break-all; }
+.uwx-passport .uwx-passport-badges { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
+.uwx-passport .uwx-passport-badges span { border:1px solid var(--border); padding:2px 7px; border-radius:6px; font-size:10px; color:var(--muted-foreground); }
+.uwx-passport .uwx-passport-badges span.linked { border-color:rgb(var(--uwx-accent-rgb) / 36%); color:var(--uwx-accent); }
+.uwx-passport .uwx-passport-summary { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }
+.uwx-passport .uwx-passport-summary section { display:flex; flex-direction:column; gap:6px; min-width:0; border:1px solid var(--border); border-radius:var(--radius); padding:12px; background:var(--card); }
+.uwx-passport .uwx-passport-summary span { font-size:10px; letter-spacing:.09em; font-weight:750; color:var(--uwx-accent); }
+.uwx-passport .uwx-passport-summary strong { font-size:18px; line-height:1.3; overflow-wrap:anywhere; }
+.uwx-passport .uwx-passport-summary small { color:var(--muted-foreground); font-size:10px; line-height:1.4; }
+.uwx-passport .uwx-passport-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+.uwx-passport .uwx-passport-panel { border:1px solid var(--border); border-radius:var(--radius); padding:13px; display:flex; flex-direction:column; gap:11px; min-width:0; }
+.uwx-passport .uwx-passport-panel-title { display:flex; align-items:baseline; flex-wrap:wrap; justify-content:space-between; gap:6px; }
+.uwx-passport .uwx-passport-panel-title strong { font-size:13px; }
+.uwx-passport .uwx-passport-panel-title span { font-size:10px; color:var(--muted-foreground); }
+.uwx-passport .uwx-passport-explainer { font-size:11px; line-height:1.45; color:var(--muted-foreground); margin:0; }
+.uwx-passport textarea, .uwx-passport .uwx-passport-tag-entry input {
+    width:100%; resize:vertical; min-width:0; border:1px solid var(--input); border-radius:8px;
+    background:var(--background); color:var(--foreground); padding:9px 10px; outline:none; font-size:12px;
+}
+.uwx-passport textarea:focus, .uwx-passport .uwx-passport-tag-entry input:focus { border-color:var(--uwx-accent); box-shadow:0 0 0 2px rgb(var(--uwx-accent-rgb) / 12%); }
+.uwx-passport .uwx-passport-panel-actions { display:flex; justify-content:space-between; align-items:center; gap:10px; }
+.uwx-passport .uwx-passport-panel-actions > span { font-size:10px; color:var(--muted-foreground); }
+.uwx-passport .uwx-passport-tags { display:flex; align-items:center; gap:7px; flex-wrap:wrap; min-height:34px; }
+.uwx-passport .uwx-passport-tag { display:inline-flex; align-items:center; gap:7px; border:1px solid rgb(var(--uwx-accent-rgb) / 32%); border-radius:7px; background:rgb(var(--uwx-accent-rgb) / 7%); color:var(--foreground); font-size:11px; padding:4px 5px 4px 9px; }
+.uwx-passport .uwx-passport-tag button { color:var(--muted-foreground); padding:2px 4px; border-radius:4px; }
+.uwx-passport .uwx-passport-tag button:hover { background:var(--muted); color:var(--foreground); }
+.uwx-passport .uwx-passport-empty { font-size:11px; color:var(--muted-foreground); }
+.uwx-passport .uwx-passport-tag-entry { display:flex; align-items:center; gap:8px; }
+.uwx-passport .uwx-passport-tag-entry input { flex:1; }
+.uwx-passport .uwx-passport-error { color:var(--destructive); font-size:11px; }
+.uwx-passport .uwx-passport-bottom { border-top:1px solid var(--border); padding-top:13px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; }
+.uwx-passport .uwx-passport-bottom > span { color:var(--muted-foreground); font-size:11px; }
+.uwx-passport .uwx-passport-bottom i { margin-right:5px; }
+.uwx-passport button:focus-visible { outline:2px solid var(--ring); outline-offset:2px; }
+html[data-uwx-density='compact'] .uwx-passport .uwx-passport-summary section { padding:8px 9px; }
+@media(max-width:800px) { .uwx-passport .uwx-passport-grid { grid-template-columns:1fr; } }
+@media(max-width:520px) { .uwx-passport .uwx-passport-summary { grid-template-columns:1fr; } .uwx-passport .uwx-passport-avatar { display:none; } }
