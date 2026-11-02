@@ -8,6 +8,7 @@ import { CHATBOX_THEMES, CHATBOX_MAX_CHARS, CHATBOX_MAX_LINES, fitChatbox, norma
 const data = {
     media: { title: 'Midnight Signal', artist: 'Darko', status: 'Playing', positionSeconds: 76, durationSeconds: 201, sampledAt: 0 },
     weather: { icon: '🌙', temp: '50°F', condition: 'Clear' },
+    video: { title:'Static Hearts', lengthSeconds:215, startedAt:0 },
     status: 'Movie Night', heartRate: 84, world: 'UnderWeb Hub'
 };
 const SETTINGS = normalizeSettings({
@@ -20,7 +21,7 @@ describe('OSC Cosmetic Pack 1 and Scene Switcher', () => {
         for (const id of ['void-os', 'cassette-club', 'midnight-fm']) {
             const theme = CHATBOX_THEMES.find(t => t.id === id);
             expect(theme).toBeTruthy();
-            expect(Object.keys(theme.templates).sort()).toEqual(['heart','music','status','weather','world']);
+            expect(Object.keys(theme.templates).sort()).toEqual(['heart','music','status','video','weather','world']);
             const settings = normalizeSettings({ ...SETTINGS, frame: theme.frame,
                 modules: Object.fromEntries(Object.entries(SETTINGS.modules).map(([key, value]) =>
                     [key, { ...value, enabled:true, template:theme.templates[key] }])) });
