@@ -1,0 +1,34 @@
+/* UWX RC36: encounters list, using the existing accent theme and density controls. */
+.uwx-encounters { margin-bottom:14px; }
+.uwx-encounters .uwx-encounters-heading { display:flex; align-items:flex-start; justify-content:space-between; flex-wrap:wrap; gap:12px; }
+.uwx-encounters .uwx-encounters-eyebrow { display:block; color:var(--uwx-accent); letter-spacing:.13em; font-size:10px; font-weight:800; margin-bottom:7px; }
+.uwx-encounters .uwx-encounters-heading button { display:flex; align-items:center; gap:7px; }
+.uwx-encounters .uwx-encounters-tools { display:flex; align-items:center; flex-wrap:wrap; gap:10px; padding-bottom:13px; }
+.uwx-encounters .uwx-encounters-search { display:flex; flex:2; min-width:175px; align-items:center; gap:8px; padding:7px 10px; background:var(--background); border:1px solid var(--border); border-radius:8px; color:var(--muted-foreground); }
+.uwx-encounters .uwx-encounters-search:focus-within { border-color:var(--uwx-accent); }
+.uwx-encounters .uwx-encounters-search input { background:transparent; min-width:0; width:100%; outline:none; color:var(--foreground); font-size:12px; }
+.uwx-encounters .uwx-encounters-checkbox { display:flex; align-items:center; gap:7px; color:var(--muted-foreground); font-size:11px; cursor:pointer; }
+.uwx-encounters input[type=checkbox] { accent-color:var(--uwx-accent); width:15px; height:15px; }
+.uwx-encounters .uwx-encounters-sort { display:flex; align-items:center; gap:6px; font-size:11px; color:var(--muted-foreground); }
+.uwx-encounters .uwx-encounters-sort select { border:1px solid var(--border); border-radius:7px; padding:8px 9px; background:var(--background); color:var(--foreground); font-size:11px; }
+.uwx-encounters .uwx-encounters-meta { display:flex; flex-wrap:wrap; justify-content:space-between; gap:5px; padding:8px 0; border-top:1px solid var(--border); font-size:10px; color:var(--muted-foreground); }
+.uwx-encounters .uwx-encounters-list { display:flex; flex-direction:column; gap:3px; max-height:360px; overflow:auto; padding:2px; }
+.uwx-encounters .uwx-encounters-row { display:flex; align-items:center; gap:12px; width:100%; padding:10px 11px; text-align:left; border:1px solid transparent; border-radius:calc(var(--radius) - 4px); background:transparent; color:var(--foreground); }
+.uwx-encounters .uwx-encounters-row:hover,.uwx-encounters .uwx-encounters-row:focus-visible { background:rgb(var(--uwx-accent-rgb) / 7%); border-color:rgb(var(--uwx-accent-rgb) / 17%); outline:none; }
+.uwx-encounters .uwx-encounters-row.selected { background:rgb(var(--uwx-accent-rgb) / 10%); border-color:rgb(var(--uwx-accent-rgb) / 43%); }
+.uwx-encounters .uwx-encounters-avatar { display:grid; place-items:center; flex:0 0 34px; width:34px; height:34px; border-radius:9px; background:var(--muted); color:var(--muted-foreground); }
+.uwx-encounters .uwx-encounters-person { display:flex; flex:1; flex-direction:column; gap:2px; min-width:0; }
+.uwx-encounters .uwx-encounters-person strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; font-weight:700; }
+.uwx-encounters .uwx-encounters-person small { color:var(--muted-foreground); font-size:10px; }
+.uwx-encounters .uwx-encounters-activity { display:flex; align-items:flex-end; flex-direction:column; flex:0 0 auto; gap:2px; }
+.uwx-encounters .uwx-encounters-activity strong { font-size:11px; }
+.uwx-encounters .uwx-encounters-activity small { font-size:10px; color:var(--muted-foreground); }
+.uwx-encounters .uwx-encounters-arrow { color:var(--uwx-accent); }
+.uwx-encounters .uwx-encounters-message { padding:24px 14px; display:flex; justify-content:center; align-items:center; gap:12px; color:var(--muted-foreground); font-size:12px; text-align:center; }
+.uwx-encounters .uwx-encounters-footnote { margin:12px 0 0; line-height:1.5; font-size:10px; color:var(--muted-foreground); border-top:1px solid var(--border); padding-top:11px; }
+html[data-uwx-density='compact'] .uwx-encounters .uwx-encounters-row { padding:6px 9px; }
+@media(max-width:580px) {
+    .uwx-encounters .uwx-encounters-activity small { display:none; }
+    .uwx-encounters .uwx-encounters-tools { align-items:stretch; }
+    .uwx-encounters .uwx-encounters-search { flex-basis:100%; }
+}
