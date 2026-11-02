@@ -82,6 +82,7 @@
     const matching=computed(()=>scenes.value.find(s=>s.name.toLocaleLowerCase()===name.value.trim().toLocaleLowerCase())||null);
     const SAMPLE=Object.freeze({
         media: { title:'Midnight Signal', artist:'Darko', status:'Playing', positionSeconds:75, durationSeconds:200, sampledAt:0 },
+        video: { title:'Static Hearts', requestedBy:'Vex', lengthSeconds:215, startedAt:0 },
         weather: { icon:'☁', temp:'54°F', condition:'Cloudy' },
         status: 'Movie Night', heartRate:88, world:'UnderWeb Hub'
     });
