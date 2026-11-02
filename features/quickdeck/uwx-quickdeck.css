@@ -1,0 +1,11 @@
+/* Compact entry point in UWX Overview; the independent QuickDeck is WinForms-native. */
+.uwx-quickdeck-launcher { display:flex; justify-content:space-between; align-items:center; gap:14px; flex-wrap:wrap; border:1px solid var(--border); border-radius:var(--radius); margin-bottom:14px; padding:13px 15px; background:linear-gradient(110deg,rgb(var(--uwx-accent-rgb) / 5%),transparent 62%),var(--card); }
+.uwx-quickdeck-launcher-text { display:flex; flex-direction:column; gap:4px; flex:1; min-width:220px; }
+.uwx-quickdeck-eyebrow { font-size:9px; letter-spacing:.16em; font-weight:800; color:var(--uwx-accent); }
+.uwx-quickdeck-launcher-text strong { font-size:14px; font-weight:780; color:var(--foreground); }
+.uwx-quickdeck-launcher-text small { font-size:11px; line-height:1.45; color:var(--muted-foreground); }
+.uwx-quickdeck-launcher-actions { display:flex; flex-direction:column; gap:4px; align-items:flex-end; }
+.uwx-quickdeck-launcher-actions button { display:inline-flex; gap:7px; align-items:center; }
+.uwx-quickdeck-launcher-actions small { font-size:10px; color:var(--muted-foreground); }
+.uwx-quickdeck-launcher-actions small.uwx-quickdeck-error { color:var(--destructive); }
+@media(max-width:560px) { .uwx-quickdeck-launcher-actions { align-items:stretch; width:100%; } }
