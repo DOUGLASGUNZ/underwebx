@@ -122,6 +122,7 @@
     import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 
     const props = defineProps({
+        encounter: { type: Object, default: null },
         userId: { type: String, required: true },
         displayName: { type: String, default: '' },
         state: { type: String, default: '' },
@@ -131,7 +132,7 @@
 
     const crew = useUwxCrewStore();
     const { stats, prefs, loading: loadingHistory } = storeToRefs(crew);
-    const observed = computed(() => togetherSummary(stats.value.find(row => row.userId === props.userId)));
+    const observed = computed(() => togetherSummary(props.encounter || stats.value.find(row => row.userId === props.userId)));
     const pinned = computed(() => prefs.value.pinned.includes(props.userId));
     const { togglePin } = crew;
     const tagStore = useUwxPassportTagsStore();
