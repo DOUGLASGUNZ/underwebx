@@ -4,6 +4,7 @@ using System;
 using System.Drawing;
 using System.Windows.Forms;
 using System.Text.Json;
+using CefSharp; // Provides the native browser's ExecuteScriptAsync extension.
 
 namespace VRCX
 {
