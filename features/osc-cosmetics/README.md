@@ -9,7 +9,7 @@
 - **Cassette Club** — tape player with optional track progress bar
 - **Midnight FM** — late-night radio / DJ broadcast
 
-They use the five live modules that OSC Lab already supports: `music`, `weather`, `status`, `heart`, `world`. Users still control what modules are enabled and what actual data exists. Changing a theme is cosmetic only. Frame decoration is automatically dropped first when needed to obey VRChat's 144-character / 9-line limit, using the original `fitChatbox()` engine.
+They use all six modules that OSC Lab already supports: `music`, `video` (Now Showing), `weather`, `status`, `heart`, `world`. Users still control what modules are enabled and what actual data exists. Changing a theme is cosmetic only. Frame decoration is automatically dropped first when needed to obey VRChat's 144-character / 9-line limit, using the original `fitChatbox()` engine.
 
 **Scene Switcher** (new card between Themes and Modules):
 - Save your current templates, enabled modules, order, and header/footer into a privately stored scene.
