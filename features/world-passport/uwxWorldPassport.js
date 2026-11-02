@@ -74,7 +74,8 @@ export function normalizeWorldVisits(rows) {
     for (const raw of rows || []) {
         if (!Array.isArray(raw) || !isWorldId(raw[0]) || ids.has(raw[0])) continue;
         const lastSeen = typeof raw[3] === 'string' && Number.isFinite(Date.parse(raw[3])) ? raw[3] : '';
-        if (!lastSeen) continue;
+        // A VRCX favorite may not have a recorded visit on this PC.
+        if (!lastSeen && !raw[4]) continue;
         ids.add(raw[0]);
         result.push({
             id: raw[0],
