@@ -994,7 +994,32 @@ jobs:
       - name: Build UnderWeb X
         shell: pwsh
         working-directory: ${{ env.UWX_SOURCE }}
-        run: pwsh ./build-scripts/build-all.ps1
+        run: |
+          pwsh ./build-scripts/build-all.ps1
+          if ($LASTEXITCODE -ne 0) { throw "UWX build script returned an error." }
+
+          # The original build script can continue packaging after a failed dotnet build.
+          # A missing native executable MUST fail CI rather than publish a broken installer.
+          $exe = Join-Path (Get-Location) "build/Cef/UnderWebX.exe"
+          if (-not (Test-Path $exe -PathType Leaf)) {
+            $found = (Get-ChildItem "build/Cef" -Filter "*.exe" -File -ErrorAction SilentlyContinue |
+              Select-Object -ExpandProperty Name) -join ", "
+            throw "Native UnderWebX.exe is missing from build/Cef. Found executables: $found"
+          }
+          $zip = Get-ChildItem -Path . -Filter "UnderWebX_*.zip" -File | Select-Object -First 1
+          if (-not $zip) { throw "UWX portable ZIP was not generated." }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $archive = [System.IO.Compression.ZipFile]::OpenRead($zip.FullName)
+          try {
+            if (-not $archive.GetEntry("UnderWebX.exe")) {
+              throw "UWX portable ZIP is missing UnderWebX.exe. Refusing to upload a broken Windows build."
+            }
+          } finally {
+            $archive.Dispose()
+          }
+          $setup = Get-ChildItem -Path . -Filter "UnderWebX_*_Setup.exe" -File | Select-Object -First 1
+          if (-not $setup) { throw "UWX Windows installer was not generated." }
+          Write-Host "Verified: compiled native app, portable ZIP, and installer."
 
       - name: Upload patch diagnostics
         if: always()
