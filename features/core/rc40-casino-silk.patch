@@ -1,0 +1,466 @@
+diff --git a/CHANGELOG_UWX.md b/CHANGELOG_UWX.md
+index c0bec1d..3d72439 100644
+--- a/CHANGELOG_UWX.md
++++ b/CHANGELOG_UWX.md
+@@ -1,5 +1,11 @@
+ # UnderWeb X changelog
+ 
++## 0.6.14-rc40 — One Silk balance (casino ⇄ underweb.cloud)
++
++- **Casino balances on the site:** while you're in the hub casino, UWX reads the balances the casino writes to VRChat's log and passes them to underweb.cloud, so everyone's site balance, the leaderboard and the Hall of Whales stay current. One person running UWX in the instance covers everybody, Quest players included. A new **Share casino balances** switch turns it off.
++- **Silk from the site lands in the casino:** check-ins, events, streaks, photos and recruits now pay casino-sized Silk (+25,000 for a hub visit) that the casino adds to your balance next time you join.
++- The **Silk & hub check-ins** card shows your casino balance, Silk on its way, the richest players in the casino, and Silk from the site with its status.
++
+ ## 0.6.13-rc32 — Professional polish
+ 
+ - UWX opens in the dark theme by default. You can still pick light or system in Appearance.
+diff --git a/UWX_VERSION b/UWX_VERSION
+index 2e4166c..85dce1b 100644
+--- a/UWX_VERSION
++++ b/UWX_VERSION
+@@ -1 +1 @@
+-0.6.13-rc32
++0.6.14-rc40
+diff --git a/src/coordinators/gameLogCoordinator.js b/src/coordinators/gameLogCoordinator.js
+index 2855235..34935cd 100644
+--- a/src/coordinators/gameLogCoordinator.js
++++ b/src/coordinators/gameLogCoordinator.js
+@@ -21,6 +21,7 @@ import { watchState } from '../services/watchState';
+ import { toast } from 'vue-sonner';
+ import { reportRootAccess } from '../shared/utils/uwxRoot';
+ import { reportHubLike } from '../shared/utils/uwxLikes';
++import { useUwxSilkStore } from '../stores/uwxSilk';
+ 
+ import { useAdvancedSettingsStore } from '../stores/settings/advanced';
+ import { useFriendStore } from '../stores/friend';
+@@ -346,6 +347,9 @@ export function addGameLogEntry(gameLog, location) {
+             } else if (type === 'UWLike') {
+                 // UnderWeb hub: someone here tapped ♥ on a Creator Room card -> the creator's likes on underweb.cloud
+                 reportHubLike(gameLog.data);
++            } else if (type === 'UWSILK') {
++                // UnderWeb casino: everyone's Silk balance -> the one Silk balance on underweb.cloud
++                useUwxSilkStore().onCasinoLine(gameLog.data, gameLog.dt);
+             }
+             break;
+         case 'photon-id':
+diff --git a/src/shared/constants/uwx.js b/src/shared/constants/uwx.js
+index 8e0f986..8d8d46c 100644
+--- a/src/shared/constants/uwx.js
++++ b/src/shared/constants/uwx.js
+@@ -1,2 +1,2 @@
+-export const UWX_VERSION = '0.6.13-rc32';
++export const UWX_VERSION = '0.6.14-rc40';
+ export const UWX_MANIFEST_URL = 'https://underweb.cloud/api/uwx/manifest';
+diff --git a/src/shared/utils/__tests__/uwxCasino.test.js b/src/shared/utils/__tests__/uwxCasino.test.js
+new file mode 100644
+index 0000000..d80c347
+--- /dev/null
++++ b/src/shared/utils/__tests__/uwxCasino.test.js
+@@ -0,0 +1,100 @@
++import { describe, expect, test, vi } from 'vitest';
++
++import { createCasinoReporter, parseSnapLine, userIdForName } from '../uwxCasino';
++
++const ME = 'usr_6608aa1d-6133-49f4-aae5-d1145d76abd1';
++const BLOOTY = 'usr_11086c52-c5a1-493a-8b35-d41e0d05c816';
++const players = new Map([
++    [ME, { displayName: 'Dаrko', userId: ME }], // Cyrillic а
++    [BLOOTY, { displayName: 'Blooty', userId: BLOOTY }]
++]);
++
++describe('casino snapshot lines', () => {
++    test('parses a snapshot, keeping huge balances as strings', () => {
++        expect(parseSnapLine('UWSILK SNAP 1|12|9123456789012345678|7|1|5,9|Dаrko')).toEqual({
++            display_name: 'Dаrko',
++            last_seq: '12',
++            balance: '9123456789012345678',
++            whale_tier: 7,
++            legacy_level: 1,
++            declined: ['5', '9']
++        });
++    });
++
++    test('a "|" in a display name stays in the name', () => {
++        expect(parseSnapLine('UWSILK SNAP 1|0|5|0|0||A|B').display_name).toBe('A|B');
++    });
++
++    test('rejects anything malformed', () => {
++        for (const bad of [
++            '',
++            'UWLike Bob\tx\t1',
++            'UWSILK SNAP 2|1|1|0|0||Bob',
++            'UWSILK SNAP 1|1|-5|0|0||Bob',
++            'UWSILK SNAP 1|1|5|0|0||',
++            'UWSILK SNAP 1|x|5|0|0||Bob',
++            'UWSILK SNAP 1|1|5|0|0|1,,2|Bob',
++            'UWSILK SNAP 1|1|5|0|0'
++        ]) {
++            expect(parseSnapLine(bad)).toBeNull();
++        }
++    });
++
++    test('matches display names exactly (Latin a is not Cyrillic а)', () => {
++        expect(userIdForName(players, 'Dаrko')).toBe(ME);
++        expect(userIdForName(players, 'Darko')).toBe('');
++    });
++});
++
++describe('casino reporter', () => {
++    const setup = (over = {}) => {
++        const rpc = vi.fn(async () => ({ status: 'ok', accepted: 1 }));
++        let t = 1_000_000;
++        const timers = { pending: [], setTimeout: (fn, ms) => timers.pending.push({ fn, ms }) };
++        const ctx = { enabled: true, worldId: 'wrld_6075046e-74f3-4c5d-8433-9f28149bfd81', playerList: players, rpc, ...over };
++        const r = createCasinoReporter(() => ctx, { now: () => t, timers });
++        return { r, rpc, ctx, timers, advance: (ms) => (t += ms) };
++    };
++
++    test('keeps the newest line per player and sends one batch', async () => {
++        const { r, rpc, timers } = setup();
++        expect(r.push('UWSILK SNAP 1|3|100|0|0||Dаrko', '2026-11-19T22:00:00Z')).toBe(true);
++        expect(r.push('UWSILK SNAP 1|4|250|1|0||Dаrko', '2026-11-19T22:05:00Z')).toBe(true);
++        expect(r.push('UWSILK SNAP 1|0|7|0|0||Blooty', '2026-11-19T22:05:00Z')).toBe(true);
++        expect(timers.pending).toHaveLength(1); // one timer, not one per line
++        await r.flush();
++        expect(rpc).toHaveBeenCalledTimes(1);
++        const [name, args] = rpc.mock.calls[0];
++        expect(name).toBe('uw_casino_report');
++        expect(args.p_world_id).toBe('wrld_6075046e-74f3-4c5d-8433-9f28149bfd81');
++        expect(args.p_rows).toHaveLength(2);
++        expect(args.p_rows.find((x) => x.vrc_user_id === ME)).toMatchObject({ balance: '250', last_seq: '4', whale_tier: 1, seen_at: '2026-11-19T22:05:00.000Z' });
++        expect(r.size).toBe(0);
++    });
++
++    test('ignores players it never saw join, and does nothing when off or outside the hub', async () => {
++        expect(setup().r.push('UWSILK SNAP 1|0|5|0|0||Stranger', '2026-11-19T22:00:00Z')).toBe(false);
++        expect(setup({ enabled: false }).r.push('UWSILK SNAP 1|0|5|0|0||Blooty')).toBe(false);
++        expect(setup({ worldId: '' }).r.push('UWSILK SNAP 1|0|5|0|0||Blooty')).toBe(false);
++    });
++
++    test('keeps rows for the next batch when sending fails', async () => {
++        const { r, rpc } = setup();
++        rpc.mockRejectedValueOnce(new Error('offline'));
++        r.push('UWSILK SNAP 1|0|5|0|0||Blooty', '2026-11-19T22:00:00Z');
++        expect(await r.flush()).toBeNull();
++        expect(r.size).toBe(1);
++        await r.flush();
++        expect(rpc).toHaveBeenCalledTimes(2);
++        expect(r.size).toBe(0);
++    });
++
++    test('waits at least a minute between batches', async () => {
++        const { r, timers } = setup();
++        r.push('UWSILK SNAP 1|0|5|0|0||Blooty', '2026-11-19T22:00:00Z');
++        timers.pending.shift().fn();
++        await Promise.resolve();
++        r.push('UWSILK SNAP 1|0|6|0|0||Blooty', '2026-11-19T22:00:30Z');
++        expect(timers.pending.at(-1).ms).toBeGreaterThanOrEqual(59000);
++    });
++});
+diff --git a/src/shared/utils/uwxCasino.js b/src/shared/utils/uwxCasino.js
+new file mode 100644
+index 0000000..3686b0e
+--- /dev/null
++++ b/src/shared/utils/uwxCasino.js
+@@ -0,0 +1,92 @@
++// UnderWeb casino: one Silk balance between the hub casino and underweb.cloud.
++//
++// Every few minutes the casino's instance master writes one line per player to VRChat's log:
++//   [VRCX] UWSILK SNAP 1|<last seq applied>|<balance>|<whale tier>|<legacy level>|<declined seqs>|<display name>
++// VRCX hands everything after "[VRCX] " to UWX. UWX matches each display name to the VRChat user id
++// it already saw join the instance, then reports the latest balance per player to underweb.cloud
++// (uw_casino_report) at most once a minute. Only hub worlds, only when the setting is on.
++
++/** "UWSILK SNAP 1|12|1234567890123|7|1||Dаrko" -> snapshot, or null if it isn't one. */
++export function parseSnapLine(data) {
++    const text = String(data ?? '').replace(/[\r\n]+$/, '');
++    const prefix = 'UWSILK SNAP 1|';
++    if (!text.startsWith(prefix)) return null;
++    const parts = text.slice(prefix.length).split('|');
++    if (parts.length < 6) return null;
++    const [seq, balance, tier, legacy, declined] = parts;
++    const name = parts.slice(5).join('|'); // name is last, so a "|" in it can't shift the columns
++    if (!/^\d{1,18}$/.test(seq) || !/^\d{1,19}$/.test(balance)) return null;
++    if (!/^\d{1,2}$/.test(tier) || !/^\d{1,2}$/.test(legacy)) return null;
++    if (declined && !/^\d{1,18}(,\d{1,18})*$/.test(declined)) return null;
++    if (!name || name.length > 64) return null;
++    return {
++        display_name: name,
++        last_seq: seq,
++        balance, // string: balances can be above 2^53
++        whale_tier: Number(tier),
++        legacy_level: Number(legacy),
++        declined: declined ? declined.split(',') : []
++    };
++}
++
++/** VRChat user id for a display name from the instance player list (Map of { displayName, userId }). */
++export function userIdForName(playerList, name) {
++    if (!playerList || !name) return '';
++    for (const p of playerList.values ? playerList.values() : []) {
++        if (p?.displayName === name && /^usr_[A-Za-z0-9-]{5,40}$/.test(p.userId || '')) return p.userId;
++    }
++    return '';
++}
++
++/**
++ * Collects snapshots and reports the newest one per player, batched.
++ * ctx() -> { enabled, worldId, playerList, rpc } is read at the moment a line arrives / a batch is sent.
++ */
++export function createCasinoReporter(ctx, { minGapMs = 60000, settleMs = 15000, now = () => Date.now(), timers = globalThis } = {}) {
++    const pending = new Map(); // vrc_user_id -> row
++    let worldId = '';
++    let timer = null;
++    let lastSent = 0;
++
++    function schedule() {
++        if (timer) return;
++        const wait = Math.max(settleMs, lastSent + minGapMs - now());
++        timer = timers.setTimeout(() => {
++            timer = null;
++            void flush();
++        }, wait);
++    }
++
++    async function flush() {
++        const c = ctx();
++        if (!pending.size || !c.enabled || !c.rpc || !worldId) return null;
++        const rows = [...pending.values()].slice(0, 100);
++        rows.forEach((r) => pending.delete(r.vrc_user_id));
++        lastSent = now();
++        try {
++            return await c.rpc('uw_casino_report', { p_world_id: worldId, p_rows: rows });
++        } catch {
++            rows.forEach((r) => pending.has(r.vrc_user_id) || pending.set(r.vrc_user_id, r)); // try again next batch
++            return null;
++        } finally {
++            if (pending.size) schedule();
++        }
++    }
++
++    function push(data, dt) {
++        const c = ctx();
++        if (!c.enabled || !c.worldId) return false;
++        const snap = parseSnapLine(data);
++        if (!snap) return false;
++        const vrc = userIdForName(c.playerList, snap.display_name);
++        if (!vrc) return false;
++        if (worldId && worldId !== c.worldId) pending.clear();
++        worldId = c.worldId;
++        const seenAt = new Date(dt || now());
++        pending.set(vrc, { vrc_user_id: vrc, ...snap, seen_at: Number.isNaN(seenAt.getTime()) ? new Date(now()).toISOString() : seenAt.toISOString() });
++        schedule();
++        return true;
++    }
++
++    return { push, flush, get size() { return pending.size; } };
++}
+diff --git a/src/stores/uwxSilk.js b/src/stores/uwxSilk.js
+index ca48382..ac81f49 100644
+--- a/src/stores/uwxSilk.js
++++ b/src/stores/uwxSilk.js
+@@ -5,6 +5,7 @@ import { toast } from 'vue-sonner';
+ import configRepository from '../services/config';
+ import { useLocationStore } from './location';
+ import { useUwxAccountStore } from './uwxAccount';
++import { createCasinoReporter } from '../shared/utils/uwxCasino';
+ 
+ // Hub check-ins + Silk.
+ // When you're in an UnderWeb hub world (the list lives on UnderWeb), UWX tells UnderWeb you arrived,
+@@ -13,6 +14,7 @@ import { useUwxAccountStore } from './uwxAccount';
+ // Only your own visit is reported — never who else is in the instance, never the instance itself.
+ 
+ const ENABLED_KEY = 'UWX_hubCheckinEnabled';
++const CASINO_KEY = 'UWX_casinoReportEnabled';
+ const CONFIRM_AFTER_MS = 10 * 60 * 1000;
+ const errorText = (e) => e?.error?.message || e?.message || 'Unknown error';
+ 
+@@ -27,7 +29,7 @@ export function awardText(res) {
+     const awards = Array.isArray(res?.awards) ? res.awards : [];
+     if (!awards.length) return 'Checked in at the hub.';
+     const total = awards.reduce((n, a) => n + Number(a.amount || 0), 0);
+-    return `+${total} Silk — ${awards.map((a) => a.why).join(', ')}`;
++    return `+${total.toLocaleString('en-US')} Silk — ${awards.map((a) => a.why).join(', ')}`;
+ }
+ 
+ export const useUwxSilkStore = defineStore('UwxSilk', () => {
+@@ -35,8 +37,10 @@ export const useUwxSilkStore = defineStore('UwxSilk', () => {
+     const locationStore = useLocationStore();
+ 
+     const enabled = ref(true);
++    const casinoEnabled = ref(true);
+     const summary = ref(null);
+     const board = ref([]);
++    const whales = ref([]);
+     const hubWorlds = ref([]);
+     const state = ref('idle'); // idle | here | checked-in | not-verified | off | error
+     const note = ref('');
+@@ -60,7 +64,9 @@ export const useUwxSilkStore = defineStore('UwxSilk', () => {
+         try {
+             summary.value = await account.rpc('uw_silk_summary');
+             hubWorlds.value = summary.value?.worlds || [];
+-            board.value = (await account.rpc('uw_silk_leaderboard', { p_days: 7 })) || [];
++            const overview = await account.rpc('uw_casino_overview', { p_limit: 25 }).catch(() => null);
++            board.value = overview?.board || [];
++            whales.value = overview?.whales || [];
+             serverReady.value = true;
+         } catch (e) {
+             if (e?.status === 404 || /uw_silk_summary|does not exist|schema cache/i.test(errorText(e))) serverReady.value = false;
+@@ -76,6 +82,27 @@ export const useUwxSilkStore = defineStore('UwxSilk', () => {
+         } else void onLocation();
+     }
+ 
++    async function setCasinoEnabled(value) {
++        casinoEnabled.value = Boolean(value);
++        await configRepository.setString(CASINO_KEY, casinoEnabled.value ? 'true' : 'false');
++    }
++
++    // Casino balances the hub writes to the log -> underweb.cloud (see shared/utils/uwxCasino.js).
++    const casino = createCasinoReporter(() => ({
++        enabled: started && casinoEnabled.value && account.signedIn && inHub.value,
++        worldId: currentWorldId.value,
++        playerList: locationStore.lastLocation?.playerList,
++        rpc: async (name, args) => {
++            const res = await account.rpc(name, args);
++            if (res?.accepted) void load();
++            return res;
++        }
++    }));
++    /** Called by the game log coordinator for "[VRCX] UWSILK ..." lines. */
++    function onCasinoLine(data, dt) {
++        return casino.push(data, dt);
++    }
++
+     async function checkin(stage) {
+         try {
+             const res = await account.rpc('uw_hub_checkin', { p_world_id: currentWorld, p_stage: stage });
+@@ -160,14 +187,17 @@ export const useUwxSilkStore = defineStore('UwxSilk', () => {
+         if (started) return;
+         started = true;
+         enabled.value = (await configRepository.getString(ENABLED_KEY, 'true')) !== 'false';
++        casinoEnabled.value = (await configRepository.getString(CASINO_KEY, 'true')) !== 'false';
+         await load();
+         if (account.signedIn) void onLocation();
+     }
+ 
+     return {
+         enabled,
++        casinoEnabled,
+         summary,
+         board,
++        whales,
+         hubWorlds,
+         state,
+         note,
+@@ -180,6 +210,8 @@ export const useUwxSilkStore = defineStore('UwxSilk', () => {
+         start,
+         load,
+         setEnabled,
++        setCasinoEnabled,
++        onCasinoLine,
+         useCurrentWorldAsHub,
+         removeHubWorld
+     };
+diff --git a/src/views/UnderWeb/UwxSilkCard.vue b/src/views/UnderWeb/UwxSilkCard.vue
+index a0d841f..1dbe02e 100644
+--- a/src/views/UnderWeb/UwxSilkCard.vue
++++ b/src/views/UnderWeb/UwxSilkCard.vue
+@@ -4,12 +4,18 @@
+             <div class="flex flex-wrap items-start justify-between gap-3">
+                 <div>
+                     <CardTitle>Silk & hub check-ins</CardTitle>
+-                    <CardDescription>Show up at the hub, earn Silk. UWX checks you in after 10 minutes there — only your own visit is sent, nothing about who else is there.</CardDescription>
++                    <CardDescription>One Silk balance for the casino and underweb.cloud. UWX checks you in after 10 minutes at the hub and passes the casino's balances to the site.</CardDescription>
++                </div>
++                <div class="flex flex-col gap-2">
++                    <label class="flex items-center gap-2 text-sm">
++                        <Switch :model-value="enabled" @update:modelValue="silk.setEnabled" />
++                        Count my visits
++                    </label>
++                    <label class="flex items-center gap-2 text-sm" title="While you're in the casino, send the balances it shows to underweb.cloud so everyone's site balance stays current.">
++                        <Switch :model-value="casinoEnabled" @update:modelValue="silk.setCasinoEnabled" />
++                        Share casino balances
++                    </label>
+                 </div>
+-                <label class="flex items-center gap-2 text-sm">
+-                    <Switch :model-value="enabled" @update:modelValue="silk.setEnabled" />
+-                    Count my visits
+-                </label>
+             </div>
+         </CardHeader>
+         <CardContent class="uwx-silk">
+@@ -22,8 +28,9 @@
+                 </div>
+ 
+                 <div class="uwx-silk-stats">
+-                    <div><strong>{{ (summary?.balance ?? 0).toLocaleString() }}</strong><span>Silk</span></div>
+-                    <div><strong>+{{ (summary?.week ?? 0).toLocaleString() }}</strong><span>this week</span></div>
++                    <div><strong>{{ summary?.casino ? fmt(summary.casino.balance) : '—' }}</strong><span>casino balance</span></div>
++                    <div v-if="summary?.pending?.count"><strong>+{{ fmt(summary.pending.amount) }}</strong><span>on its way</span></div>
++                    <div><strong>+{{ fmt(summary?.week ?? 0) }}</strong><span>earned on the site this week</span></div>
+                     <div><strong>{{ summary?.streak ?? 0 }}</strong><span>week streak</span></div>
+                     <div><strong>{{ summary?.visits ?? 0 }}</strong><span>hub visits</span></div>
+                 </div>
+@@ -32,27 +39,28 @@
+                     <section>
+                         <div class="uwx-silk-label">HOW TO EARN</div>
+                         <ul class="uwx-silk-ways">
+-                            <li><b>+25</b> first 10 minutes at the hub each day</li>
+-                            <li><b>+50</b> and an “I was there” badge during an UnderWeb event</li>
+-                            <li><b>+10×</b> weeks in a row you visit (up to +50 a week)</li>
+-                            <li><b>+10</b> for each approved photo or piece of work (3 a day)</li>
+-                            <li><b>+100</b> for every friend staff verify you brought in (Road to 500)</li>
++                            <li><b>+{{ fmt(25 * mult) }}</b> first 10 minutes at the hub each day</li>
++                            <li><b>+{{ fmt(50 * mult) }}</b> and an “I was there” badge during an UnderWeb event</li>
++                            <li><b>+{{ fmt(10 * mult) }}×</b> weeks in a row you visit (up to +{{ fmt(50 * mult) }} a week)</li>
++                            <li><b>+{{ fmt(10 * mult) }}</b> for each approved photo or piece of work (3 a day)</li>
++                            <li><b>+{{ fmt(100 * mult) }}</b> for every friend staff verify you brought in (Road to 500)</li>
+                         </ul>
+-                        <p class="text-xs text-muted-foreground">Spending account Silk in the hub casino is coming — the casino uses in-world Silk for now.</p>
++                        <p class="text-xs text-muted-foreground">Silk you earn here lands in your casino balance the next time you join the casino.</p>
+                     </section>
+                     <section>
+-                        <div class="uwx-silk-label">THIS WEEK'S TOP EARNERS</div>
+-                        <p v-if="!board.length" class="text-sm text-muted-foreground">Nobody yet — be first.</p>
++                        <div class="uwx-silk-label">RICHEST IN THE CASINO</div>
++                        <p v-if="!board.length" class="text-sm text-muted-foreground">Nobody yet. Fills in as UWX sees people in the casino.</p>
+                         <div v-for="(r, i) in board.slice(0, 8)" :key="i" class="uwx-silk-row" :class="{ me: r.me }">
+-                            <span class="rank">{{ i + 1 }}</span><span class="name">{{ r.display_name || r.username }}</span><strong>{{ r.earned }}</strong>
++                            <span class="rank">{{ i + 1 }}</span><span class="name">{{ r.display_name }}</span><strong>{{ fmt(r.balance) }}</strong>
+                         </div>
+                     </section>
+                     <section>
+-                        <div class="uwx-silk-label">RECENT</div>
+-                        <p v-if="!summary?.recent?.length" class="text-sm text-muted-foreground">No Silk yet.</p>
+-                        <div v-for="(r, i) in (summary?.recent || []).slice(0, 8)" :key="i" class="uwx-silk-row">
+-                            <span class="name">{{ r.note || r.reason }}</span>
+-                            <strong :class="r.amount < 0 ? 'neg' : ''">{{ r.amount > 0 ? '+' : '' }}{{ r.amount }}</strong>
++                        <div class="uwx-silk-label">SILK FROM THE SITE</div>
++                        <p v-if="!summary?.transfers?.length" class="text-sm text-muted-foreground">No Silk yet.</p>
++                        <div v-for="t in (summary?.transfers || []).slice(0, 8)" :key="t.seq" class="uwx-silk-row">
++                            <span class="name">{{ t.note || t.source }}</span>
++                            <span class="text-xs text-muted-foreground">{{ t.status === 'applied' ? 'in the casino' : t.status === 'pending' ? 'on its way' : t.status }}</span>
++                            <strong :class="t.amount < 0 ? 'neg' : ''">{{ t.amount > 0 ? '+' : '' }}{{ fmt(t.amount) }}</strong>
+                         </div>
+                         <template v-if="summary?.badges?.length">
+                             <div class="uwx-silk-label" style="margin-top: 10px">I WAS THERE</div>
+@@ -98,7 +106,18 @@
+     const silk = useUwxSilkStore();
+     const account = useUwxAccountStore();
+     const modal = useModalStore();
+-    const { enabled, summary, board, hubWorlds, state, note, arrivedAt, serverReady, inHub, currentWorldId, currentWorldName, canSetHub } = storeToRefs(silk);
++    const { enabled, casinoEnabled, summary, board, hubWorlds, state, note, arrivedAt, serverReady, inHub, currentWorldId, currentWorldName, canSetHub } = storeToRefs(silk);
++
++    const mult = computed(() => Number(summary.value?.multiplier || 1));
++    function fmt(n) {
++        const v = Number(n || 0);
++        const a = Math.abs(v);
++        const short = (x, s) => (x >= 100 ? Math.floor(x) : Number(x.toFixed(x >= 10 ? 1 : 2))) + s;
++        if (a >= 1e12) return (v < 0 ? '-' : '') + short(a / 1e12, 'T');
++        if (a >= 1e9) return (v < 0 ? '-' : '') + short(a / 1e9, 'B');
++        if (a >= 1e6) return (v < 0 ? '-' : '') + short(a / 1e6, 'M');
++        return v.toLocaleString('en-US');
++    }
+ 
+     const now = ref(Date.now());
+     let tick = null;
